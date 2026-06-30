@@ -4,6 +4,7 @@ LLMChatPane = {
 	rootURI: null,
 	initialized: false,
 	paneID: null,
+	maxPDFContextChars: 60000,
 
 	init({ id, version, rootURI }) {
 		if (this.initialized) return;
@@ -91,6 +92,90 @@ LLMChatPane = {
 		};
 	},
 
+	getActiveReaderAttachment() {
+		if (!Zotero.Reader) {
+			return null;
+		}
+		let win = Zotero.getMainWindow();
+		let selectedID = win?.Zotero_Tabs?.selectedID;
+		if (selectedID) {
+			let reader = Zotero.Reader.getByTabID(selectedID);
+			if (reader?.itemID) {
+				return Zotero.Items.get(reader.itemID);
+			}
+		}
+		// Fall back to the item currently shown in the item pane
+		let item = this._currentPaneItem;
+		if (item?.isPDFAttachment()) {
+			return item;
+		}
+		return null;
+	},
+
+	async getAttachmentFullText(item) {
+		let cacheFile = Zotero.Fulltext.getItemCacheFile(item).path;
+		if (await IOUtils.exists(cacheFile)) {
+			this.log(`Reading PDF context from full-text cache for item ${item.libraryKey}`);
+			return Zotero.File.getContentsAsync(cacheFile);
+		}
+
+		if (item.isPDFAttachment()) {
+			this.log(`Extracting PDF context for item ${item.libraryKey}`);
+			let { text } = await Zotero.PDFWorker.getFullText(item.id, null, true);
+			return text || "";
+		}
+
+		return "";
+	},
+
+	async buildPromptWithActivePDFContext(userPrompt) {
+		let item = this.getActiveReaderAttachment();
+		if (!item || !item.isPDFAttachment()) {
+			return {
+				prompt: userPrompt,
+				contextInfo: null,
+			};
+		}
+
+		let text = await this.getAttachmentFullText(item);
+		if (!text.trim()) {
+			return {
+				prompt: userPrompt,
+				contextInfo: {
+					title: item.getField("title") || item.libraryKey,
+					missingText: true,
+				},
+			};
+		}
+
+		let truncated = text.length > this.maxPDFContextChars;
+		let context = truncated ? text.slice(0, this.maxPDFContextChars) : text;
+		let title = item.getField("title") || item.libraryKey;
+
+		return {
+			prompt: [
+				"You are answering a question about the currently open PDF in Zotero.",
+				"Use the PDF context below when it is relevant. If the answer is not supported by the PDF context, say so.",
+				"",
+				`PDF title: ${title}`,
+				truncated ? `PDF context note: text was truncated to the first ${this.maxPDFContextChars} characters.` : "",
+				"",
+				"<PDF_CONTEXT>",
+				context,
+				"</PDF_CONTEXT>",
+				"",
+				"<USER_QUESTION>",
+				userPrompt,
+				"</USER_QUESTION>",
+			].filter(line => line !== "").join("\n"),
+			contextInfo: {
+				title,
+				charCount: text.length,
+				truncated,
+			},
+		};
+	},
+
 	async main() {
 		this.registerItemPane();
 		this.log("Hello World pane loaded");
@@ -111,6 +196,7 @@ LLMChatPane = {
 				orderable: true,
 			},
 			onItemChange: ({ item, setEnabled }) => {
+				this._currentPaneItem = item;
 				setEnabled(!!item);
 			},
 			onRender: ({ doc, body }) => {
@@ -191,13 +277,31 @@ LLMChatPane = {
 					}
 
 					submitButton.disabled = true;
-					appendMessage("You", prompt);
-					let reply = appendMessage("Ollama", "Waiting for Ollama...");
 
 					try {
+						let { prompt: modelPrompt, contextInfo } = await this.buildPromptWithActivePDFContext(prompt);
+						let visiblePrompt = contextInfo
+							? `PDF: ${contextInfo.title}\n\n${prompt}`
+							: `PDF: (none)\n\n${prompt}`;
+						appendMessage("You", visiblePrompt);
+
+						if (contextInfo?.missingText) {
+							appendMessage("System", `No extracted text was available for "${contextInfo.title}". Asking without PDF context.`);
+						}
+						else if (contextInfo) {
+							appendMessage(
+								"System",
+								`Using PDF context from "${contextInfo.title}" (${contextInfo.charCount} characters${contextInfo.truncated ? ", truncated" : ""}).`
+							);
+						}
+						else {
+							appendMessage("System", "No active PDF reader tab found. Asking without PDF context.");
+						}
+
+						let reply = appendMessage("Ollama", "Waiting for Ollama...");
 						this.log(`Submitting prompt to Ollama: ${prompt}`);
 						reply.textContent = "";
-						let result = await this.streamOllama(prompt, (token) => {
+						let result = await this.streamOllama(modelPrompt, (token) => {
 							reply.textContent += token;
 							reply.parentElement.scrollIntoView({ block: "nearest" });
 						});
@@ -207,7 +311,7 @@ LLMChatPane = {
 						this.log(`Received response from Ollama model ${result.model}`);
 					}
 					catch (e) {
-						reply.textContent = `Ollama request failed: ${e.message}`;
+						appendMessage("Ollama", `Ollama request failed: ${e.message}`);
 						this.log(`Ollama request failed: ${e.message}`);
 					}
 					finally {

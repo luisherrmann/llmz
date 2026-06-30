@@ -36,6 +36,7 @@
 	box-sizing: border-box;
 	padding: 8px;
 	word-break: break-word;
+	user-select: text;
 }
 
 .llm-message-label {
@@ -68,7 +69,7 @@
 }
 
 /* Markdown output */
-.llm-markdown { line-height: 1.5; word-break: break-word; }
+.llm-markdown { line-height: 1.5; word-break: break-word; user-select: text; }
 .llm-markdown p { margin: 0 0 0.6em; }
 .llm-markdown p:last-child { margin-bottom: 0; }
 .llm-markdown h1, .llm-markdown h2, .llm-markdown h3,

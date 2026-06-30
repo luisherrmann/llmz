@@ -289,11 +289,13 @@ LLMChatPane = {
 				let submitButton = doc.createElement("button");
 				submitButton.textContent = "Submit";
 				submitButton.className = "llm-submit";
+				submitButton.title = "Submit (⌘ Return)";
 
 				let stopButton = doc.createElement("button");
 				stopButton.textContent = "Stop";
 				stopButton.className = "llm-stop";
 				stopButton.disabled = true;
+				stopButton.title = "Stop (⌘ ⌫)";
 
 				let buttonRow = doc.createElement("div");
 				buttonRow.className = "llm-button-row";
@@ -301,6 +303,18 @@ LLMChatPane = {
 
 				let cancelStream = null;
 				stopButton.addEventListener("click", () => cancelStream?.());
+
+				input.addEventListener("keydown", (e) => {
+					if (!e.metaKey) return;
+					if (e.code === "Enter") {
+						e.preventDefault();
+						if (!submitButton.disabled) submitButton.click();
+					}
+					else if (e.code === "Backspace") {
+						e.preventDefault();
+						if (!stopButton.disabled) stopButton.click();
+					}
+				});
 
 				let messageList = doc.createElement("div");
 				messageList.className = "llm-message-list";

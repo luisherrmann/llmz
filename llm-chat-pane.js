@@ -276,16 +276,11 @@ LLMChatPane = {
 				body.appendChild(style);
 				let section = body.closest("item-pane-custom-section");
 				let scrollContainer = body.closest(".zotero-view-item");
-				if (section && scrollContainer) {
-					section.style.minHeight = `${scrollContainer.clientHeight}px`;
-				}
+				// height calculation happens after appendChild below
 				body.classList.add("llm-body");
 
 				let container = doc.createElement("div");
 				container.className = "llm-container";
-
-				let greeting = doc.createElement("div");
-				greeting.textContent = "Hello World!";
 
 				let input = doc.createElement("textarea");
 				input.placeholder = "Type here...";
@@ -326,8 +321,8 @@ LLMChatPane = {
 					content.textContent = text;
 
 					message.append(label, content);
-					messageList.appendChild(message);
-					message.scrollIntoView({ block: "nearest" });
+					messageList.prepend(message);
+					messageList.scrollTop = 0;
 					return content;
 				};
 
@@ -365,7 +360,6 @@ LLMChatPane = {
 						reply.textContent = "";
 						let result = await this.streamOllama(modelPrompt, (token) => {
 							reply.textContent += token;
-							reply.parentElement.scrollIntoView({ block: "nearest" });
 						}, {
 							onReady(cancelFn) {
 								cancelStream = cancelFn;
@@ -382,7 +376,6 @@ LLMChatPane = {
 								rendered.className = "llm-markdown";
 								rendered.innerHTML = html;
 								reply.replaceWith(rendered);
-								rendered.parentElement?.scrollIntoView({ block: "nearest" });
 							}
 						}
 						this.log(`Received response from Ollama model ${result.model}`);
@@ -399,8 +392,19 @@ LLMChatPane = {
 				});
 
 				controls.append(input, buttonRow);
-				container.append(greeting, messageList, controls);
+				container.append(controls, messageList);
 				body.appendChild(container);
+
+				if (section && scrollContainer) {
+					let scrollRect = scrollContainer.getBoundingClientRect();
+					let sectionRect = section.getBoundingClientRect();
+					let sectionOffsetFromTop = Math.max(0, sectionRect.top - scrollRect.top);
+					let availForSection = scrollContainer.clientHeight - sectionOffsetFromTop;
+					let overhead = 32; // 8px top padding + 16px bottom padding + 8px gap
+					let listH = Math.max(80, availForSection - controls.offsetHeight - overhead);
+					messageList.style.height = listH + "px";
+					section.style.minHeight = (controls.offsetHeight + listH + overhead) + "px";
+				}
 			},
 		});
 	},

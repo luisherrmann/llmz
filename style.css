@@ -11,7 +11,6 @@
 	gap: 8px;
 	box-sizing: border-box;
 	flex: 1;
-	min-height: 100%;
 	padding: 8px 0 16px;
 }
 
@@ -19,16 +18,14 @@
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
-	flex: 1;
-	min-height: 0;
-	overflow: auto;
+	overflow-y: auto;
+	/* height is set by JS based on available pane space */
 }
 
 .llm-controls {
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
-	flex: 0 0 auto;
 }
 
 /* Messages */
@@ -53,7 +50,7 @@
 /* Input controls */
 .llm-input {
 	box-sizing: border-box;
-	min-height: 88px;
+	height: 10vh;
 	width: 100%;
 	resize: vertical;
 }

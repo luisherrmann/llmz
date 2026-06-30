@@ -6,6 +6,12 @@ LLMChatPane = {
 	paneID: null,
 	maxPDFContextChars: 60000,
 	_css: null,
+	_systemPrompt: [
+		"You are a helpful research assistant.",
+		"Always express mathematical formulas and equations using LaTeX notation:",
+		"use $<formula>$ for inline math and $$<formula>$$ for display math, ",
+		"where <formula> is the mathematical formula to be returned."
+	].join(" "),
 
 	init({ id, version, rootURI }) {
 		if (this.initialized) return;
@@ -133,7 +139,7 @@ LLMChatPane = {
 		let item = this.getActiveReaderAttachment();
 		if (!item || !item.isPDFAttachment()) {
 			return {
-				prompt: userPrompt,
+				prompt: this._systemPrompt + "\n\n" + userPrompt,
 				contextInfo: null,
 			};
 		}
@@ -165,6 +171,8 @@ LLMChatPane = {
 				context,
 				"</PDF_CONTEXT>",
 				"",
+				this._systemPrompt,
+				"",
 				"<USER_QUESTION>",
 				userPrompt,
 				"</USER_QUESTION>",
@@ -192,14 +200,48 @@ LLMChatPane = {
 	},
 
 	_configureMarkdown() {
-		if (typeof marked === "undefined" || typeof hljs === "undefined") return;
-		marked.setOptions({
-			highlight(code, lang) {
-				let language = hljs.getLanguage(lang) ? lang : "plaintext";
-				return hljs.highlight(code, { language }).value;
-			},
-			langPrefix: "hljs language-",
-		});
+		if (typeof marked === "undefined") return;
+		if (typeof hljs !== "undefined") {
+			marked.setOptions({
+				highlight(code, lang) {
+					let language = hljs.getLanguage(lang) ? lang : "plaintext";
+					return hljs.highlight(code, { language }).value;
+				},
+				langPrefix: "hljs language-",
+			});
+		}
+		if (typeof katex !== "undefined") {
+			marked.use({
+				extensions: [{
+					name: "math",
+					level: "inline",
+					start(src) { return src.indexOf("$"); },
+					tokenizer(src) {
+						let match = src.match(/^\$\$([\s\S]+?)\$\$/) || src.match(/^\$([^$\n]+?)\$/);
+						if (match) {
+							return {
+								type: "math",
+								raw: match[0],
+								text: match[1].trim(),
+								display: match[0].startsWith("$$"),
+							};
+						}
+					},
+					renderer(token) {
+						try {
+							return katex.renderToString(token.text, {
+								displayMode: token.display,
+								output: "mathml",
+								throwOnError: false,
+							});
+						}
+						catch (e) {
+							return `<span>${token.text}</span>`;
+						}
+					},
+				}],
+			});
+		}
 	},
 
 	_renderMarkdown(text) {

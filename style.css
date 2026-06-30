@@ -57,7 +57,13 @@
 	resize: vertical;
 }
 
-.llm-submit {
+.llm-button-row {
+	display: flex;
+	flex-direction: row;
+	gap: 8px;
+}
+
+.llm-submit, .llm-stop {
 	align-self: flex-start;
 }
 

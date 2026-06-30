@@ -37,7 +37,7 @@ LLMChatPane = {
 		return model;
 	},
 
-	async streamOllama(prompt, onToken) {
+	async streamOllama(prompt, onToken, { onReady } = {}) {
 		let model = await this.getOllamaModel();
 		let response = await fetch("http://127.0.0.1:11434/api/generate", {
 			method: "POST",
@@ -56,6 +56,8 @@ LLMChatPane = {
 		}
 
 		let reader = response.body.getReader();
+		onReady?.(() => reader.cancel());
+
 		let decoder = new TextDecoder();
 		let buffer = "";
 		let text = "";
@@ -293,6 +295,18 @@ LLMChatPane = {
 				submitButton.textContent = "Submit";
 				submitButton.className = "llm-submit";
 
+				let stopButton = doc.createElement("button");
+				stopButton.textContent = "Stop";
+				stopButton.className = "llm-stop";
+				stopButton.disabled = true;
+
+				let buttonRow = doc.createElement("div");
+				buttonRow.className = "llm-button-row";
+				buttonRow.append(submitButton, stopButton);
+
+				let cancelStream = null;
+				stopButton.addEventListener("click", () => cancelStream?.());
+
 				let messageList = doc.createElement("div");
 				messageList.className = "llm-message-list";
 
@@ -352,6 +366,11 @@ LLMChatPane = {
 						let result = await this.streamOllama(modelPrompt, (token) => {
 							reply.textContent += token;
 							reply.parentElement.scrollIntoView({ block: "nearest" });
+						}, {
+							onReady(cancelFn) {
+								cancelStream = cancelFn;
+								stopButton.disabled = false;
+							},
 						});
 						if (!result.text) {
 							reply.textContent = "(No response)";
@@ -374,10 +393,12 @@ LLMChatPane = {
 					}
 					finally {
 						submitButton.disabled = false;
+						stopButton.disabled = true;
+						cancelStream = null;
 					}
 				});
 
-				controls.append(input, submitButton);
+				controls.append(input, buttonRow);
 				container.append(greeting, messageList, controls);
 				body.appendChild(container);
 			},

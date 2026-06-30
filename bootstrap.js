@@ -1,0 +1,22 @@
+var LLMChatPane;
+
+function log(msg) {
+	Zotero.debug("LLM Chat Pane: " + msg);
+}
+
+function install() {}
+
+function uninstall() {}
+
+async function startup({ id, version, rootURI }) {
+	log("Starting 2.0");
+	Services.scriptloader.loadSubScript(rootURI + "llm-chat-pane.js");
+	LLMChatPane.init({ id, version, rootURI });
+	await LLMChatPane.main();
+}
+
+function shutdown() {
+	log("Shutting down 2.0");
+	LLMChatPane?.shutdown();
+	LLMChatPane = undefined;
+}

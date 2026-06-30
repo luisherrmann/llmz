@@ -14,12 +14,11 @@ LLMChatPane = {
 		"For display math, you MUST wrap the formula in double dollar signs: $$<formula>$$. The opening $$ and closing $$ are mandatory.",
 		"Always format tables as display math: $$\\begin{array}{|c|c|}\\hline ... \\\\\\hline\\end{array}$$.",
 		"The opening $$ and closing $$ around \\begin{array} are mandatory. Never use \\begin{tabular}.",
-		"For EVERY claim, fact, or term you mention that comes from the PDF, you MUST embed a clickable citation link inline.",
-		"Citation format: [label](<find:exact phrase>). The label is 1–4 words describing the point. The exact phrase is 4–8 consecutive words copied CHARACTER-FOR-CHARACTER from the <PDF_CONTEXT> block — no paraphrasing, no invented text.",
-		"The link does a literal text search in the PDF reader. One wrong word breaks it. Prefer shorter distinctive phrases over long sentences.",
+		"When you state facts or findings from the PDF, add a citation link immediately after the claim.",
+		"Citation format: [CITE](<find:exact phrase>). Always use the literal token [CITE] — numbering is assigned automatically.",
+		"The exact phrase is 4–8 consecutive words copied verbatim from the <PDF_CONTEXT> — no paraphrasing.",
 		"The angle brackets around find: are mandatory.",
-		"Example — if the PDF contains 'error-prone DNA polymerases to increase the mutation rate', write: [increased mutation rate](<find:error-prone DNA polymerases to increase>).",
-		"Cite frequently: every paragraph should contain multiple citation links where the content comes from the PDF.",
+		"Example: 'The mutation rate increases [CITE](<find:error-prone DNA polymerases to increase>).'",
 	].join(" "),
 
 	init({ id, version, rootURI }) {
@@ -518,9 +517,7 @@ LLMChatPane = {
 						}
 						else {
 							let citationIndex = await citationIndexPromise;
-							let groundedText = citationIndex
-								? await LLMCitation.groundCitations(result.text, citationIndex)
-								: result.text;
+							let groundedText = await LLMCitation.groundCitations(result.text, citationIndex);
 							let html = this._renderMarkdown(groundedText);
 							if (html) {
 								let rendered = doc.createElement("div");

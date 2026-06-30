@@ -96,8 +96,7 @@ LLMChatPane = {
 				let input = doc.createElement("textarea");
 				input.placeholder = "Type here...";
 				input.style.boxSizing = "border-box";
-				input.style.flex = "1";
-				input.style.minHeight = "160px";
+				input.style.minHeight = "88px";
 				input.style.width = "100%";
 				input.style.resize = "vertical";
 
@@ -109,6 +108,15 @@ LLMChatPane = {
 				messageList.style.display = "flex";
 				messageList.style.flexDirection = "column";
 				messageList.style.gap = "8px";
+				messageList.style.flex = "1";
+				messageList.style.minHeight = "0";
+				messageList.style.overflow = "auto";
+
+				let controls = doc.createElement("div");
+				controls.style.display = "flex";
+				controls.style.flexDirection = "column";
+				controls.style.gap = "8px";
+				controls.style.flex = "0 0 auto";
 
 				let appendMessage = (role, text) => {
 					let message = doc.createElement("div");
@@ -159,7 +167,8 @@ LLMChatPane = {
 					}
 				});
 
-				container.append(greeting, input, submitButton, messageList);
+				controls.append(input, submitButton);
+				container.append(greeting, messageList, controls);
 				body.appendChild(container);
 			},
 		});

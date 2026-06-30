@@ -13,6 +13,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "vendor/marked.min.js");
 	Services.scriptloader.loadSubScript(rootURI + "vendor/highlight.min.js");
 	Services.scriptloader.loadSubScript(rootURI + "vendor/katex.min.js");
+	Services.scriptloader.loadSubScript(rootURI + "llm-citation.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-chat-pane.js");
 	LLMChatPane.init({ id, version, rootURI });
 	await LLMChatPane.main();

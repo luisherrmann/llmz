@@ -14,11 +14,12 @@ LLMChatPane = {
 		"For display math, you MUST wrap the formula in double dollar signs: $$<formula>$$. The opening $$ and closing $$ are mandatory.",
 		"Always format tables as display math: $$\\begin{array}{|c|c|}\\hline ... \\\\\\hline\\end{array}$$.",
 		"The opening $$ and closing $$ around \\begin{array} are mandatory. Never use \\begin{tabular}.",
-		"When citing a specific passage from the PDF, make it a clickable link so the reader can jump to it.",
-		"Format: [short label](<find:exact phrase>), where exact phrase is 3–8 consecutive words copied VERBATIM from the <PDF_CONTEXT> block — never paraphrase or invent text.",
-		"The link performs a literal text search, so even one changed word will break it. Shorter phrases are more reliable than long ones.",
+		"For EVERY claim, fact, or term you mention that comes from the PDF, you MUST embed a clickable citation link inline.",
+		"Citation format: [label](<find:exact phrase>). The label is 1–4 words describing the point. The exact phrase is 4–8 consecutive words copied CHARACTER-FOR-CHARACTER from the <PDF_CONTEXT> block — no paraphrasing, no invented text.",
+		"The link does a literal text search in the PDF reader. One wrong word breaks it. Prefer shorter distinctive phrases over long sentences.",
 		"The angle brackets around find: are mandatory.",
-		"Example — if the PDF contains 'error-prone DNA polymerases to increase', write: [mutagenesis mechanism](<find:error-prone DNA polymerases to increase>).",
+		"Example — if the PDF contains 'error-prone DNA polymerases to increase the mutation rate', write: [increased mutation rate](<find:error-prone DNA polymerases to increase>).",
+		"Cite frequently: every paragraph should contain multiple citation links where the content comes from the PDF.",
 	].join(" "),
 
 	init({ id, version, rootURI }) {
@@ -38,9 +39,9 @@ LLMChatPane = {
 			timeout: 10000,
 		});
 		let data = JSON.parse(response.responseText);
-		let model = data.models?.[0]?.name;
+		let model = (data.models || []).find(m => !/embed/i.test(m.name))?.name;
 		if (!model) {
-			throw new Error("No Ollama models found. Pull a model with `ollama pull <model>` first.");
+			throw new Error("No chat model found. Pull one with `ollama pull <model>` first.");
 		}
 		return model;
 	},
@@ -211,32 +212,6 @@ LLMChatPane = {
 		}
 	},
 
-	navigateToText(query) {
-		if (!Zotero.Reader) return;
-		let win = Zotero.getMainWindow();
-		let selectedID = win?.Zotero_Tabs?.selectedID;
-		if (!selectedID) return;
-		let reader = Zotero.Reader.getByTabID(selectedID);
-		if (!reader) return;
-		let iwin = reader._iframeWindow;
-		if (!iwin) return;
-		let fc = iwin.wrappedJSObject?._reader?._primaryView?._findController;
-		if (!fc) {
-			this.log("navigateToText: _findController not found");
-			return;
-		}
-		let params = Components.utils.cloneInto({
-			type: "find",
-			query,
-			phraseSearch: true,
-			caseSensitive: false,
-			entireWord: false,
-			highlightAll: false,
-			findPrevious: false,
-		}, iwin);
-		fc.find(params);
-	},
-
 	async getAttachmentFullText(item) {
 		let cacheFile = Zotero.Fulltext.getItemCacheFile(item).path;
 		if (await IOUtils.exists(cacheFile)) {
@@ -265,6 +240,8 @@ LLMChatPane = {
 				prompt: parts.join("\n"),
 				contextInfo: null,
 				selectedText,
+				item: null,
+				fullText: null,
 			};
 		}
 
@@ -277,6 +254,8 @@ LLMChatPane = {
 					missingText: true,
 				},
 				selectedText,
+				item,
+				fullText: null,
 			};
 		}
 
@@ -305,6 +284,8 @@ LLMChatPane = {
 				truncated,
 			},
 			selectedText,
+			item,
+			fullText: text,
 		};
 	},
 
@@ -490,7 +471,13 @@ LLMChatPane = {
 						let selectedText = liveText || capturedSelection;
 						capturedSelection = null;
 						let { text: pageText, pageNum, info: pageInfo } = await this.getReaderPageText();
-						let { prompt: modelPrompt, contextInfo } = await this.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
+						let { prompt: modelPrompt, contextInfo, item: pdfItem, fullText } = await this.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
+						let citationIndexPromise = (pdfItem && fullText)
+							? LLMCitation.getCitationIndex(pdfItem, fullText).catch((e) => {
+								this.log(`getCitationIndex failed: ${e.message}`);
+								return null;
+							})
+							: Promise.resolve(null);
 						let selectionLine = selectedText
 							? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
 							: `Selected Text: (none — ${selectionInfo})`;
@@ -530,7 +517,11 @@ LLMChatPane = {
 							reply.textContent = "(No response)";
 						}
 						else {
-							let html = this._renderMarkdown(result.text);
+							let citationIndex = await citationIndexPromise;
+							let groundedText = citationIndex
+								? await LLMCitation.groundCitations(result.text, citationIndex)
+								: result.text;
+							let html = this._renderMarkdown(groundedText);
 							if (html) {
 								let rendered = doc.createElement("div");
 								rendered.className = "llm-markdown";
@@ -539,7 +530,7 @@ LLMChatPane = {
 									let anchor = e.target.closest(".llm-find-link");
 									if (!anchor) return;
 									e.preventDefault();
-									this.navigateToText(anchor.dataset.query);
+									LLMCitation.navigateToText(anchor.dataset.query);
 								});
 								reply.replaceWith(rendered);
 							}

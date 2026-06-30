@@ -105,31 +105,42 @@ LLMChatPane = {
 				submitButton.textContent = "Submit";
 				submitButton.style.alignSelf = "flex-start";
 
-				let output = doc.createElement("pre");
-				output.style.boxSizing = "border-box";
-				output.style.margin = "0";
-				output.style.padding = "8px";
-				output.style.whiteSpace = "pre-wrap";
-				output.style.wordBreak = "break-word";
+				let messageList = doc.createElement("div");
+				messageList.style.display = "flex";
+				messageList.style.flexDirection = "column";
+				messageList.style.gap = "8px";
+
+				let appendMessage = (text) => {
+					let message = doc.createElement("pre");
+					message.style.boxSizing = "border-box";
+					message.style.margin = "0";
+					message.style.padding = "8px";
+					message.style.whiteSpace = "pre-wrap";
+					message.style.wordBreak = "break-word";
+					message.textContent = text;
+					messageList.appendChild(message);
+					message.scrollIntoView({ block: "nearest" });
+					return message;
+				};
 
 				submitButton.addEventListener("click", async () => {
 					let prompt = input.value.trim();
 					if (!prompt) {
-						output.textContent = "Enter a prompt first.";
+						appendMessage("Enter a prompt first.");
 						return;
 					}
 
 					submitButton.disabled = true;
-					output.textContent = "Waiting for Ollama...";
+					let reply = appendMessage("Waiting for Ollama...");
 
 					try {
 						this.log(`Submitting prompt to Ollama: ${prompt}`);
 						let result = await this.submitToOllama(prompt);
-						output.textContent = result.text || "(No response)";
+						reply.textContent = result.text || "(No response)";
 						this.log(`Received response from Ollama model ${result.model}`);
 					}
 					catch (e) {
-						output.textContent = `Ollama request failed: ${e.message}`;
+						reply.textContent = `Ollama request failed: ${e.message}`;
 						this.log(`Ollama request failed: ${e.message}`);
 					}
 					finally {
@@ -137,7 +148,7 @@ LLMChatPane = {
 					}
 				});
 
-				container.append(greeting, input, submitButton, output);
+				container.append(greeting, input, submitButton, messageList);
 				body.appendChild(container);
 			},
 		});

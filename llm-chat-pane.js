@@ -121,6 +121,33 @@ LLMChatPane = {
 		return null;
 	},
 
+	getReaderSelection() {
+		if (!Zotero.Reader) return { text: null, info: "no reader API" };
+		let win = Zotero.getMainWindow();
+		let selectedID = win?.Zotero_Tabs?.selectedID;
+		if (!selectedID) return { text: null, info: "no tab selected" };
+		let reader = Zotero.Reader.getByTabID(selectedID);
+		if (!reader) return { text: null, info: "no PDF reader in tab" };
+		let iwin = reader._iframeWindow;
+		if (!iwin) return { text: null, info: "reader._iframeWindow is null" };
+		try {
+			let text = iwin.getSelection?.()?.toString?.()?.trim();
+			if (text) return { text, info: "ok" };
+			let n = iwin.frames?.length || 0;
+			for (let i = 0; i < n; i++) {
+				try {
+					text = iwin.frames[i]?.getSelection?.()?.toString?.()?.trim();
+					if (text) return { text, info: `ok (frame ${i})` };
+				}
+				catch (e) {}
+			}
+			return { text: null, info: `iwin ok, frames=${n}, no selection (may have been cleared on focus)` };
+		}
+		catch (e) {
+			return { text: null, info: `error: ${e.message}` };
+		}
+	},
+
 	async getAttachmentFullText(item) {
 		let cacheFile = Zotero.Fulltext.getItemCacheFile(item).path;
 		if (await IOUtils.exists(cacheFile)) {
@@ -137,12 +164,17 @@ LLMChatPane = {
 		return "";
 	},
 
-	async buildPromptWithActivePDFContext(userPrompt) {
+	async buildPromptWithActivePDFContext(userPrompt, selectedText = null) {
 		let item = this.getActiveReaderAttachment();
+
 		if (!item || !item.isPDFAttachment()) {
+			let parts = [];
+			if (selectedText) parts.push("<SELECTION_CONTEXT>", selectedText, "</SELECTION_CONTEXT>");
+			parts.push(this._systemPrompt, userPrompt);
 			return {
-				prompt: this._systemPrompt + "\n\n" + userPrompt,
+				prompt: parts.join("\n"),
 				contextInfo: null,
+				selectedText,
 			};
 		}
 
@@ -154,6 +186,7 @@ LLMChatPane = {
 					title: item.getField("title") || item.libraryKey,
 					missingText: true,
 				},
+				selectedText,
 			};
 		}
 
@@ -161,29 +194,26 @@ LLMChatPane = {
 		let context = truncated ? text.slice(0, this.maxPDFContextChars) : text;
 		let title = item.getField("title") || item.libraryKey;
 
+		let parts = [
+			"You are answering a question about the currently open PDF in Zotero.",
+			"Use the PDF context below when it is relevant. If the answer is not supported by the PDF context, say so.",
+			`PDF title: ${title}`,
+			truncated ? `PDF context note: text was truncated to the first ${this.maxPDFContextChars} characters.` : "",
+			"<PDF_CONTEXT>",
+			context,
+			"</PDF_CONTEXT>",
+		];
+		if (selectedText) parts.push("<SELECTION_CONTEXT>", selectedText, "</SELECTION_CONTEXT>");
+		parts.push(this._systemPrompt, "<USER_QUESTION>", userPrompt, "</USER_QUESTION>");
+
 		return {
-			prompt: [
-				"You are answering a question about the currently open PDF in Zotero.",
-				"Use the PDF context below when it is relevant. If the answer is not supported by the PDF context, say so.",
-				"",
-				`PDF title: ${title}`,
-				truncated ? `PDF context note: text was truncated to the first ${this.maxPDFContextChars} characters.` : "",
-				"",
-				"<PDF_CONTEXT>",
-				context,
-				"</PDF_CONTEXT>",
-				"",
-				this._systemPrompt,
-				"",
-				"<USER_QUESTION>",
-				userPrompt,
-				"</USER_QUESTION>",
-			].filter(line => line !== "").join("\n"),
+			prompt: parts.filter(line => line !== "").join("\n"),
 			contextInfo: {
 				title,
 				charCount: text.length,
 				truncated,
 			},
+			selectedText,
 		};
 	},
 
@@ -301,6 +331,12 @@ LLMChatPane = {
 				buttonRow.className = "llm-button-row";
 				buttonRow.append(submitButton, stopButton);
 
+				let capturedSelection = null;
+				input.addEventListener("focus", () => {
+					let { text } = this.getReaderSelection();
+					if (text) capturedSelection = text;
+				});
+
 				let cancelStream = null;
 				stopButton.addEventListener("click", () => cancelStream?.());
 
@@ -350,10 +386,16 @@ LLMChatPane = {
 					submitButton.disabled = true;
 
 					try {
-						let { prompt: modelPrompt, contextInfo } = await this.buildPromptWithActivePDFContext(prompt);
+						let { text: liveText, info: selectionInfo } = this.getReaderSelection();
+						let selectedText = liveText || capturedSelection;
+						capturedSelection = null;
+						let { prompt: modelPrompt, contextInfo } = await this.buildPromptWithActivePDFContext(prompt, selectedText);
+						let selectionLine = selectedText
+							? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
+							: `Selected Text: (none — ${selectionInfo})`;
 						let visiblePrompt = contextInfo
-							? `PDF: ${contextInfo.title}\n\n${prompt}`
-							: `PDF: (none)\n\n${prompt}`;
+							? `${selectionLine}\nPDF: ${contextInfo.title}\n\n${prompt}`
+							: `${selectionLine}\nPDF: (none)\n\n${prompt}`;
 						appendMessage("You", visiblePrompt);
 
 						if (contextInfo?.missingText) {

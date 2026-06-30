@@ -9,9 +9,16 @@ LLMChatPane = {
 	_css: null,
 	_systemPrompt: [
 		"You are a helpful research assistant.",
-		"Always express mathematical formulas and equations using LaTeX notation:",
-		"use $<formula>$ for inline math and $$<formula>$$ for display math, ",
-		"where <formula> is the mathematical formula to be returned."
+		"Always express mathematical formulas and equations using LaTeX notation.",
+		"Wrap every mathematical formula in latex notation as $<formula>$.",
+		"For display math, you MUST wrap the formula in double dollar signs: $$<formula>$$. The opening $$ and closing $$ are mandatory.",
+		"Always format tables as display math: $$\\begin{array}{|c|c|}\\hline ... \\\\\\hline\\end{array}$$.",
+		"The opening $$ and closing $$ around \\begin{array} are mandatory. Never use \\begin{tabular}.",
+		"When citing a specific passage from the PDF, make it a clickable link so the reader can jump to it.",
+		"Format: [short label](<find:exact phrase>), where exact phrase is 3–8 consecutive words copied VERBATIM from the <PDF_CONTEXT> block — never paraphrase or invent text.",
+		"The link performs a literal text search, so even one changed word will break it. Shorter phrases are more reliable than long ones.",
+		"The angle brackets around find: are mandatory.",
+		"Example — if the PDF contains 'error-prone DNA polymerases to increase', write: [mutagenesis mechanism](<find:error-prone DNA polymerases to increase>).",
 	].join(" "),
 
 	init({ id, version, rootURI }) {
@@ -204,6 +211,32 @@ LLMChatPane = {
 		}
 	},
 
+	navigateToText(query) {
+		if (!Zotero.Reader) return;
+		let win = Zotero.getMainWindow();
+		let selectedID = win?.Zotero_Tabs?.selectedID;
+		if (!selectedID) return;
+		let reader = Zotero.Reader.getByTabID(selectedID);
+		if (!reader) return;
+		let iwin = reader._iframeWindow;
+		if (!iwin) return;
+		let fc = iwin.wrappedJSObject?._reader?._primaryView?._findController;
+		if (!fc) {
+			this.log("navigateToText: _findController not found");
+			return;
+		}
+		let params = Components.utils.cloneInto({
+			type: "find",
+			query,
+			phraseSearch: true,
+			caseSensitive: false,
+			entireWord: false,
+			highlightAll: false,
+			findPrevious: false,
+		}, iwin);
+		fc.find(params);
+	},
+
 	async getAttachmentFullText(item) {
 		let cacheFile = Zotero.Fulltext.getItemCacheFile(item).path;
 		if (await IOUtils.exists(cacheFile)) {
@@ -336,7 +369,16 @@ LLMChatPane = {
 
 	_renderMarkdown(text) {
 		if (typeof marked === "undefined") return null;
-		return marked.parse(text);
+		// Convert [label](<find:query>) to HTML anchors before marked parses,
+		// so spaces and special chars in the query don't break markdown link parsing.
+		let processed = text.replace(
+			/\[([^\]]+)\]\(<find:([^>]+)>\)/g,
+			(_, label, query) => {
+				let escaped = query.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+				return `<a class="llm-find-link" data-query="${escaped}">${label}</a>`;
+			}
+		);
+		return marked.parse(processed);
 	},
 
 	registerItemPane() {
@@ -493,6 +535,12 @@ LLMChatPane = {
 								let rendered = doc.createElement("div");
 								rendered.className = "llm-markdown";
 								rendered.innerHTML = html;
+								rendered.addEventListener("click", (e) => {
+									let anchor = e.target.closest(".llm-find-link");
+									if (!anchor) return;
+									e.preventDefault();
+									this.navigateToText(anchor.dataset.query);
+								});
 								reply.replaceWith(rendered);
 							}
 						}

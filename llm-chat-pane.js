@@ -29,23 +29,65 @@ LLMChatPane = {
 		return model;
 	},
 
-	async submitToOllama(prompt) {
+	async streamOllama(prompt, onToken) {
 		let model = await this.getOllamaModel();
-		let response = await Zotero.HTTP.request("POST", "http://127.0.0.1:11434/api/generate", {
+		let response = await fetch("http://127.0.0.1:11434/api/generate", {
+			method: "POST",
 			body: JSON.stringify({
 				model,
 				prompt,
-				stream: false,
+				stream: true,
 			}),
 			headers: {
 				"Content-Type": "application/json",
 			},
-			timeout: 120000,
 		});
-		let data = JSON.parse(response.responseText);
+
+		if (!response.ok) {
+			throw new Error(`Ollama returned HTTP ${response.status}`);
+		}
+
+		let reader = response.body.getReader();
+		let decoder = new TextDecoder();
+		let buffer = "";
+		let text = "";
+
+		while (true) {
+			let { value, done } = await reader.read();
+			if (done) break;
+
+			buffer += decoder.decode(value, { stream: true });
+			let lines = buffer.split("\n");
+			buffer = lines.pop();
+
+			for (let line of lines) {
+				if (!line.trim()) continue;
+				let data = JSON.parse(line);
+				if (data.error) {
+					throw new Error(data.error);
+				}
+				if (data.response) {
+					text += data.response;
+					onToken(data.response);
+				}
+			}
+		}
+
+		buffer += decoder.decode();
+		if (buffer.trim()) {
+			let data = JSON.parse(buffer);
+			if (data.error) {
+				throw new Error(data.error);
+			}
+			if (data.response) {
+				text += data.response;
+				onToken(data.response);
+			}
+		}
+
 		return {
 			model,
-			text: data.response || "",
+			text,
 		};
 	},
 
@@ -154,8 +196,14 @@ LLMChatPane = {
 
 					try {
 						this.log(`Submitting prompt to Ollama: ${prompt}`);
-						let result = await this.submitToOllama(prompt);
-						reply.textContent = result.text || "(No response)";
+						reply.textContent = "";
+						let result = await this.streamOllama(prompt, (token) => {
+							reply.textContent += token;
+							reply.parentElement.scrollIntoView({ block: "nearest" });
+						});
+						if (!result.text) {
+							reply.textContent = "(No response)";
+						}
 						this.log(`Received response from Ollama model ${result.model}`);
 					}
 					catch (e) {

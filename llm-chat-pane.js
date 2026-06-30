@@ -5,6 +5,7 @@ LLMChatPane = {
 	initialized: false,
 	paneID: null,
 	maxPDFContextChars: 60000,
+	maxPageContextChars: 5000,
 	_css: null,
 	_systemPrompt: [
 		"You are a helpful research assistant.",
@@ -148,6 +149,61 @@ LLMChatPane = {
 		}
 	},
 
+	async getReaderPageText() {
+		if (!Zotero.Reader) return { text: null, info: "no reader API" };
+		let win = Zotero.getMainWindow();
+		let selectedID = win?.Zotero_Tabs?.selectedID;
+		if (!selectedID) return { text: null, info: "no tab selected" };
+		let reader = Zotero.Reader.getByTabID(selectedID);
+		if (!reader) return { text: null, info: "no PDF reader in tab" };
+		let iwin = reader._iframeWindow;
+		if (!iwin) return { text: null, info: "no _iframeWindow" };
+		try {
+			// Recursively find the window that actually contains the PDF text layers
+			let pdfWin = null;
+			let findPDFWin = (w) => {
+				try {
+					if (w?.document?.querySelector('.textLayer')) { pdfWin = w; return; }
+					for (let i = 0; i < (w?.frames?.length || 0); i++) findPDFWin(w.frames[i]);
+				}
+				catch (e) {}
+			};
+			findPDFWin(iwin);
+			if (!pdfWin) return { text: null, info: "no .textLayer in any frame" };
+
+			// Get current page number — search same frame hierarchy for PDFViewerApplication
+			let pageNum = null;
+			let findPageNum = (w) => {
+				try {
+					let app = w?.wrappedJSObject?.PDFViewerApplication || w?.PDFViewerApplication;
+					if (app?.page) { pageNum = app.page; return; }
+					for (let i = 0; i < (w?.frames?.length || 0); i++) findPageNum(w.frames[i]);
+				}
+				catch (e) {}
+			};
+			findPageNum(iwin);
+
+			let doc = pdfWin.document;
+			let textLayer = pageNum
+				? (doc.querySelector(`.page[data-page-number="${pageNum}"] .textLayer`)
+					|| doc.querySelector(`[data-page-number="${pageNum}"] .textLayer`)
+					|| doc.querySelector(`#pageContainer${pageNum} .textLayer`))
+				: null;
+			// Fall back to any visible text layer if page number unknown
+			if (!textLayer) textLayer = doc.querySelector('.textLayer');
+			if (!textLayer) return { text: null, info: `pdfWin found but no textLayer for page ${pageNum}` };
+
+			let text = textLayer.textContent?.trim();
+			if (text && text.length > this.maxPageContextChars) {
+				text = text.slice(0, this.maxPageContextChars);
+			}
+			return { text: text || null, pageNum, info: `page ${pageNum ?? "?"}` };
+		}
+		catch (e) {
+			return { text: null, info: `error: ${e.message}` };
+		}
+	},
+
 	async getAttachmentFullText(item) {
 		let cacheFile = Zotero.Fulltext.getItemCacheFile(item).path;
 		if (await IOUtils.exists(cacheFile)) {
@@ -164,11 +220,12 @@ LLMChatPane = {
 		return "";
 	},
 
-	async buildPromptWithActivePDFContext(userPrompt, selectedText = null) {
+	async buildPromptWithActivePDFContext(userPrompt, selectedText = null, pageText = null) {
 		let item = this.getActiveReaderAttachment();
 
 		if (!item || !item.isPDFAttachment()) {
 			let parts = [];
+			if (pageText) parts.push("<PAGE_CONTEXT>", pageText, "</PAGE_CONTEXT>");
 			if (selectedText) parts.push("<SELECTION_CONTEXT>", selectedText, "</SELECTION_CONTEXT>");
 			parts.push(this._systemPrompt, userPrompt);
 			return {
@@ -203,6 +260,7 @@ LLMChatPane = {
 			context,
 			"</PDF_CONTEXT>",
 		];
+		if (pageText) parts.push("<PAGE_CONTEXT>", pageText, "</PAGE_CONTEXT>");
 		if (selectedText) parts.push("<SELECTION_CONTEXT>", selectedText, "</SELECTION_CONTEXT>");
 		parts.push(this._systemPrompt, "<USER_QUESTION>", userPrompt, "</USER_QUESTION>");
 
@@ -389,13 +447,17 @@ LLMChatPane = {
 						let { text: liveText, info: selectionInfo } = this.getReaderSelection();
 						let selectedText = liveText || capturedSelection;
 						capturedSelection = null;
-						let { prompt: modelPrompt, contextInfo } = await this.buildPromptWithActivePDFContext(prompt, selectedText);
+						let { text: pageText, pageNum, info: pageInfo } = await this.getReaderPageText();
+						let { prompt: modelPrompt, contextInfo } = await this.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
 						let selectionLine = selectedText
 							? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
 							: `Selected Text: (none — ${selectionInfo})`;
+						let pageLine = pageText
+							? `Page Context: page ${pageNum}`
+							: `Page Context: (none — ${pageInfo})`;
 						let visiblePrompt = contextInfo
-							? `${selectionLine}\nPDF: ${contextInfo.title}\n\n${prompt}`
-							: `${selectionLine}\nPDF: (none)\n\n${prompt}`;
+							? `${selectionLine}\n${pageLine}\nPDF: ${contextInfo.title}\n\n${prompt}`
+							: `${selectionLine}\n${pageLine}\nPDF: (none)\n\n${prompt}`;
 						appendMessage("You", visiblePrompt);
 
 						if (contextInfo?.missingText) {

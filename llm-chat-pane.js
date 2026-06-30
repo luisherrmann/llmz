@@ -277,61 +277,38 @@ LLMChatPane = {
 				if (section && scrollContainer) {
 					section.style.minHeight = `${scrollContainer.clientHeight}px`;
 				}
-				body.style.display = "flex";
-				body.style.flex = "1";
+				body.classList.add("llm-body");
 
 				let container = doc.createElement("div");
-				container.style.display = "flex";
-				container.style.flexDirection = "column";
-				container.style.gap = "8px";
-				container.style.boxSizing = "border-box";
-				container.style.flex = "1";
-				container.style.minHeight = "100%";
-				container.style.padding = "8px 0 16px";
+				container.className = "llm-container";
 
 				let greeting = doc.createElement("div");
 				greeting.textContent = "Hello World!";
 
 				let input = doc.createElement("textarea");
 				input.placeholder = "Type here...";
-				input.style.boxSizing = "border-box";
-				input.style.minHeight = "88px";
-				input.style.width = "100%";
-				input.style.resize = "vertical";
+				input.className = "llm-input";
 
 				let submitButton = doc.createElement("button");
 				submitButton.textContent = "Submit";
-				submitButton.style.alignSelf = "flex-start";
+				submitButton.className = "llm-submit";
 
 				let messageList = doc.createElement("div");
-				messageList.style.display = "flex";
-				messageList.style.flexDirection = "column";
-				messageList.style.gap = "8px";
-				messageList.style.flex = "1";
-				messageList.style.minHeight = "0";
-				messageList.style.overflow = "auto";
+				messageList.className = "llm-message-list";
 
 				let controls = doc.createElement("div");
-				controls.style.display = "flex";
-				controls.style.flexDirection = "column";
-				controls.style.gap = "8px";
-				controls.style.flex = "0 0 auto";
+				controls.className = "llm-controls";
 
 				let appendMessage = (role, text) => {
 					let message = doc.createElement("div");
-					message.style.boxSizing = "border-box";
-					message.style.padding = "8px";
-					message.style.wordBreak = "break-word";
+					message.className = "llm-message";
 
 					let label = doc.createElement("div");
-					label.style.fontWeight = "600";
-					label.style.marginBottom = "4px";
+					label.className = "llm-message-label";
 					label.textContent = role;
 
 					let content = doc.createElement("pre");
-					content.style.margin = "0";
-					content.style.whiteSpace = "pre-wrap";
-					content.style.fontFamily = "inherit";
+					content.className = "llm-message-content";
 					content.textContent = text;
 
 					message.append(label, content);

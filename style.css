@@ -1,3 +1,67 @@
+/* Panel body */
+.llm-body {
+	display: flex;
+	flex: 1;
+}
+
+/* Layout */
+.llm-container {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	box-sizing: border-box;
+	flex: 1;
+	min-height: 100%;
+	padding: 8px 0 16px;
+}
+
+.llm-message-list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+}
+
+.llm-controls {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	flex: 0 0 auto;
+}
+
+/* Messages */
+.llm-message {
+	box-sizing: border-box;
+	padding: 8px;
+	word-break: break-word;
+}
+
+.llm-message-label {
+	font-weight: 600;
+	margin-bottom: 4px;
+}
+
+.llm-message-content {
+	margin: 0;
+	white-space: pre-wrap;
+	font-family: inherit;
+}
+
+/* Input controls */
+.llm-input {
+	box-sizing: border-box;
+	min-height: 88px;
+	width: 100%;
+	resize: vertical;
+}
+
+.llm-submit {
+	align-self: flex-start;
+}
+
+/* Markdown output */
 .llm-markdown { line-height: 1.5; word-break: break-word; }
 .llm-markdown p { margin: 0 0 0.6em; }
 .llm-markdown p:last-child { margin-bottom: 0; }

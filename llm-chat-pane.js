@@ -110,28 +110,39 @@ LLMChatPane = {
 				messageList.style.flexDirection = "column";
 				messageList.style.gap = "8px";
 
-				let appendMessage = (text) => {
-					let message = doc.createElement("pre");
+				let appendMessage = (role, text) => {
+					let message = doc.createElement("div");
 					message.style.boxSizing = "border-box";
-					message.style.margin = "0";
 					message.style.padding = "8px";
-					message.style.whiteSpace = "pre-wrap";
 					message.style.wordBreak = "break-word";
-					message.textContent = text;
+
+					let label = doc.createElement("div");
+					label.style.fontWeight = "600";
+					label.style.marginBottom = "4px";
+					label.textContent = role;
+
+					let content = doc.createElement("pre");
+					content.style.margin = "0";
+					content.style.whiteSpace = "pre-wrap";
+					content.style.fontFamily = "inherit";
+					content.textContent = text;
+
+					message.append(label, content);
 					messageList.appendChild(message);
 					message.scrollIntoView({ block: "nearest" });
-					return message;
+					return content;
 				};
 
 				submitButton.addEventListener("click", async () => {
 					let prompt = input.value.trim();
 					if (!prompt) {
-						appendMessage("Enter a prompt first.");
+						appendMessage("System", "Enter a prompt first.");
 						return;
 					}
 
 					submitButton.disabled = true;
-					let reply = appendMessage("Waiting for Ollama...");
+					appendMessage("You", prompt);
+					let reply = appendMessage("Ollama", "Waiting for Ollama...");
 
 					try {
 						this.log(`Submitting prompt to Ollama: ${prompt}`);

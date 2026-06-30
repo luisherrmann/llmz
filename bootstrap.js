@@ -10,6 +10,8 @@ function uninstall() {}
 
 async function startup({ id, version, rootURI }) {
 	log("Starting 2.0");
+	Services.scriptloader.loadSubScript(rootURI + "vendor/marked.min.js");
+	Services.scriptloader.loadSubScript(rootURI + "vendor/highlight.min.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-chat-pane.js");
 	LLMChatPane.init({ id, version, rootURI });
 	await LLMChatPane.main();

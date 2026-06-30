@@ -5,6 +5,32 @@ LLMChatPane = {
 	initialized: false,
 	paneID: null,
 	maxPDFContextChars: 60000,
+	_hljsCss: null,
+
+	_markdownCss: `
+.llm-markdown { line-height: 1.5; word-break: break-word; }
+.llm-markdown p { margin: 0 0 0.6em; }
+.llm-markdown p:last-child { margin-bottom: 0; }
+.llm-markdown h1, .llm-markdown h2, .llm-markdown h3,
+.llm-markdown h4, .llm-markdown h5, .llm-markdown h6 {
+  margin: 0.8em 0 0.3em; font-weight: 600; line-height: 1.3;
+}
+.llm-markdown ul, .llm-markdown ol { margin: 0 0 0.6em; padding-left: 1.4em; }
+.llm-markdown li { margin-bottom: 0.2em; }
+.llm-markdown code {
+  font-family: monospace; font-size: 0.9em;
+  background: rgba(128,128,128,0.15); padding: 0.1em 0.3em; border-radius: 3px;
+}
+.llm-markdown pre { margin: 0.5em 0; border-radius: 6px; overflow: auto; }
+.llm-markdown pre code { background: none; padding: 0; border-radius: 0; font-size: 0.85em; }
+.llm-markdown blockquote {
+  margin: 0.5em 0; padding-left: 0.8em;
+  border-left: 3px solid rgba(128,128,128,0.4); opacity: 0.8;
+}
+.llm-markdown strong { font-weight: 700; }
+.llm-markdown em { font-style: italic; }
+.llm-markdown hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 0.8em 0; }
+`,
 
 	init({ id, version, rootURI }) {
 		if (this.initialized) return;
@@ -179,6 +205,29 @@ LLMChatPane = {
 	async main() {
 		this.registerItemPane();
 		this.log("Hello World pane loaded");
+		this._configureMarkdown();
+		try {
+			this._hljsCss = await Zotero.File.getContentsFromURL(this.rootURI + "vendor/atom-one-dark.min.css");
+		}
+		catch (e) {
+			this.log("Failed to load hljs CSS: " + e.message);
+		}
+	},
+
+	_configureMarkdown() {
+		if (typeof marked === "undefined" || typeof hljs === "undefined") return;
+		marked.setOptions({
+			highlight(code, lang) {
+				let language = hljs.getLanguage(lang) ? lang : "plaintext";
+				return hljs.highlight(code, { language }).value;
+			},
+			langPrefix: "hljs language-",
+		});
+	},
+
+	_renderMarkdown(text) {
+		if (typeof marked === "undefined") return null;
+		return marked.parse(text);
 	},
 
 	registerItemPane() {
@@ -201,6 +250,9 @@ LLMChatPane = {
 			},
 			onRender: ({ doc, body }) => {
 				body.replaceChildren();
+				let style = doc.createElement("style");
+				style.textContent = (this._hljsCss || "") + this._markdownCss;
+				body.appendChild(style);
 				let section = body.closest("item-pane-custom-section");
 				let scrollContainer = body.closest(".zotero-view-item");
 				if (section && scrollContainer) {
@@ -307,6 +359,16 @@ LLMChatPane = {
 						});
 						if (!result.text) {
 							reply.textContent = "(No response)";
+						}
+						else {
+							let html = this._renderMarkdown(result.text);
+							if (html) {
+								let rendered = doc.createElement("div");
+								rendered.className = "llm-markdown";
+								rendered.innerHTML = html;
+								reply.replaceWith(rendered);
+								rendered.parentElement?.scrollIntoView({ block: "nearest" });
+							}
 						}
 						this.log(`Received response from Ollama model ${result.model}`);
 					}

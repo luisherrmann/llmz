@@ -144,7 +144,7 @@ LLMCitation = {
 						}
 					}
 					if (bestIdx >= 0) {
-						searchPhrase = index.sentences[bestIdx].split(/\s+/).slice(0, 8).join(" ");
+						searchPhrase = index.sentences[bestIdx];
 					}
 				}
 				catch (e) {

@@ -42,8 +42,22 @@ LLMChatPane = {
 			onRender: ({ doc, body }) => {
 				body.replaceChildren();
 				let container = doc.createElement("div");
+				container.style.display = "flex";
+				container.style.flexDirection = "column";
+				container.style.gap = "8px";
 				container.style.padding = "8px 0";
-				container.textContent = "Hello World!";
+
+				let greeting = doc.createElement("div");
+				greeting.textContent = "Hello World!";
+
+				let input = doc.createElement("textarea");
+				input.rows = 4;
+				input.placeholder = "Type here...";
+				input.style.boxSizing = "border-box";
+				input.style.width = "100%";
+				input.style.resize = "vertical";
+
+				container.append(greeting, input);
 				body.appendChild(container);
 			},
 		});

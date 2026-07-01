@@ -292,6 +292,7 @@ LLMChatPane = {
 		this.registerItemPane();
 		this.log("Hello World pane loaded");
 		this._configureMarkdown();
+		await LLMFigures.init(this.rootURI);
 		try {
 			let hljsCss = await Zotero.File.getContentsFromURL(this.rootURI + "vendor/atom-one-dark.min.css");
 			let markdownCss = await Zotero.File.getContentsFromURL(this.rootURI + "style.css");
@@ -477,6 +478,12 @@ LLMChatPane = {
 								return null;
 							})
 							: Promise.resolve(null);
+						let figurePromise = pdfItem
+							? LLMFigures.extractFigures(pdfItem).catch((e) => {
+								this.log(`extractFigures failed: ${e.message}`);
+								return { error: e.message };
+							})
+							: Promise.resolve(null);
 						let selectionLine = selectedText
 							? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
 							: `Selected Text: (none — ${selectionInfo})`;
@@ -499,6 +506,17 @@ LLMChatPane = {
 						}
 						else {
 							appendMessage("System", "No active PDF reader tab found. Asking without PDF context.");
+						}
+
+						let figures = await figurePromise;
+						if (figures === null) {
+							appendMessage("System", "Figure extraction: no PDF attached.");
+						}
+						else if (figures.error) {
+							appendMessage("System", `Figure extraction failed: ${figures.error}`);
+						}
+						else {
+							appendMessage("System", `Extracted ${figures.length} figure${figures.length === 1 ? "" : "s"} from PDF.`);
 						}
 
 						let reply = appendMessage("Ollama", "Waiting for Ollama...");

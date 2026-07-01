@@ -478,12 +478,11 @@ LLMChatPane = {
 								return null;
 							})
 							: Promise.resolve(null);
-						let figurePromise = pdfItem
-							? LLMFigures.getFigureIndex(pdfItem).catch((e) => {
+						if (pdfItem) {
+							LLMFigures.getFigureIndex(pdfItem).catch((e) => {
 								this.log(`getFigureIndex failed: ${e.message}`);
-								return { error: e.message };
-							})
-							: Promise.resolve(null);
+							});
+						}
 						let selectionLine = selectedText
 							? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
 							: `Selected Text: (none — ${selectionInfo})`;
@@ -506,23 +505,6 @@ LLMChatPane = {
 						}
 						else {
 							appendMessage("System", "No active PDF reader tab found. Asking without PDF context.");
-						}
-
-						let figureIndex = await figurePromise;
-						if (figureIndex === null) {
-							appendMessage("System", "Figure extraction: no PDF attached.");
-						}
-						else if (figureIndex.error) {
-							appendMessage("System", `Figure extraction failed: ${figureIndex.error}`);
-						}
-						else {
-							let { figures } = figureIndex;
-							let figureList = figures.map(f =>
-								`[p.${f.page_num}] ${f.label}: ${f.caption}`
-							).join("\n");
-							appendMessage("System",
-								`Extracted and embedded ${figures.length} figure${figures.length === 1 ? "" : "s"} from PDF:\n${figureList}`
-							);
 						}
 
 						let reply = appendMessage("Ollama", "Waiting for Ollama...");

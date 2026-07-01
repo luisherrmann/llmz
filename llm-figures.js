@@ -1,0 +1,162 @@
+LLMFigures = {
+	_scriptName: "extract_figures.py",
+	_embedScriptName: "embed_figures.py",
+	_venvMissing: false,
+	_indexCache: new Map(),
+
+	log(msg) {
+		Zotero.debug("LLM Chat Pane [Figures]: " + msg);
+	},
+
+	_pythonPath() {
+		return PathUtils.join(Zotero.DataDirectory.dir, "llm-venv", "bin", "python3");
+	},
+
+	_scriptPath(name) {
+		return PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts", name);
+	},
+
+	async init(rootURI) {
+		let pythonPath = this._pythonPath();
+		if (!await IOUtils.exists(pythonPath)) {
+			this._venvMissing = true;
+			this.log(`init: venv not found at ${pythonPath}`);
+			this.log("init: set it up with:");
+			this.log("  /opt/homebrew/bin/python3 -m venv ~/Zotero/llm-venv");
+			this.log("  ~/Zotero/llm-venv/bin/pip install pymupdf transformers torch Pillow einops");
+		}
+		else {
+			this._venvMissing = false;
+			this.log(`init: venv found at ${pythonPath}`);
+		}
+
+		try {
+			let dir = PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts");
+			await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+			for (let name of [this._scriptName, this._embedScriptName]) {
+				let src = await Zotero.File.getContentsFromURL(rootURI + "scripts/" + name);
+				await IOUtils.writeUTF8(this._scriptPath(name), src);
+				this.log(`init: deployed ${name}`);
+			}
+		}
+		catch (e) {
+			this.log(`init: failed to deploy scripts: ${e.message}`);
+		}
+	},
+
+	// Run a bundled Python script. scriptArgs are passed after the script path;
+	// the last arg is assumed to be the output path and is used as the stderr file base.
+	async _runPython(scriptName, ...scriptArgs) {
+		let scriptPath = this._scriptPath(scriptName);
+		let pythonPath = this._pythonPath();
+		let stderrPath = scriptArgs[scriptArgs.length - 1] + ".err";
+		let quotedArgs = scriptArgs.map(a => JSON.stringify(a)).join(" ");
+		let cmd = `${JSON.stringify(pythonPath)} ${JSON.stringify(scriptPath)} ${quotedArgs} 2>${JSON.stringify(stderrPath)}`;
+
+		this.log(`_runPython: ${scriptName}`);
+		let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
+		let proc = await Subprocess.call({ command: "/bin/sh", arguments: ["-c", cmd] });
+		let { exitCode } = await proc.wait();
+
+		let stderr = "";
+		try { stderr = (await IOUtils.readUTF8(stderrPath)).trim(); } catch (e) {}
+		IOUtils.remove(stderrPath).catch(() => {});
+		if (stderr) this.log(`${scriptName} stderr: ${stderr}`);
+
+		if (exitCode !== 0) {
+			throw new Error(`${scriptName} failed (exit ${exitCode}): ${stderr || "(no stderr)"}`);
+		}
+	},
+
+	async _cacheDir() {
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "llm-figure-cache");
+		await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+		return dir;
+	},
+
+	async _loadDiskCache(item) {
+		try {
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			if (!await IOUtils.exists(path)) return null;
+			let index = JSON.parse(await IOUtils.readUTF8(path));
+			this.log(`_loadDiskCache: loaded ${index.figures.length} figures for item ${item.id}`);
+			return index;
+		}
+		catch (e) {
+			this.log(`_loadDiskCache: failed: ${e.message}`);
+			return null;
+		}
+	},
+
+	async _saveDiskCache(item, index) {
+		try {
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			await IOUtils.writeUTF8(path, JSON.stringify(index));
+			this.log(`_saveDiskCache: saved ${index.figures.length} figures for item ${item.id}`);
+		}
+		catch (e) {
+			this.log(`_saveDiskCache: failed: ${e.message}`);
+		}
+	},
+
+	// Extract figures from PDF, returning raw entries with image_data.
+	async _extractRaw(item) {
+		let pdfPath = item.getFilePath();
+		if (!pdfPath) throw new Error("Item has no attached file path");
+		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts", `figures_${item.id}.json`);
+		await this._runPython(this._scriptName, pdfPath, outputPath);
+		let figures = JSON.parse(await IOUtils.readUTF8(outputPath));
+		IOUtils.remove(outputPath).catch(() => {});
+		this.log(`_extractRaw: extracted ${figures.length} figures`);
+		return figures;
+	},
+
+	// Embed figures using nomic-embed-vision-v1.5.
+	// Returns entries with embedding vector, image_data stripped.
+	async _embedRaw(item, figures) {
+		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts");
+		let inputPath = PathUtils.join(scriptsDir, `embed_in_${item.id}.json`);
+		let outputPath = PathUtils.join(scriptsDir, `embed_out_${item.id}.json`);
+		await IOUtils.writeUTF8(inputPath, JSON.stringify(figures));
+		try {
+			await this._runPython(this._embedScriptName, inputPath, outputPath);
+		}
+		finally {
+			IOUtils.remove(inputPath).catch(() => {});
+		}
+		let embedded = JSON.parse(await IOUtils.readUTF8(outputPath));
+		IOUtils.remove(outputPath).catch(() => {});
+		this.log(`_embedRaw: embedded ${embedded.length} figures`);
+		return embedded;
+	},
+
+	// Returns the figure index for an item, using memory/disk cache where possible.
+	// Index shape: { figures: [{ page_num, figure_num, label, caption, embedding }] }
+	async getFigureIndex(item) {
+		if (this._venvMissing) {
+			throw new Error(
+				"Python venv not found. Set it up with:\n"
+				+ "  /opt/homebrew/bin/python3 -m venv ~/Zotero/llm-venv\n"
+				+ "  ~/Zotero/llm-venv/bin/pip install pymupdf transformers torch Pillow einops"
+			);
+		}
+
+		if (this._indexCache.has(item.id)) {
+			this.log(`getFigureIndex: memory cache hit for item ${item.id}`);
+			return this._indexCache.get(item.id);
+		}
+
+		let cached = await this._loadDiskCache(item);
+		if (cached) {
+			this._indexCache.set(item.id, cached);
+			return cached;
+		}
+
+		let figures = await this._extractRaw(item);
+		let embedded = figures.length ? await this._embedRaw(item, figures) : [];
+		let index = { figures: embedded };
+		this._indexCache.set(item.id, index);
+		await this._saveDiskCache(item, index);
+		return index;
+	},
+};

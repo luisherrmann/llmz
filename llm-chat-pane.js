@@ -516,7 +516,12 @@ LLMChatPane = {
 							appendMessage("System", `Figure extraction failed: ${figures.error}`);
 						}
 						else {
-							appendMessage("System", `Extracted ${figures.length} figure${figures.length === 1 ? "" : "s"} from PDF.`);
+							let figureList = figures.map(f =>
+								`[p.${f.page_num}] ${f.label}: ${f.caption}`
+							).join("\n");
+							appendMessage("System",
+								`Extracted ${figures.length} figure${figures.length === 1 ? "" : "s"} from PDF:\n${figureList}`
+							);
 						}
 
 						let reply = appendMessage("Ollama", "Waiting for Ollama...");

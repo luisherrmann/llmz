@@ -65,6 +65,11 @@
 	align-self: flex-start;
 }
 
+.llm-provider-select {
+	align-self: flex-start;
+	margin-right: auto;
+}
+
 /* Markdown output */
 .llm-markdown { line-height: 1.5; word-break: break-word; user-select: text; }
 .llm-markdown p { margin: 0 0 0.6em; }

@@ -7,6 +7,7 @@ LLMChatPane = {
 	maxPDFContextChars: 60000,
 	maxPageContextChars: 5000,
 	_css: null,
+	_provider: "ollama",
 	_systemPrompt: [
 		"You are a helpful research assistant.",
 		"Always express mathematical formulas and equations using LaTeX notation.",
@@ -107,6 +108,86 @@ LLMChatPane = {
 			model,
 			text,
 		};
+	},
+
+	async getLMStudioModel() {
+		let response = await Zotero.HTTP.request("GET", "http://127.0.0.1:1234/v1/models", {
+			timeout: 10000,
+		});
+		let data = JSON.parse(response.responseText);
+		let model = (data.data || []).find(m => !/embed/i.test(m.id))?.id;
+		if (!model) {
+			throw new Error("No chat model found. Load one in LM Studio first.");
+		}
+		return model;
+	},
+
+	async streamLMStudio(prompt, onToken, { onReady } = {}) {
+		let model = await this.getLMStudioModel();
+		let response = await fetch("http://127.0.0.1:1234/v1/chat/completions", {
+			method: "POST",
+			body: JSON.stringify({
+				model,
+				messages: [{ role: "user", content: prompt }],
+				stream: true,
+			}),
+			headers: {
+				"Content-Type": "application/json",
+			},
+		});
+
+		if (!response.ok) {
+			throw new Error(`LM Studio returned HTTP ${response.status}`);
+		}
+
+		let reader = response.body.getReader();
+		onReady?.(() => reader.cancel());
+
+		let decoder = new TextDecoder();
+		let buffer = "";
+		let text = "";
+
+		let processLine = (line) => {
+			line = line.trim();
+			if (!line.startsWith("data:")) return;
+			let payload = line.slice(5).trim();
+			if (!payload || payload === "[DONE]") return;
+			let data = JSON.parse(payload);
+			if (data.error) {
+				throw new Error(data.error.message || JSON.stringify(data.error));
+			}
+			let delta = data.choices?.[0]?.delta?.content;
+			if (delta) {
+				text += delta;
+				onToken(delta);
+			}
+		};
+
+		while (true) {
+			let { value, done } = await reader.read();
+			if (done) break;
+
+			buffer += decoder.decode(value, { stream: true });
+			let lines = buffer.split("\n");
+			buffer = lines.pop();
+
+			for (let line of lines) processLine(line);
+		}
+
+		buffer += decoder.decode();
+		if (buffer.trim()) processLine(buffer);
+
+		return {
+			model,
+			text,
+		};
+	},
+
+	async streamModel(prompt, onToken, opts) {
+		if (this._provider === "lmstudio") {
+			return this.streamLMStudio(prompt, onToken, opts);
+		}
+		return this.streamOllama(prompt, onToken, opts);
 	},
 
 	getActiveReaderAttachment() {
@@ -293,6 +374,7 @@ LLMChatPane = {
 		this.log("Hello World pane loaded");
 		this._configureMarkdown();
 		await LLMFigures.init(this.rootURI);
+		await LLMTables.init(this.rootURI);
 		try {
 			let hljsCss = await Zotero.File.getContentsFromURL(this.rootURI + "vendor/atom-one-dark.min.css");
 			let markdownCss = await Zotero.File.getContentsFromURL(this.rootURI + "style.css");
@@ -356,7 +438,7 @@ LLMChatPane = {
 			/\[([^\]]+)\]\(<find:([^>]+)>\)/g,
 			(_, label, query) => {
 				let escaped = query.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-				return `<a class="llm-find-link" data-query="${escaped}">${label}</a>`;
+				return `<a class="llm-find-link" data-query="${escaped}" title="${escaped}">${label}</a>`;
 			}
 		);
 		return marked.parse(processed);
@@ -408,9 +490,27 @@ LLMChatPane = {
 				stopButton.disabled = true;
 				stopButton.title = "Stop (⌘ ⌫)";
 
+				let providerSelect = doc.createElement("select");
+				providerSelect.className = "llm-provider-select";
+				providerSelect.title = "Model provider";
+				let providerOptions = [
+					{ value: "ollama", label: "Ollama" },
+					{ value: "lmstudio", label: "LM Studio" },
+				];
+				for (let { value, label } of providerOptions) {
+					let option = doc.createElement("option");
+					option.value = value;
+					option.textContent = label;
+					providerSelect.appendChild(option);
+				}
+				providerSelect.value = this._provider;
+				providerSelect.addEventListener("change", () => {
+					this._provider = providerSelect.value;
+				});
+
 				let buttonRow = doc.createElement("div");
 				buttonRow.className = "llm-button-row";
-				buttonRow.append(submitButton, stopButton);
+				buttonRow.append(providerSelect, submitButton, stopButton);
 
 				let capturedSelection = null;
 				input.addEventListener("focus", () => {
@@ -465,6 +565,7 @@ LLMChatPane = {
 					}
 
 					submitButton.disabled = true;
+					let providerLabel = this._provider === "lmstudio" ? "LM Studio" : "Ollama";
 
 					try {
 						let { text: liveText, info: selectionInfo } = this.getReaderSelection();
@@ -476,6 +577,12 @@ LLMChatPane = {
 							? LLMCitation.getCitationIndex(pdfItem, fullText).catch((e) => {
 								this.log(`getCitationIndex failed: ${e.message}`);
 								return null;
+							})
+							: Promise.resolve(null);
+						let tableIndexPromise = pdfItem
+							? LLMTables.getTableIndex(pdfItem).catch((e) => {
+								this.log(`getTableIndex failed: ${e.message}`);
+								return { error: e.message };
 							})
 							: Promise.resolve(null);
 						if (pdfItem) {
@@ -507,10 +614,32 @@ LLMChatPane = {
 							appendMessage("System", "No active PDF reader tab found. Asking without PDF context.");
 						}
 
-						let reply = appendMessage("Ollama", "Waiting for Ollama...");
-						this.log(`Submitting prompt to Ollama: ${prompt}`);
+						let tableIndex = await tableIndexPromise;
+						if (tableIndex === null) {
+							appendMessage("System", "Table extraction: no PDF attached.");
+						}
+						else if (tableIndex.error) {
+							appendMessage("System", `Table extraction failed: ${tableIndex.error}`);
+						}
+						else {
+							let { tables } = tableIndex;
+							let tableList = tables.map(t => {
+								let [header, ...rows] = t.data;
+								let cols = header?.length || 0;
+								let sep = header ? "| " + header.map(() => "---").join(" | ") + " |" : "";
+								let mdHeader = header ? "| " + header.join(" | ") + " |" : "";
+								let mdRows = rows.map(r => "| " + r.join(" | ") + " |").join("\n");
+								return `**[p.${t.page_num}] ${t.label}:** ${t.caption}\n${mdHeader}\n${sep}\n${mdRows}`;
+							}).join("\n\n");
+							appendMessage("System",
+								`Extracted ${tables.length} table${tables.length === 1 ? "" : "s"} from PDF:\n\n${tableList}`
+							);
+						}
+
+						let reply = appendMessage(providerLabel, `Waiting for ${providerLabel}...`);
+						this.log(`Submitting prompt to ${providerLabel}: ${prompt}`);
 						reply.textContent = "";
-						let result = await this.streamOllama(modelPrompt, (token) => {
+						let result = await this.streamModel(modelPrompt, (token) => {
 							reply.textContent += token;
 						}, {
 							onReady(cancelFn) {
@@ -538,11 +667,11 @@ LLMChatPane = {
 								reply.replaceWith(rendered);
 							}
 						}
-						this.log(`Received response from Ollama model ${result.model}`);
+						this.log(`Received response from ${providerLabel} model ${result.model}`);
 					}
 					catch (e) {
-						appendMessage("Ollama", `Ollama request failed: ${e.message}`);
-						this.log(`Ollama request failed: ${e.message}`);
+						appendMessage(providerLabel, `${providerLabel} request failed: ${e.message}`);
+						this.log(`${providerLabel} request failed: ${e.message}`);
 					}
 					finally {
 						submitButton.disabled = false;

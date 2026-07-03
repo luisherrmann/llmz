@@ -749,6 +749,49 @@ LLMChatPane = {
 				modelRow.className = "llm-model-row";
 				modelRow.append(providerSelect, modelSelect, modelRefreshButton);
 
+				let makeIntegerSetting = (labelText, get, set, { min = 1 } = {}) => {
+					let row = doc.createElement("label");
+					row.className = "llm-advanced-row";
+					let span = doc.createElement("span");
+					span.textContent = labelText;
+					let input = doc.createElement("input");
+					input.type = "number";
+					input.min = String(min);
+					input.step = "1";
+					input.value = get();
+					input.addEventListener("change", () => {
+						let value = parseInt(input.value, 10);
+						if (Number.isInteger(value) && value >= min) {
+							set(value);
+						}
+						else {
+							input.value = get();
+						}
+					});
+					row.append(span, input);
+					return row;
+				};
+
+				let advancedDetails = doc.createElement("details");
+				advancedDetails.className = "llm-advanced-details";
+				let advancedSummary = doc.createElement("summary");
+				advancedSummary.textContent = "Advanced";
+				let advancedBody = doc.createElement("div");
+				advancedBody.className = "llm-advanced-body";
+				advancedBody.append(
+					makeIntegerSetting(
+						"Max PDF context (characters)",
+						() => this.maxPDFContextChars,
+						(value) => { this.maxPDFContextChars = value; }
+					),
+					makeIntegerSetting(
+						"Chunk context top-K",
+						() => this.chunkContextTopK,
+						(value) => { this.chunkContextTopK = value; }
+					)
+				);
+				advancedDetails.append(advancedSummary, advancedBody);
+
 				let buttonRow = doc.createElement("div");
 				buttonRow.className = "llm-button-row";
 				buttonRow.append(submitButton, stopButton);
@@ -917,7 +960,7 @@ LLMChatPane = {
 					}
 				});
 
-				controls.append(modelRow, apiKeyRow, input, buttonRow);
+				controls.append(modelRow, apiKeyRow, advancedDetails, input, buttonRow);
 				container.append(controls, messageList);
 				body.appendChild(container);
 

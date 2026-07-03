@@ -55,11 +55,25 @@ LLMTables = {
 		return dir;
 	},
 
+	async _scriptFingerprint() {
+		try {
+			let stat = await IOUtils.stat(this._scriptPath(this._scriptName));
+			return `${stat.size}:${stat.lastModified}`;
+		}
+		catch (e) {
+			return null;
+		}
+	},
+
 	async _loadDiskCache(item) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
 			if (!await IOUtils.exists(path)) return null;
 			let index = JSON.parse(await IOUtils.readUTF8(path));
+			if (index.scriptFingerprint !== await this._scriptFingerprint()) {
+				this.log(`_loadDiskCache: stale (extract_tables.py changed) for item ${item.id}`);
+				return null;
+			}
 			this.log(`_loadDiskCache: loaded ${index.tables.length} tables for item ${item.id}`);
 			return index;
 		}
@@ -104,7 +118,7 @@ LLMTables = {
 		}
 
 		let tables = await this._extractRaw(item);
-		let index = { tables };
+		let index = { tables, scriptFingerprint: await this._scriptFingerprint() };
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
 		return index;

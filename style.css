@@ -94,6 +94,35 @@
 	width: 100%;
 }
 
+.llm-advanced-details {
+	font-size: 0.9em;
+}
+
+.llm-advanced-details summary {
+	cursor: pointer;
+	color: -moz-nativehyperlinktext;
+}
+
+.llm-advanced-body {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 6px;
+}
+
+.llm-advanced-row {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.llm-advanced-row input {
+	width: 90px;
+	box-sizing: border-box;
+}
+
 /* Markdown output */
 .llm-markdown { line-height: 1.5; word-break: break-word; user-select: text; }
 .llm-markdown p { margin: 0 0 0.6em; }

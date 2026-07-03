@@ -1,5 +1,7 @@
 LLMTables = {
 	_scriptName: "extract_tables.py",
+	_embedScriptName: "embed_tables.py",
+	_cacheVersion: 1,
 	_indexCache: new Map(),
 
 	log(msg) {
@@ -18,9 +20,11 @@ LLMTables = {
 		try {
 			let dir = PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts");
 			await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-			let src = await Zotero.File.getContentsFromURL(rootURI + "scripts/" + this._scriptName);
-			await IOUtils.writeUTF8(this._scriptPath(this._scriptName), src);
-			this.log(`init: deployed ${this._scriptName}`);
+			for (let name of [this._scriptName, this._embedScriptName]) {
+				let src = await Zotero.File.getContentsFromURL(rootURI + "scripts/" + name);
+				await IOUtils.writeUTF8(this._scriptPath(name), src);
+				this.log(`init: deployed ${name}`);
+			}
 		}
 		catch (e) {
 			this.log(`init: failed to deploy script: ${e.message}`);
@@ -57,8 +61,12 @@ LLMTables = {
 
 	async _scriptFingerprint() {
 		try {
-			let stat = await IOUtils.stat(this._scriptPath(this._scriptName));
-			return `${stat.size}:${stat.lastModified}`;
+			let parts = [`v${this._cacheVersion}`];
+			for (let name of [this._scriptName, this._embedScriptName]) {
+				let stat = await IOUtils.stat(this._scriptPath(name));
+				parts.push(`${stat.size}:${stat.lastModified}`);
+			}
+			return parts.join("|");
 		}
 		catch (e) {
 			return null;
@@ -105,6 +113,49 @@ LLMTables = {
 		return tables;
 	},
 
+	// Embeds each table's cropped image using nomic-embed-vision (image embedding).
+	async _embedRaw(item, tables) {
+		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts");
+		let inputPath = PathUtils.join(scriptsDir, `embed_in_${item.id}.json`);
+		let outputPath = PathUtils.join(scriptsDir, `embed_out_${item.id}.json`);
+		await IOUtils.writeUTF8(inputPath, JSON.stringify(tables));
+		try {
+			await this._runPython(this._embedScriptName, inputPath, outputPath);
+		}
+		finally {
+			IOUtils.remove(inputPath).catch(() => {});
+		}
+		let embedded = JSON.parse(await IOUtils.readUTF8(outputPath));
+		IOUtils.remove(outputPath).catch(() => {});
+		this.log(`_embedRaw: embedded ${embedded.length} tables`);
+		return embedded;
+	},
+
+	// Flattens extracted table rows into plain text for text-embedding, e.g.:
+	// "Header A | Header B\nrow1a | row1b\nrow2a | row2b"
+	_flattenTableData(data) {
+		return (data || []).map(row => row.join(" | ")).join("\n");
+	},
+
+	// Embeds each table's "label: caption" and its flattened cell content as text
+	// (nomic-embed-text), so a query can be matched against either via text-to-text
+	// similarity, alongside the image embedding from _embedRaw.
+	async _addTextEmbeddings(tables) {
+		if (!tables.length) return tables;
+		let textModel = await LLMCitation.getEmbeddingModel();
+		for (let tab of tables) {
+			try {
+				tab.captionEmbedding = await LLMCitation.getEmbedding(`${tab.label}: ${tab.caption}`, textModel);
+				tab.contentText = this._flattenTableData(tab.data);
+				tab.contentEmbedding = await LLMCitation.getEmbedding(tab.contentText, textModel);
+			}
+			catch (e) {
+				this.log(`_addTextEmbeddings: failed for ${tab.label}: ${e.message}`);
+			}
+		}
+		return tables;
+	},
+
 	async getTableIndex(item) {
 		if (this._indexCache.has(item.id)) {
 			this.log(`getTableIndex: memory cache hit for item ${item.id}`);
@@ -118,9 +169,54 @@ LLMTables = {
 		}
 
 		let tables = await this._extractRaw(item);
-		let index = { tables, scriptFingerprint: await this._scriptFingerprint() };
+		let embedded = tables.length ? await this._embedRaw(item, tables) : [];
+		embedded = await this._addTextEmbeddings(embedded);
+		let index = { tables: embedded, scriptFingerprint: await this._scriptFingerprint() };
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
 		return index;
+	},
+
+	// --- Retrieval strategies (image embedding, text-embedding max, LLM selection
+	// lives in LLMChatPane since it needs to call the active model) ---
+
+	async getBestMatchingTableByImage(tableIndex, query) {
+		let tables = tableIndex?.tables;
+		if (!tables?.length) return null;
+		let embedModel = await LLMCitation.getEmbeddingModel();
+		let queryEmbedding = await LLMCitation.getEmbedding(query, embedModel);
+		let best = null;
+		let bestScore = -Infinity;
+		for (let tab of tables) {
+			if (!tab.embedding) continue;
+			let score = LLMCitation.cosineSimilarity(queryEmbedding, tab.embedding);
+			if (score > bestScore) {
+				bestScore = score;
+				best = tab;
+			}
+		}
+		if (best) this.log(`getBestMatchingTableByImage: ${best.label} (score=${bestScore.toFixed(4)})`);
+		return best;
+	},
+
+	async getBestMatchingTableByTextMax(tableIndex, query) {
+		let tables = tableIndex?.tables;
+		if (!tables?.length) return null;
+		let embedModel = await LLMCitation.getEmbeddingModel();
+		let queryEmbedding = await LLMCitation.getEmbedding(query, embedModel);
+		let best = null;
+		let bestScore = -Infinity;
+		for (let tab of tables) {
+			if (!tab.captionEmbedding || !tab.contentEmbedding) continue;
+			let capScore = LLMCitation.cosineSimilarity(queryEmbedding, tab.captionEmbedding);
+			let contentScore = LLMCitation.cosineSimilarity(queryEmbedding, tab.contentEmbedding);
+			let score = Math.max(capScore, contentScore);
+			if (score > bestScore) {
+				bestScore = score;
+				best = tab;
+			}
+		}
+		if (best) this.log(`getBestMatchingTableByTextMax: ${best.label} (score=${bestScore.toFixed(4)})`);
+		return best;
 	},
 };

@@ -347,6 +347,47 @@ LLMChatPane = {
 		return figures.find(f => f.figure_num === figureNum) || null;
 	},
 
+	_formatTableMarkdown(t) {
+		let [header, ...rows] = t.data;
+		let sep = header ? "| " + header.map(() => "---").join(" | ") + " |" : "";
+		let mdHeader = header ? "| " + header.join(" | ") + " |" : "";
+		let mdRows = rows.map(r => "| " + r.join(" | ") + " |").join("\n");
+		return `**[p.${t.page_num}] ${t.label}:** ${t.caption}\n${mdHeader}\n${sep}\n${mdRows}`;
+	},
+
+	// Asks the LLM to pick the most relevant table by number, given each table's
+	// full content (not just captions — unlike figures, table content is text-native
+	// and cheap to show in full). Validated against image embedding and text-embedding
+	// max(caption, content) on 5 content-specific queries: image embedding scored 1/5
+	// (table images are visually near-identical grids, giving it little to work with —
+	// worse than for figures, which are visually distinctive), text-max scored 3/5
+	// (failed when one table merely mentioned the query's keywords more often than the
+	// table that actually answered it), LLM selection scored 5/5.
+	async selectTableWithLLM(tableIndex, query) {
+		let tables = tableIndex?.tables;
+		if (!tables?.length) return null;
+
+		let tableContext = tables.map(t => `${t.label}: ${t.caption}\n${t.contentText}`).join("\n\n");
+		let selectionPrompt = [
+			"You are choosing which table (if any) from a scientific paper best helps answer a user's question.",
+			"Here are the tables in this paper:",
+			"",
+			tableContext,
+			"",
+			`User's question: "${query}"`,
+			"",
+			'Respond with ONLY the table number (e.g. "3") that best matches the question, or "none" if no table is relevant. Do not include any other text.',
+		].join("\n");
+
+		let result = await this.streamModel(selectionPrompt, () => {}, {});
+		let text = (result.text || "").trim();
+		if (!text || /none/i.test(text)) return null;
+		let match = text.match(/\d+/);
+		if (!match) return null;
+		let tableNum = parseInt(match[0], 10);
+		return tables.find(t => t.table_num === tableNum) || null;
+	},
+
 	async listModels() {
 		if (this._provider === "lmstudio") {
 			return this.listLMStudioModels();
@@ -1003,19 +1044,24 @@ LLMChatPane = {
 						else if (tableIndex.error) {
 							appendMessage("System", `Table extraction failed: ${tableIndex.error}`);
 						}
+						else if (!tableIndex.tables.length) {
+							appendMessage("System", "Table extraction: no tables found in PDF.");
+						}
 						else {
-							let { tables } = tableIndex;
-							let tableList = tables.map(t => {
-								let [header, ...rows] = t.data;
-								let cols = header?.length || 0;
-								let sep = header ? "| " + header.map(() => "---").join(" | ") + " |" : "";
-								let mdHeader = header ? "| " + header.join(" | ") + " |" : "";
-								let mdRows = rows.map(r => "| " + r.join(" | ") + " |").join("\n");
-								return `**[p.${t.page_num}] ${t.label}:** ${t.caption}\n${mdHeader}\n${sep}\n${mdRows}`;
-							}).join("\n\n");
-							appendMessage("System",
-								`Extracted ${tables.length} table${tables.length === 1 ? "" : "s"} from PDF:\n\n${tableList}`
-							);
+							let selectedTable = null;
+							try {
+								selectedTable = await this.selectTableWithLLM(tableIndex, prompt);
+							}
+							catch (e) {
+								this.log(`selectTableWithLLM failed: ${e.message}`);
+							}
+							if (selectedTable) {
+								modelPrompt += `\n\n<TABLE_CONTEXT>\n${this._formatTableMarkdown(selectedTable)}\n</TABLE_CONTEXT>`;
+								appendMessage("System", `Including ${selectedTable.label} as table context (best match for your question, out of ${tableIndex.tables.length} extracted).`);
+							}
+							else {
+								appendMessage("System", `Extracted ${tableIndex.tables.length} table${tableIndex.tables.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
+							}
 						}
 
 						let images = [];

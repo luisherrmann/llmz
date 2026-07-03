@@ -65,9 +65,33 @@
 	align-self: flex-start;
 }
 
+.llm-model-row {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 8px;
+}
+
 .llm-provider-select {
-	align-self: flex-start;
-	margin-right: auto;
+	flex: 0 0 auto;
+}
+
+.llm-model-select {
+	flex: 1;
+	min-width: 0;
+}
+
+.llm-model-refresh {
+	flex: 0 0 auto;
+}
+
+.llm-api-key-row {
+	display: flex;
+}
+
+.llm-api-key-input {
+	box-sizing: border-box;
+	width: 100%;
 }
 
 /* Markdown output */

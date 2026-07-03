@@ -15,6 +15,15 @@ LLMCitation = {
 			.slice(0, this.maxCitationChunks);
 	},
 
+	splitIntoParagraphs(text, sentencesPerParagraph = 5) {
+		let sentences = this.splitIntoSentences(text);
+		let paragraphs = [];
+		for (let i = 0; i < sentences.length; i += sentencesPerParagraph) {
+			paragraphs.push(sentences.slice(i, i + sentencesPerParagraph).join(" "));
+		}
+		return paragraphs;
+	},
+
 	cosineSimilarity(a, b) {
 		let dot = 0, normA = 0, normB = 0;
 		for (let i = 0; i < a.length; i++) {
@@ -62,64 +71,84 @@ LLMCitation = {
 		return dir;
 	},
 
-	async _loadDiskCache(item, fingerprint, model) {
+	async _loadDiskCache(item, fingerprint, model, kind) {
 		try {
-			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}-${kind}.json`);
 			if (!await IOUtils.exists(path)) return null;
 			let raw = await IOUtils.readUTF8(path);
 			let cached = JSON.parse(raw);
 			if (cached.fingerprint !== fingerprint || cached.model !== model) return null;
-			this.log(`_loadDiskCache: loaded ${cached.sentences.length} sentences for item ${item.id}`);
+			this.log(`_loadDiskCache(${kind}): loaded ${cached.sentences.length} chunks for item ${item.id}`);
 			return { sentences: cached.sentences, embeddings: cached.embeddings, model: cached.model };
 		}
 		catch (e) {
-			this.log(`_loadDiskCache: failed for item ${item.id}: ${e.message}`);
+			this.log(`_loadDiskCache(${kind}): failed for item ${item.id}: ${e.message}`);
 			return null;
 		}
 	},
 
-	async _saveDiskCache(item, fingerprint, index) {
+	async _saveDiskCache(item, fingerprint, index, kind) {
 		try {
-			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}-${kind}.json`);
 			await IOUtils.writeUTF8(path, JSON.stringify({
 				fingerprint,
 				model: index.model,
 				sentences: index.sentences,
 				embeddings: index.embeddings,
 			}));
-			this.log(`_saveDiskCache: saved ${index.sentences.length} sentences for item ${item.id}`);
+			this.log(`_saveDiskCache(${kind}): saved ${index.sentences.length} chunks for item ${item.id}`);
 		}
 		catch (e) {
-			this.log(`_saveDiskCache: failed for item ${item.id}: ${e.message}`);
+			this.log(`_saveDiskCache(${kind}): failed for item ${item.id}: ${e.message}`);
 		}
 	},
 
-	async getCitationIndex(item, text) {
-		let cached = this._citationIndexCache.get(item.id);
+	async _getIndex(item, text, kind, chunkFn) {
+		let cacheKey = `${item.id}:${kind}`;
+		let cached = this._citationIndexCache.get(cacheKey);
 		if (cached) return cached;
 
 		let model = await this.getEmbeddingModel();
 		let fingerprint = this._textFingerprint(text);
 
-		let diskCached = await this._loadDiskCache(item, fingerprint, model);
+		let diskCached = await this._loadDiskCache(item, fingerprint, model, kind);
 		if (diskCached) {
-			this._citationIndexCache.set(item.id, diskCached);
+			this._citationIndexCache.set(cacheKey, diskCached);
 			return diskCached;
 		}
 
-		let sentences = this.splitIntoSentences(text);
+		let sentences = chunkFn(text);
 		if (!sentences.length) return null;
 
-		this.log(`getCitationIndex: embedding ${sentences.length} sentences with ${model}`);
+		this.log(`_getIndex(${kind}): embedding ${sentences.length} chunks with ${model}`);
 		let embeddings = [];
 		for (let sentence of sentences) {
 			embeddings.push(await this.getEmbedding(sentence, model));
 		}
 
 		let index = { sentences, embeddings, model };
-		this._citationIndexCache.set(item.id, index);
-		await this._saveDiskCache(item, fingerprint, index);
+		this._citationIndexCache.set(cacheKey, index);
+		await this._saveDiskCache(item, fingerprint, index, kind);
 		return index;
+	},
+
+	async getCitationIndex(item, text) {
+		return this._getIndex(item, text, "sentence", t => this.splitIntoSentences(t));
+	},
+
+	async getParagraphIndex(item, text) {
+		return this._getIndex(item, text, "paragraph", t => this.splitIntoParagraphs(t));
+	},
+
+	async getRelevantChunks(index, query, topK) {
+		let queryEmbedding = await this.getEmbedding(query, index.model);
+		let scored = index.embeddings.map((embedding, i) => ({
+			i,
+			score: this.cosineSimilarity(queryEmbedding, embedding),
+		}));
+		scored.sort((a, b) => b.score - a.score);
+		let top = scored.slice(0, topK).sort((a, b) => a.i - b.i);
+		return top.map(({ i }) => index.sentences[i]);
 	},
 
 	async groundCitations(text, index) {

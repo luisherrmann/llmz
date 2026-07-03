@@ -6,8 +6,13 @@ LLMChatPane = {
 	paneID: null,
 	maxPDFContextChars: 60000,
 	maxPageContextChars: 5000,
+	chunkContextTopK: 10,
+	lmStudioBaseURL: "http://127.0.0.1:1234/v1",
+	liteLLMBaseURL: "http://127.0.0.1:4000/v1",
+	_liteLLMApiKey: "",
 	_css: null,
 	_provider: "ollama",
+	_selectedModel: {},
 	_systemPrompt: [
 		"You are a helpful research assistant.",
 		"Always express mathematical formulas and equations using LaTeX notation.",
@@ -34,12 +39,18 @@ LLMChatPane = {
 		Zotero.debug("LLM Chat Pane: " + msg);
 	},
 
-	async getOllamaModel() {
+	async listOllamaModels() {
 		let response = await Zotero.HTTP.request("GET", "http://127.0.0.1:11434/api/tags", {
 			timeout: 10000,
 		});
 		let data = JSON.parse(response.responseText);
-		let model = (data.models || []).find(m => !/embed/i.test(m.name))?.name;
+		return (data.models || []).filter(m => !/embed/i.test(m.name)).map(m => m.name);
+	},
+
+	async getOllamaModel() {
+		let models = await this.listOllamaModels();
+		let selected = this._selectedModel.ollama;
+		let model = (selected && models.includes(selected)) ? selected : models[0];
 		if (!model) {
 			throw new Error("No chat model found. Pull one with `ollama pull <model>` first.");
 		}
@@ -110,34 +121,32 @@ LLMChatPane = {
 		};
 	},
 
-	async getLMStudioModel() {
-		let response = await Zotero.HTTP.request("GET", "http://127.0.0.1:1234/v1/models", {
+	async listOpenAICompatibleModels(baseURL, apiKey) {
+		let headers = {};
+		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+		let response = await Zotero.HTTP.request("GET", `${baseURL}/models`, {
+			headers,
 			timeout: 10000,
 		});
 		let data = JSON.parse(response.responseText);
-		let model = (data.data || []).find(m => !/embed/i.test(m.id))?.id;
-		if (!model) {
-			throw new Error("No chat model found. Load one in LM Studio first.");
-		}
-		return model;
+		return (data.data || []).filter(m => !/embed/i.test(m.id)).map(m => m.id);
 	},
 
-	async streamLMStudio(prompt, onToken, { onReady } = {}) {
-		let model = await this.getLMStudioModel();
-		let response = await fetch("http://127.0.0.1:1234/v1/chat/completions", {
+	async streamOpenAICompatible(baseURL, apiKey, model, prompt, onToken, { onReady } = {}) {
+		let headers = { "Content-Type": "application/json" };
+		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+		let response = await fetch(`${baseURL}/chat/completions`, {
 			method: "POST",
 			body: JSON.stringify({
 				model,
 				messages: [{ role: "user", content: prompt }],
 				stream: true,
 			}),
-			headers: {
-				"Content-Type": "application/json",
-			},
+			headers,
 		});
 
 		if (!response.ok) {
-			throw new Error(`LM Studio returned HTTP ${response.status}`);
+			throw new Error(`Request to ${baseURL} returned HTTP ${response.status}`);
 		}
 
 		let reader = response.body.getReader();
@@ -183,11 +192,69 @@ LLMChatPane = {
 		};
 	},
 
+	async listLMStudioModels() {
+		return this.listOpenAICompatibleModels(this.lmStudioBaseURL, null);
+	},
+
+	async getLMStudioModel() {
+		let models = await this.listLMStudioModels();
+		let selected = this._selectedModel.lmstudio;
+		let model = (selected && models.includes(selected)) ? selected : models[0];
+		if (!model) {
+			throw new Error("No chat model found. Load one in LM Studio first.");
+		}
+		return model;
+	},
+
+	async streamLMStudio(prompt, onToken, opts) {
+		let model = await this.getLMStudioModel();
+		return this.streamOpenAICompatible(this.lmStudioBaseURL, null, model, prompt, onToken, opts);
+	},
+
+	_withTimeout(promise, ms, label) {
+		return Promise.race([
+			promise,
+			new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+		]);
+	},
+
+	async listLiteLLMModels() {
+		return this.listOpenAICompatibleModels(this.liteLLMBaseURL, this._liteLLMApiKey || null);
+	},
+
+	async getLiteLLMModel() {
+		let models = await this.listLiteLLMModels();
+		let selected = this._selectedModel.litellm;
+		let model = (selected && models.includes(selected)) ? selected : models[0];
+		if (!model) {
+			throw new Error("No chat model found. Configure a model in your LiteLLM proxy config.");
+		}
+		return model;
+	},
+
+	async streamLiteLLM(prompt, onToken, opts) {
+		let model = await this.getLiteLLMModel();
+		return this.streamOpenAICompatible(this.liteLLMBaseURL, this._liteLLMApiKey || null, model, prompt, onToken, opts);
+	},
+
 	async streamModel(prompt, onToken, opts) {
 		if (this._provider === "lmstudio") {
 			return this.streamLMStudio(prompt, onToken, opts);
 		}
+		if (this._provider === "litellm") {
+			return this.streamLiteLLM(prompt, onToken, opts);
+		}
 		return this.streamOllama(prompt, onToken, opts);
+	},
+
+	async listModels() {
+		if (this._provider === "lmstudio") {
+			return this.listLMStudioModels();
+		}
+		if (this._provider === "litellm") {
+			return this.listLiteLLMModels();
+		}
+		return this.listOllamaModels();
 	},
 
 	getActiveReaderAttachment() {
@@ -321,7 +388,7 @@ LLMChatPane = {
 				contextInfo: null,
 				selectedText,
 				item: null,
-				fullText: null,
+				citationIndex: null,
 			};
 		}
 
@@ -335,19 +402,53 @@ LLMChatPane = {
 				},
 				selectedText,
 				item,
-				fullText: null,
+				citationIndex: null,
 			};
 		}
 
-		let truncated = text.length > this.maxPDFContextChars;
-		let context = truncated ? text.slice(0, this.maxPDFContextChars) : text;
 		let title = item.getField("title") || item.libraryKey;
+
+		let citationIndex = null;
+		try {
+			citationIndex = await LLMCitation.getCitationIndex(item, text);
+		}
+		catch (e) {
+			this.log(`getCitationIndex failed: ${e.message}`);
+		}
+
+		let context, retrieved = false, truncated = false, chunkCount = 0;
+		if (text.length <= this.maxPDFContextChars) {
+			// Full PDF fits within budget — use it as-is, no chunking needed.
+			context = text;
+		}
+		else {
+			try {
+				let paragraphIndex = await LLMCitation.getParagraphIndex(item, text);
+				if (paragraphIndex) {
+					let chunks = await LLMCitation.getRelevantChunks(paragraphIndex, userPrompt, this.chunkContextTopK);
+					if (chunks.length) {
+						context = chunks.join("\n\n");
+						retrieved = true;
+						chunkCount = chunks.length;
+					}
+				}
+			}
+			catch (e) {
+				this.log(`getParagraphIndex/getRelevantChunks failed: ${e.message}`);
+			}
+			if (!retrieved) {
+				truncated = true;
+				context = text.slice(0, this.maxPDFContextChars);
+			}
+		}
 
 		let parts = [
 			"You are answering a question about the currently open PDF in Zotero.",
 			"Use the PDF context below when it is relevant. If the answer is not supported by the PDF context, say so.",
 			`PDF title: ${title}`,
-			truncated ? `PDF context note: text was truncated to the first ${this.maxPDFContextChars} characters.` : "",
+			retrieved
+				? `PDF context note: the full PDF was too large for the context budget; showing the ${chunkCount} paragraphs most relevant to your question, retrieved by embedding similarity.`
+				: (truncated ? `PDF context note: text was truncated to the first ${this.maxPDFContextChars} characters.` : ""),
 			"<PDF_CONTEXT>",
 			context,
 			"</PDF_CONTEXT>",
@@ -362,10 +463,12 @@ LLMChatPane = {
 				title,
 				charCount: text.length,
 				truncated,
+				retrieved,
+				chunkCount,
 			},
 			selectedText,
 			item,
-			fullText: text,
+			citationIndex,
 		};
 	},
 
@@ -496,6 +599,7 @@ LLMChatPane = {
 				let providerOptions = [
 					{ value: "ollama", label: "Ollama" },
 					{ value: "lmstudio", label: "LM Studio" },
+					{ value: "litellm", label: "API (LiteLLM)" },
 				];
 				for (let { value, label } of providerOptions) {
 					let option = doc.createElement("option");
@@ -504,13 +608,150 @@ LLMChatPane = {
 					providerSelect.appendChild(option);
 				}
 				providerSelect.value = this._provider;
+
+				let modelSelect = doc.createElement("select");
+				modelSelect.className = "llm-model-select";
+				modelSelect.title = "Model";
+				modelSelect.disabled = true;
+
+				let modelRefreshButton = doc.createElement("button");
+				modelRefreshButton.textContent = "⟳";
+				modelRefreshButton.className = "llm-model-refresh";
+				modelRefreshButton.title = "Refresh model list";
+
+				let modelGroupLabels = {
+					openai: "OpenAI",
+					anthropic: "Anthropic",
+					ollama: "Ollama",
+					ollama_chat: "Ollama",
+					gemini: "Gemini",
+					vertex_ai: "Vertex AI",
+					xai: "XAI",
+					vllm: "VLLM",
+					fireworks_ai: "Fireworks AI",
+				};
+
+				let addModelOption = (parent, name) => {
+					let option = doc.createElement("option");
+					option.value = name;
+					option.textContent = name;
+					parent.appendChild(option);
+				};
+
+				// Extracts the leading dotted/dashed version run (e.g. "5" from "gpt-5-pro",
+				// [4, 5] from "claude-sonnet-4-5") as an array of numeric components, so models
+				// sort newest-version-first without relying on provider metadata (which turned
+				// out to be a fake placeholder, not real dates).
+				let modelVersionParts = (name) => {
+					let match = name.match(/\d+(?:[.-]\d+)*/);
+					if (!match) return [];
+					return match[0].split(/[.-]/).map(n => parseInt(n, 10));
+				};
+				let pathDepth = (name) => (name.match(/\//g) || []).length;
+				let compareModelNames = (a, b) => {
+					let depthDiff = pathDepth(a) - pathDepth(b); // ascending: shorter paths first
+					if (depthDiff !== 0) return depthDiff;
+					let va = modelVersionParts(a);
+					let vb = modelVersionParts(b);
+					let len = Math.max(va.length, vb.length);
+					for (let i = 0; i < len; i++) {
+						let diff = (vb[i] || 0) - (va[i] || 0); // descending: higher version first
+						if (diff !== 0) return diff;
+					}
+					return a.localeCompare(b);
+				};
+
+				let populateModelOptions = (models) => {
+					let groups = new Map();
+					let ungrouped = [];
+					for (let name of models) {
+						let slash = name.indexOf("/");
+						if (slash > 0) {
+							let prefix = name.slice(0, slash);
+							if (!groups.has(prefix)) groups.set(prefix, []);
+							groups.get(prefix).push(name);
+						}
+						else {
+							ungrouped.push(name);
+						}
+					}
+					ungrouped.sort(compareModelNames);
+					for (let name of ungrouped) addModelOption(modelSelect, name);
+					for (let [prefix, names] of groups) {
+						names.sort(compareModelNames);
+						let optgroup = doc.createElement("optgroup");
+						optgroup.label = modelGroupLabels[prefix] || (prefix.charAt(0).toUpperCase() + prefix.slice(1));
+						for (let name of names) addModelOption(optgroup, name);
+						modelSelect.appendChild(optgroup);
+					}
+				};
+
+				let refreshModelOptions = async () => {
+					let provider = this._provider;
+					modelSelect.disabled = true;
+					modelSelect.replaceChildren();
+					let loadingOption = doc.createElement("option");
+					loadingOption.textContent = "Loading models…";
+					modelSelect.appendChild(loadingOption);
+					try {
+						let models = await this._withTimeout(this.listModels(), 15000, "listModels");
+						if (provider !== this._provider) return; // provider changed while fetching
+						modelSelect.replaceChildren();
+						if (!models.length) {
+							let emptyOption = doc.createElement("option");
+							emptyOption.textContent = "No models found";
+							modelSelect.appendChild(emptyOption);
+							return;
+						}
+						populateModelOptions(models);
+						let selected = this._selectedModel[provider];
+						modelSelect.value = models.includes(selected) ? selected : models[0];
+						this._selectedModel[provider] = modelSelect.value;
+						modelSelect.disabled = false;
+					}
+					catch (e) {
+						if (provider !== this._provider) return;
+						modelSelect.replaceChildren();
+						let errorOption = doc.createElement("option");
+						errorOption.textContent = "Unavailable";
+						modelSelect.appendChild(errorOption);
+						this.log(`Failed to list models for ${provider}: ${e.message}`);
+					}
+				};
+
+				let apiKeyInput = doc.createElement("input");
+				apiKeyInput.type = "password";
+				apiKeyInput.className = "llm-api-key-input";
+				apiKeyInput.placeholder = "API key (optional)";
+				apiKeyInput.title = "LiteLLM proxy API key — kept in memory only, not saved to disk; re-enter after restarting Zotero";
+				apiKeyInput.value = this._liteLLMApiKey;
+				apiKeyInput.addEventListener("input", () => {
+					this._liteLLMApiKey = apiKeyInput.value;
+				});
+
+				let apiKeyRow = doc.createElement("div");
+				apiKeyRow.className = "llm-api-key-row";
+				apiKeyRow.append(apiKeyInput);
+				apiKeyRow.hidden = this._provider !== "litellm";
+
 				providerSelect.addEventListener("change", () => {
 					this._provider = providerSelect.value;
+					apiKeyRow.hidden = this._provider !== "litellm";
+					refreshModelOptions();
 				});
+				modelSelect.addEventListener("change", () => {
+					this._selectedModel[this._provider] = modelSelect.value;
+				});
+				modelRefreshButton.addEventListener("click", () => refreshModelOptions());
+				refreshModelOptions();
+
+				let modelRow = doc.createElement("div");
+				modelRow.className = "llm-model-row";
+				modelRow.append(providerSelect, modelSelect, modelRefreshButton);
 
 				let buttonRow = doc.createElement("div");
 				buttonRow.className = "llm-button-row";
-				buttonRow.append(providerSelect, submitButton, stopButton);
+				buttonRow.append(submitButton, stopButton);
 
 				let capturedSelection = null;
 				input.addEventListener("focus", () => {
@@ -565,20 +806,15 @@ LLMChatPane = {
 					}
 
 					submitButton.disabled = true;
-					let providerLabel = this._provider === "lmstudio" ? "LM Studio" : "Ollama";
+					let providerLabels = { ollama: "Ollama", lmstudio: "LM Studio", litellm: "LiteLLM" };
+					let providerLabel = providerLabels[this._provider] || "Ollama";
 
 					try {
 						let { text: liveText, info: selectionInfo } = this.getReaderSelection();
 						let selectedText = liveText || capturedSelection;
 						capturedSelection = null;
 						let { text: pageText, pageNum, info: pageInfo } = await this.getReaderPageText();
-						let { prompt: modelPrompt, contextInfo, item: pdfItem, fullText } = await this.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
-						let citationIndexPromise = (pdfItem && fullText)
-							? LLMCitation.getCitationIndex(pdfItem, fullText).catch((e) => {
-								this.log(`getCitationIndex failed: ${e.message}`);
-								return null;
-							})
-							: Promise.resolve(null);
+						let { prompt: modelPrompt, contextInfo, item: pdfItem, citationIndex } = await this.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
 						let tableIndexPromise = pdfItem
 							? LLMTables.getTableIndex(pdfItem).catch((e) => {
 								this.log(`getTableIndex failed: ${e.message}`);
@@ -607,7 +843,9 @@ LLMChatPane = {
 						else if (contextInfo) {
 							appendMessage(
 								"System",
-								`Using PDF context from "${contextInfo.title}" (${contextInfo.charCount} characters${contextInfo.truncated ? ", truncated" : ""}).`
+								contextInfo.retrieved
+									? `Using PDF context from "${contextInfo.title}" (full PDF too large — showing top ${contextInfo.chunkCount} relevant paragraphs).`
+									: `Using PDF context from "${contextInfo.title}" (${contextInfo.charCount} characters${contextInfo.truncated ? ", truncated" : ""}).`
 							);
 						}
 						else {
@@ -651,7 +889,6 @@ LLMChatPane = {
 							reply.textContent = "(No response)";
 						}
 						else {
-							let citationIndex = await citationIndexPromise;
 							let groundedText = await LLMCitation.groundCitations(result.text, citationIndex);
 							let html = this._renderMarkdown(groundedText);
 							if (html) {
@@ -680,7 +917,7 @@ LLMChatPane = {
 					}
 				});
 
-				controls.append(input, buttonRow);
+				controls.append(modelRow, apiKeyRow, input, buttonRow);
 				container.append(controls, messageList);
 				body.appendChild(container);
 

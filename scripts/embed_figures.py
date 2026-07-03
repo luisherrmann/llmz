@@ -8,7 +8,8 @@ Install: pip install transformers torch Pillow einops
 Usage:   python3 embed_figures.py <figures_json_path> <output_json_path>
 
 Input:  JSON array from extract_figures.py — each entry has image_data (base64 JPEG).
-Output: Same array with an `embedding` field added to each entry (image_data stripped to save space).
+Output: Same array with an `embedding` field added to each entry. image_data is kept
+so cached figures can still be sent as image context to vision-capable models.
 """
 
 import sys
@@ -111,6 +112,7 @@ if __name__ == '__main__':
                 'label': fig['label'],
                 'caption': fig['caption'],
                 'embedding': emb,
+                'image_data': fig['image_data'],
             })
 
         with open(sys.argv[2], 'w') as f:

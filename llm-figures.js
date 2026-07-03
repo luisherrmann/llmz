@@ -1,6 +1,7 @@
 LLMFigures = {
 	_scriptName: "extract_figures.py",
 	_embedScriptName: "embed_figures.py",
+	_cacheVersion: 2, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_venvMissing: false,
 	_indexCache: new Map(),
 
@@ -74,11 +75,29 @@ LLMFigures = {
 		return dir;
 	},
 
+	async _scriptFingerprint() {
+		try {
+			let parts = [`v${this._cacheVersion}`];
+			for (let name of [this._scriptName, this._embedScriptName]) {
+				let stat = await IOUtils.stat(this._scriptPath(name));
+				parts.push(`${stat.size}:${stat.lastModified}`);
+			}
+			return parts.join("|");
+		}
+		catch (e) {
+			return null;
+		}
+	},
+
 	async _loadDiskCache(item) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
 			if (!await IOUtils.exists(path)) return null;
 			let index = JSON.parse(await IOUtils.readUTF8(path));
+			if (index.scriptFingerprint !== await this._scriptFingerprint()) {
+				this.log(`_loadDiskCache: stale (extraction/embed scripts changed) for item ${item.id}`);
+				return null;
+			}
 			this.log(`_loadDiskCache: loaded ${index.figures.length} figures for item ${item.id}`);
 			return index;
 		}
@@ -154,9 +173,53 @@ LLMFigures = {
 
 		let figures = await this._extractRaw(item);
 		let embedded = figures.length ? await this._embedRaw(item, figures) : [];
-		let index = { figures: embedded };
+		embedded = await this._addCaptionEmbeddings(embedded);
+		let index = { figures: embedded, scriptFingerprint: await this._scriptFingerprint() };
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
 		return index;
+	},
+
+	// Embeds each figure's "label: caption" as text (nomic-embed-text), so a
+	// query can be matched against it via plain text-to-text similarity. Tested
+	// empirically against the image embeddings (nomic-embed-vision, joint latent
+	// space with nomic-embed-text): text-to-text scored far higher and more
+	// discriminatively (0.5-0.87 vs. 0.04-0.08) and, unlike image similarity,
+	// correctly handles explicit "figure N" references, since the caption text
+	// itself starts with "Figure N:".
+	async _addCaptionEmbeddings(figures) {
+		if (!figures.length) return figures;
+		let textModel = await LLMCitation.getEmbeddingModel();
+		for (let fig of figures) {
+			try {
+				fig.captionEmbedding = await LLMCitation.getEmbedding(`${fig.label}: ${fig.caption}`, textModel);
+			}
+			catch (e) {
+				this.log(`_addCaptionEmbeddings: failed for ${fig.label}: ${e.message}`);
+			}
+		}
+		return figures;
+	},
+
+	// Finds the figure whose caption embedding is most similar to the query text.
+	async getBestMatchingFigure(figureIndex, query) {
+		let figures = figureIndex?.figures;
+		if (!figures?.length) return null;
+
+		let embedModel = await LLMCitation.getEmbeddingModel();
+		let queryEmbedding = await LLMCitation.getEmbedding(query, embedModel);
+
+		let best = null;
+		let bestScore = -Infinity;
+		for (let fig of figures) {
+			if (!fig.captionEmbedding) continue;
+			let score = LLMCitation.cosineSimilarity(queryEmbedding, fig.captionEmbedding);
+			if (score > bestScore) {
+				bestScore = score;
+				best = fig;
+			}
+		}
+		if (best) this.log(`getBestMatchingFigure: ${best.label} (score=${bestScore.toFixed(3)})`);
+		return best;
 	},
 };

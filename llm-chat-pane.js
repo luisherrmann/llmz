@@ -57,15 +57,32 @@ LLMChatPane = {
 		return model;
 	},
 
-	async streamOllama(prompt, onToken, { onReady } = {}) {
+	async getOllamaModelCapabilities(model) {
+		try {
+			let response = await Zotero.HTTP.request("POST", "http://127.0.0.1:11434/api/show", {
+				body: JSON.stringify({ name: model }),
+				headers: { "Content-Type": "application/json" },
+				timeout: 10000,
+			});
+			let data = JSON.parse(response.responseText);
+			return data.capabilities || [];
+		}
+		catch (e) {
+			this.log(`getOllamaModelCapabilities failed: ${e.message}`);
+			return [];
+		}
+	},
+
+	async streamOllama(prompt, onToken, { onReady } = {}, images) {
 		let model = await this.getOllamaModel();
+		let body = { model, prompt, stream: true };
+		if (images?.length) {
+			// Ollama wants raw base64, not a data: URI
+			body.images = images.map(dataUri => dataUri.split(",")[1] || dataUri);
+		}
 		let response = await fetch("http://127.0.0.1:11434/api/generate", {
 			method: "POST",
-			body: JSON.stringify({
-				model,
-				prompt,
-				stream: true,
-			}),
+			body: JSON.stringify(body),
 			headers: {
 				"Content-Type": "application/json",
 			},
@@ -132,14 +149,20 @@ LLMChatPane = {
 		return (data.data || []).filter(m => !/embed/i.test(m.id)).map(m => m.id);
 	},
 
-	async streamOpenAICompatible(baseURL, apiKey, model, prompt, onToken, { onReady } = {}) {
+	async streamOpenAICompatible(baseURL, apiKey, model, prompt, onToken, { onReady } = {}, images) {
 		let headers = { "Content-Type": "application/json" };
 		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+		let content = images?.length
+			? [
+				{ type: "text", text: prompt },
+				...images.map(dataUri => ({ type: "image_url", image_url: { url: dataUri } })),
+			]
+			: prompt;
 		let response = await fetch(`${baseURL}/chat/completions`, {
 			method: "POST",
 			body: JSON.stringify({
 				model,
-				messages: [{ role: "user", content: prompt }],
+				messages: [{ role: "user", content }],
 				stream: true,
 			}),
 			headers,
@@ -206,9 +229,9 @@ LLMChatPane = {
 		return model;
 	},
 
-	async streamLMStudio(prompt, onToken, opts) {
+	async streamLMStudio(prompt, onToken, opts, images) {
 		let model = await this.getLMStudioModel();
-		return this.streamOpenAICompatible(this.lmStudioBaseURL, null, model, prompt, onToken, opts);
+		return this.streamOpenAICompatible(this.lmStudioBaseURL, null, model, prompt, onToken, opts, images);
 	},
 
 	_withTimeout(promise, ms, label) {
@@ -232,19 +255,96 @@ LLMChatPane = {
 		return model;
 	},
 
-	async streamLiteLLM(prompt, onToken, opts) {
-		let model = await this.getLiteLLMModel();
-		return this.streamOpenAICompatible(this.liteLLMBaseURL, this._liteLLMApiKey || null, model, prompt, onToken, opts);
+	async liteLLMSupportsVision(model) {
+		try {
+			let baseURL = this.liteLLMBaseURL.replace(/\/v1$/, "");
+			let headers = {};
+			if (this._liteLLMApiKey) headers.Authorization = `Bearer ${this._liteLLMApiKey}`;
+			let response = await Zotero.HTTP.request("GET", `${baseURL}/model_group/info`, {
+				headers,
+				timeout: 10000,
+			});
+			let data = JSON.parse(response.responseText);
+			let entry = (data.data || []).find(m => m.model_group === model);
+			return !!entry?.supports_vision;
+		}
+		catch (e) {
+			this.log(`liteLLMSupportsVision failed: ${e.message}`);
+			return false;
+		}
 	},
 
-	async streamModel(prompt, onToken, opts) {
+	async streamLiteLLM(prompt, onToken, opts, images) {
+		let model = await this.getLiteLLMModel();
+		return this.streamOpenAICompatible(this.liteLLMBaseURL, this._liteLLMApiKey || null, model, prompt, onToken, opts, images);
+	},
+
+	async streamModel(prompt, onToken, opts, images) {
 		if (this._provider === "lmstudio") {
-			return this.streamLMStudio(prompt, onToken, opts);
+			return this.streamLMStudio(prompt, onToken, opts, images);
 		}
 		if (this._provider === "litellm") {
-			return this.streamLiteLLM(prompt, onToken, opts);
+			return this.streamLiteLLM(prompt, onToken, opts, images);
 		}
-		return this.streamOllama(prompt, onToken, opts);
+		return this.streamOllama(prompt, onToken, opts, images);
+	},
+
+	async getCurrentModel() {
+		if (this._provider === "lmstudio") return this.getLMStudioModel();
+		if (this._provider === "litellm") return this.getLiteLLMModel();
+		return this.getOllamaModel();
+	},
+
+	// LM Studio has no reliable vision-capability API (unlike Ollama's /api/show
+	// capabilities or LiteLLM's /model_group/info supports_vision) — fall back to
+	// matching common vision-model naming patterns.
+	_visionModelNamePattern: /vision|\bvl\b|-vl-|gpt-4o|gpt-5|claude-3|claude-4|claude-sonnet|claude-opus|claude-haiku|gemini|llava|pixtral|internvl|moondream|qwen2(?:\.5)?-vl/i,
+
+	async modelSupportsImages(model) {
+		if (!model) return false;
+		if (this._provider === "ollama") {
+			let caps = await this.getOllamaModelCapabilities(model);
+			return caps.includes("vision");
+		}
+		if (this._provider === "litellm") {
+			return this.liteLLMSupportsVision(model);
+		}
+		return this._visionModelNamePattern.test(model);
+	},
+
+	// Asks the LLM itself to pick the most relevant figure by number, given the
+	// list of figure captions. Tried embedding-based retrieval first (both plain
+	// image-embedding similarity and text/image score fusion via raw max, z-score
+	// max, and Reciprocal Rank Fusion at various k) — all of them conflated a
+	// merely topically-adjacent caption with genuine relevance on queries like
+	// "is there a figure describing model performance", consistently picking a
+	// data-prep figure that shares vocabulary ("model", "evaluate", "test") over
+	// the actual performance-metrics figure. An LLM reading the captions can
+	// reason about what they mean rather than just measuring vector distance,
+	// and got this and three other test queries right where every embedding
+	// fusion approach failed at least one.
+	async selectFigureWithLLM(figureIndex, query) {
+		let figures = figureIndex?.figures;
+		if (!figures?.length) return null;
+
+		let captionList = figures.map(f => `${f.label}: ${f.caption}`).join("\n");
+		let selectionPrompt = [
+			"You are choosing which figure (if any) from a scientific paper best helps answer a user's question.",
+			"Here are the figures in this paper:",
+			captionList,
+			"",
+			`User's question: "${query}"`,
+			"",
+			'Respond with ONLY the figure number (e.g. "4") that best matches the question, or "none" if no figure is relevant. Do not include any other text.',
+		].join("\n");
+
+		let result = await this.streamModel(selectionPrompt, () => {}, {});
+		let text = (result.text || "").trim();
+		if (!text || /none/i.test(text)) return null;
+		let match = text.match(/\d+/);
+		if (!match) return null;
+		let figureNum = parseInt(match[0], 10);
+		return figures.find(f => f.figure_num === figureNum) || null;
 	},
 
 	async listModels() {
@@ -864,11 +964,12 @@ LLMChatPane = {
 								return { error: e.message };
 							})
 							: Promise.resolve(null);
-						if (pdfItem) {
-							LLMFigures.getFigureIndex(pdfItem).catch((e) => {
+						let figureIndexPromise = pdfItem
+							? LLMFigures.getFigureIndex(pdfItem).catch((e) => {
 								this.log(`getFigureIndex failed: ${e.message}`);
-							});
-						}
+								return null;
+							})
+							: Promise.resolve(null);
 						let selectionLine = selectedText
 							? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
 							: `Selected Text: (none — ${selectionInfo})`;
@@ -917,6 +1018,22 @@ LLMChatPane = {
 							);
 						}
 
+						let images = [];
+						try {
+							let currentModel = await this.getCurrentModel();
+							if (await this.modelSupportsImages(currentModel)) {
+								let figureIndex = await figureIndexPromise;
+								let bestFigure = await this.selectFigureWithLLM(figureIndex, prompt);
+								if (bestFigure?.image_data) {
+									images.push(bestFigure.image_data);
+									appendMessage("System", `Including ${bestFigure.label || `figure ${bestFigure.figure_num}`} as image context (best match for your question, ${currentModel} supports vision).`);
+								}
+							}
+						}
+						catch (e) {
+							this.log(`Image context setup failed: ${e.message}`);
+						}
+
 						let reply = appendMessage(providerLabel, `Waiting for ${providerLabel}...`);
 						this.log(`Submitting prompt to ${providerLabel}: ${prompt}`);
 						reply.textContent = "";
@@ -927,7 +1044,7 @@ LLMChatPane = {
 								cancelStream = cancelFn;
 								stopButton.disabled = false;
 							},
-						});
+						}, images);
 						if (!result.text) {
 							reply.textContent = "(No response)";
 						}

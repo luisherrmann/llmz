@@ -114,6 +114,7 @@ if __name__ == '__main__':
                 'data': tab['data'],
                 'embedding': emb,
                 'image_data': tab['image_data'],
+                'position': tab.get('position'),
             })
 
         with open(sys.argv[2], 'w') as f:

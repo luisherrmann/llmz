@@ -34,6 +34,52 @@ def clean_text(text):
     return text.strip()
 
 
+# Max gap (points) between a vector-drawing union and a nearby text block for
+# that block to be absorbed as part of the same figure (axis label, legend).
+VECTOR_LABEL_ABSORB_GAP = 20
+# Text blocks longer than this are treated as paragraph prose, not a label.
+VECTOR_LABEL_MAX_LEN = 80
+
+
+def get_vector_figure_bbox(page, blocks, top_bound, bottom_bound, caption_y_top):
+    """
+    Bounding box for a vector-drawn figure (a chart/diagram made of lines,
+    curves and fills -- e.g. matplotlib/R/TikZ PDF output -- rather than a
+    single embedded raster image). Unions:
+      1. All vector drawing paths (page.get_drawings()) within [top_bound, bottom_bound]
+      2. Short, non-caption text blocks close to that union (axis labels,
+         legends) -- these PDF-export tools typically draw such labels as real
+         text objects, not vector paths, so get_drawings() alone misses them.
+    Returns None if no vector drawings are found in the region at all, so the
+    caller can fall back to a heuristic instead of returning a meaningless box.
+    """
+    drawings = [d['rect'] for d in page.get_drawings()
+                if top_bound <= d['rect'].y0 and d['rect'].y1 <= bottom_bound]
+    if not drawings:
+        return None
+
+    union = fitz.Rect()
+    for r in drawings:
+        union |= r
+
+    for x0, y0, x1, y1, text, _, block_type in blocks:
+        if block_type != 0:
+            continue
+        stripped = text.strip()
+        if not stripped or len(stripped) > VECTOR_LABEL_MAX_LEN:
+            continue  # skip long blocks -- likely paragraph text, not a label
+        if CAPTION_START_RE.match(stripped):
+            continue  # caption is unioned in separately by the caller
+        if y0 >= caption_y_top:
+            continue  # never reach past the caption
+        if y0 >= union.y1 and y0 - union.y1 <= VECTOR_LABEL_ABSORB_GAP:
+            union |= fitz.Rect(x0, y0, x1, y1)
+        elif y1 <= union.y0 and union.y0 - y1 <= VECTOR_LABEL_ABSORB_GAP:
+            union |= fitz.Rect(x0, y0, x1, y1)
+
+    return union
+
+
 def extract_figures(pdf_path):
     doc = fitz.open(pdf_path)
     figures = []
@@ -41,6 +87,7 @@ def extract_figures(pdf_path):
     for page_num, page in enumerate(doc, start=1):
         blocks = page.get_text("blocks", sort=True)
         width = page.rect.width
+        height = page.rect.height
 
         # --- Pass 1: find caption groups ---
         # Each group: { figure_num, label, caption, y_top, y_bottom }
@@ -114,17 +161,52 @@ def extract_figures(pdf_path):
 
         caption_groups = sorted(merged.values(), key=lambda c: c['y_top'])
 
-        # --- Pass 3: crop the region above each caption as the figure image ---
+        # --- Pass 3: crop each figure's region (its content + caption) ---
+        # Match priority, from most to least precise:
+        #   1. Embedded raster image bbox (page.get_image_info()) just above
+        #      the caption -- exact bounds for screenshot/photo-style figures.
+        #   2. Vector-drawing union (get_vector_figure_bbox) -- for figures made
+        #      of lines/curves/fills (matplotlib/R/TikZ-style plots) rather than
+        #      a single raster image, which get_image_info() can't see at all.
+        #   3. The old "everything since the last stopping point" heuristic, for
+        #      pages where neither of the above finds anything.
+        # Without (1)/(2), the old heuristic alone could both extend the crop
+        # well above the real figure (into unrelated content, e.g. a page
+        # header) and stop at the caption's own top edge instead of its bottom,
+        # cutting the caption text off entirely.
+        image_bboxes = [info['bbox'] for info in page.get_image_info()]
         prev_y = 0.0
         for cap in caption_groups:
             y_top = cap['y_top']
-            if y_top - prev_y < 20:
-                prev_y = cap['y_bottom']
-                continue
+            y_bottom = cap['y_bottom']
 
-            clip = fitz.Rect(0, prev_y, width, y_top)
+            # Candidate images: end before this caption starts, and start at or
+            # after wherever the previous figure's crop left off (so a page with
+            # multiple figures matches each caption to its own preceding image,
+            # not an already-claimed one).
+            candidates = [b for b in image_bboxes if b[3] <= y_top + 10 and b[1] >= prev_y - 10]
+            if candidates:
+                # Closest preceding image (largest bottom edge not past the caption)
+                img_bbox = max(candidates, key=lambda b: b[3])
+                crop_top = min(img_bbox[1], y_top)
+            else:
+                vector_bbox = get_vector_figure_bbox(page, blocks, prev_y, y_top, y_top)
+                if vector_bbox is not None:
+                    crop_top = min(vector_bbox.y0, y_top)
+                elif y_top - prev_y < 20:
+                    prev_y = y_bottom
+                    continue
+                else:
+                    crop_top = prev_y
+
+            clip = fitz.Rect(0, crop_top, width, min(height, y_bottom + 4))
             pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), clip=clip)
             img_b64 = base64.b64encode(pix.tobytes('jpeg', jpg_quality=85)).decode()
+
+            # Reader's position.rects are in native PDF space (origin bottom-left,
+            # y increasing upward) -- PyMuPDF's clip rect above is top-left-origin,
+            # y increasing downward, so flip each y coordinate and swap y0/y1.
+            position_rect = [clip.x0, height - clip.y1, clip.x1, height - clip.y0]
 
             figures.append({
                 'page_num': page_num,
@@ -132,8 +214,9 @@ def extract_figures(pdf_path):
                 'label': cap['label'],
                 'caption': cap['caption'],
                 'image_data': f'data:image/jpeg;base64,{img_b64}',
+                'position': {'pageIndex': page_num - 1, 'rects': [position_rect]},
             })
-            prev_y = cap['y_bottom']
+            prev_y = y_bottom
 
     doc.close()
     return figures

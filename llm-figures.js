@@ -1,7 +1,7 @@
 LLMFigures = {
 	_scriptName: "extract_figures.py",
 	_embedScriptName: "embed_figures.py",
-	_cacheVersion: 2, // bump when the cached index schema changes (JS-side, not just Python scripts)
+	_cacheVersion: 3, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_venvMissing: false,
 	_indexCache: new Map(),
 

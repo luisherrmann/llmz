@@ -1,7 +1,7 @@
 LLMTables = {
 	_scriptName: "extract_tables.py",
 	_embedScriptName: "embed_tables.py",
-	_cacheVersion: 1,
+	_cacheVersion: 2, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_indexCache: new Map(),
 
 	log(msg) {

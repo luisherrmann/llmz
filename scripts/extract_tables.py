@@ -4,9 +4,13 @@ Extract tables from a PDF using PyMuPDF.
 Install: pip install pymupdf
 Usage:   python3 extract_tables.py <pdf_path> <output_json_path>
 
-Output: JSON array of { page_num, table_num, label, caption, data, image_data }
+Output: JSON array of { page_num, table_num, label, caption, data, image_data, position }
   data      — list of rows; each row is a list of cell strings
   image_data — base64 JPEG crop of the table region (caption + table body)
+  position  — { pageIndex, rects: [[x0,y0,x1,y1]] } in native (bottom-up) PDF
+              space, navigable via the reader's `navigate({ position })`. Omitted
+              for tables found via rotation-normalization (see below), where a
+              real-page position can't be reliably computed.
 
 Strategy: each table caption defines a region (caption bottom → next caption top
 or page bottom) within which find_tables(strategy="text") is run. This works for
@@ -47,6 +51,34 @@ def clean_text(text):
     text = re.sub(r'\n', ' ', text)
     text = re.sub(r' {2,}', ' ', text)
     return text.strip()
+
+
+def find_table_bottom_rule(page, top_bound, bottom_bound):
+    """
+    Finds the bottommost horizontal-rule-line drawing (e.g. LaTeX booktabs'
+    \\bottomrule) within [top_bound, bottom_bound], to use as a more precise
+    table-bottom boundary than find_tables()'s own bbox estimate -- which can
+    overshoot into whatever text follows the table (a section heading, the
+    next paragraph). Returns None if no such line is found in range, so the
+    caller can fall back to the bbox estimate (e.g. for borderless tables).
+    """
+    lines = [d['rect'].y0 for d in page.get_drawings()
+             if d['rect'].width > 200 and d['rect'].height < 3
+             and top_bound <= d['rect'].y0 <= bottom_bound]
+    return max(lines) if lines else None
+
+
+def find_table_top_rule(page, top_bound, bottom_bound):
+    """
+    Mirror of find_table_bottom_rule() for the topmost horizontal-rule-line
+    (e.g. \\toprule) within [top_bound, bottom_bound] -- used when the caption
+    sits below the table (Nature/Scientific-Reports convention) so the crop's
+    top edge doesn't overshoot upward into whatever precedes the table.
+    """
+    lines = [d['rect'].y0 for d in page.get_drawings()
+             if d['rect'].width > 200 and d['rect'].height < 3
+             and top_bound <= d['rect'].y0 <= bottom_bound]
+    return min(lines) if lines else None
 
 
 def find_captions(blocks):
@@ -101,12 +133,57 @@ def find_captions(blocks):
     return sorted(captions, key=lambda c: c['y_top'])
 
 
-def process_page(page, page_num, tables):
+def _validate_table(found, label):
+    """
+    Given a find_tables() result, picks the candidate with the most non-empty
+    rows and rejects it if it looks degenerate, empty, watermark text, or
+    fragmented prose that find_tables() misread as tabular. Returns
+    (tab, data) or (None, None), logging the rejection reason.
+    """
+    if not found.tables:
+        return None, None
+
+    tab = max(found.tables, key=lambda t: sum(
+        1 for row in t.extract() if any(c for c in row if c)
+    ))
+    data = tab.extract()
+    data = [['' if cell is None else cell.strip() for cell in row] for row in data]
+
+    if len(data) <= 1 or not data[0] or len(data[0]) <= 1:
+        print(f'    {label}: degenerate ({len(data)}r x {len(data[0]) if data else 0}c), skipping', file=sys.stderr)
+        return None, None
+    if all(all(c == '' for c in row) for row in data):
+        print(f'    {label}: all empty, skipping', file=sys.stderr)
+        return None, None
+    # Skip tables that look like rotated/watermark text:
+    # - too many columns (>10) relative to content, OR
+    # - first few rows contain URL/preprint watermark fragments
+    watermark_pattern = re.compile(r'doi\.org|preprint|certified by peer|biorxiv', re.IGNORECASE)
+    all_text = ' '.join(c for row in data[:3] for c in row)
+    if watermark_pattern.search(all_text):
+        print(f'    {label}: watermark text detected, skipping', file=sys.stderr)
+        return None, None
+    first_data_row = next((r for r in data if any(c for c in r)), [])
+    non_empty = [c for c in first_data_row if c]
+    if len(non_empty) > 10 and non_empty and sum(len(c) for c in non_empty) / len(non_empty) < 6:
+        print(f'    {label}: looks like fragmented text, skipping', file=sys.stderr)
+        return None, None
+
+    return tab, data
+
+
+def process_page(page, page_num, tables, real_page=True):
     """
     Runs the caption/table-region detection pipeline against a single page
     (which may be an original source page, or a synthetic page holding a
     rotation-normalized crop of one) and appends any tables found to `tables`.
     Assumes the page's text is in normal horizontal reading order.
+
+    real_page: True if `page` is the actual source page, so a navigable
+    `position` rect can be computed directly from its coordinates. False when
+    `page` is a synthetic rotation-normalized copy with different dimensions/
+    orientation than the real page -- position is skipped in that case rather
+    than computed wrong; navigation falls back to caption text-search instead.
     """
     blocks = page.get_text('blocks', sort=True)
     width = page.rect.width
@@ -119,68 +196,85 @@ def process_page(page, page_num, tables):
     print(f'  Page {page_num}: {len(captions)} caption(s)', file=sys.stderr)
 
     for i, cap in enumerate(captions):
-        # Primary search: below the caption (most common — caption above table)
+        # Search below the caption (caption above table -- LaTeX convention)...
         region_top = cap['y_bottom'] + 2
         region_bottom = captions[i + 1]['y_top'] - 2 if i + 1 < len(captions) else height
-        clip = fitz.Rect(0, region_top, width, region_bottom)
-        found = page.find_tables(strategy="text", clip=clip)
+        below_tab = below_data = None
+        if region_bottom - region_top >= 30:
+            found = page.find_tables(strategy="text", clip=fitz.Rect(0, region_top, width, region_bottom))
+            below_tab, below_data = _validate_table(found, cap['label'])
 
-        # Fallback: above the caption (caption below table)
-        if not found.tables or region_bottom - region_top < 30:
-            region_top_above = captions[i - 1]['y_bottom'] + 2 if i > 0 else 0
-            region_bottom_above = cap['y_top'] - 2
-            if region_bottom_above - region_top_above >= 30:
-                clip = fitz.Rect(0, region_top_above, width, region_bottom_above)
-                found = page.find_tables(strategy="text", clip=clip)
-                if found.tables:
-                    print(f'    {cap["label"]}: found above caption', file=sys.stderr)
+        # ...and above the caption (caption below table -- Nature/Sci-Reports
+        # convention), always, rather than only as a fallback: on some pages
+        # the "below" region contains no real table but find_tables() still
+        # misreads ordinary wrapped body-text prose there as a bogus table,
+        # so we can't rely on "found nothing below" to decide which side the
+        # real table is on -- both candidates need to be validated and compared.
+        region_top_above = captions[i - 1]['y_bottom'] + 2 if i > 0 else 0
+        region_bottom_above = cap['y_top'] - 2
+        # Tighten the region to the nearest rule line above the caption, if
+        # any -- otherwise, with no preceding table caption on the page, this
+        # region defaults to the whole page above and can sweep in unrelated
+        # content (e.g. a figure) that find_tables() then misreads as a table.
+        nearest_rule_above = find_table_bottom_rule(page, region_top_above, region_bottom_above)
+        if nearest_rule_above is not None:
+            region_top_above = max(region_top_above, nearest_rule_above - 5)
+        above_tab = above_data = None
+        if region_bottom_above - region_top_above >= 30:
+            found = page.find_tables(strategy="text", clip=fitz.Rect(0, region_top_above, width, region_bottom_above))
+            above_tab, above_data = _validate_table(found, cap['label'])
 
-        if not found.tables:
+        if below_tab is None and above_tab is None:
             print(f'    {cap["label"]}: no table detected', file=sys.stderr)
             continue
 
-        # Take the table with the most non-empty rows
-        tab = max(found.tables, key=lambda t: sum(
-            1 for row in t.extract() if any(c for c in row if c)
-        ))
-        data = tab.extract()
-        data = [['' if cell is None else cell.strip() for cell in row] for row in data]
-
-        # Skip degenerate tables
-        if len(data) <= 1 or not data[0] or len(data[0]) <= 1:
-            print(f'    {cap["label"]}: degenerate ({len(data)}r x {len(data[0]) if data else 0}c), skipping', file=sys.stderr)
-            continue
-        if all(all(c == '' for c in row) for row in data):
-            print(f'    {cap["label"]}: all empty, skipping', file=sys.stderr)
-            continue
-        # Skip tables that look like rotated/watermark text:
-        # - too many columns (>10) relative to content, OR
-        # - first few rows contain URL/preprint watermark fragments
-        watermark_pattern = re.compile(r'doi\.org|preprint|certified by peer|biorxiv', re.IGNORECASE)
-        all_text = ' '.join(c for row in data[:3] for c in row)
-        if watermark_pattern.search(all_text):
-            print(f'    {cap["label"]}: watermark text detected, skipping', file=sys.stderr)
-            continue
-        first_data_row = next((r for r in data if any(c for c in r)), [])
-        non_empty = [c for c in first_data_row if c]
-        if len(non_empty) > 10 and non_empty and sum(len(c) for c in non_empty) / len(non_empty) < 6:
-            print(f'    {cap["label"]}: looks like fragmented text, skipping', file=sys.stderr)
-            continue
+        # Prefer whichever valid candidate sits closer to the caption -- a
+        # genuine table is adjacent to its caption, while a false-positive
+        # match picked up elsewhere on the page (e.g. prose find_tables()
+        # misread as tabular) sits much further away.
+        below_gap = (below_tab.bbox[1] - cap['y_bottom']) if below_tab is not None else None
+        above_gap = (cap['y_top'] - above_tab.bbox[3]) if above_tab is not None else None
+        if below_tab is not None and (above_tab is None or below_gap <= above_gap):
+            tab, data, caption_below_table = below_tab, below_data, False
+        else:
+            tab, data, caption_below_table = above_tab, above_data, True
+            print(f'    {cap["label"]}: found above caption', file=sys.stderr)
 
         print(f'    {cap["label"]}: {len(data)}r x {len(data[0])}c', file=sys.stderr)
 
-        clip_img = fitz.Rect(0, max(0, cap['y_top'] - 4), width, min(height, tab.bbox[3] + 4))
+        if caption_below_table:
+            # Table body precedes the caption -- crop from the table's own top
+            # rule (mirrors the bottom-rule fix, but upward) down through the
+            # caption's bottom edge. Using cap['y_top'] here (as in the normal
+            # branch below) would put the crop's top BELOW its bottom.
+            top_rule = find_table_top_rule(page, tab.bbox[1] - 5, tab.bbox[3])
+            table_top = top_rule if top_rule is not None else tab.bbox[1]
+            clip_img = fitz.Rect(0, max(0, table_top - 4), width, min(height, cap['y_bottom'] + 4))
+        else:
+            # Prefer the actual bottommost rule line over find_tables()'s own
+            # bbox estimate, which has been observed to overshoot into the
+            # section/paragraph that follows the table.
+            bottom_rule = find_table_bottom_rule(page, tab.bbox[1], tab.bbox[3] + 5)
+            table_bottom = bottom_rule if bottom_rule is not None else tab.bbox[3]
+            clip_img = fitz.Rect(0, max(0, cap['y_top'] - 4), width, min(height, table_bottom + 4))
         pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), clip=clip_img)
         img_b64 = base64.b64encode(pix.tobytes('jpeg', jpg_quality=85)).decode()
 
-        tables.append({
+        entry = {
             'page_num': page_num,
             'table_num': cap['table_num'],
             'label': cap['label'],
             'caption': cap['caption'],
             'data': data,
             'image_data': f'data:image/jpeg;base64,{img_b64}',
-        })
+        }
+        if real_page:
+            # Reader's position.rects are in native PDF space (origin bottom-left,
+            # y increasing upward) -- clip_img is top-left-origin, y increasing
+            # downward, so flip each y coordinate and swap y0/y1.
+            position_rect = [clip_img.x0, height - clip_img.y1, clip_img.x1, height - clip_img.y0]
+            entry['position'] = {'pageIndex': page_num - 1, 'rects': [position_rect]}
+        tables.append(entry)
 
 
 def get_rotated_regions(page):
@@ -237,7 +331,7 @@ def process_rotated_regions(doc, page, page_num, tables):
             newpage = tmp_doc.new_page(width=w, height=h)
             newpage.show_pdf_page(newpage.rect, doc, page_num - 1, clip=region, rotate=angle)
             print(f'  Page {page_num}: normalized rotated region (dir={dirv}, angle={angle})', file=sys.stderr)
-            process_page(newpage, page_num, tables)
+            process_page(newpage, page_num, tables, real_page=False)
         finally:
             tmp_doc.close()
 

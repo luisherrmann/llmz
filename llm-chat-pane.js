@@ -982,6 +982,24 @@ LLMChatPane = {
 					return content;
 				};
 
+				// Makes a system message clickable to jump to the figure/table it
+				// refers to: precise region navigation via its stored `position`
+				// (native PDF-space rects, computed at extraction time) when
+				// available, falling back to caption text-search otherwise (e.g.
+				// for tables found via rotation-normalization, where a real-page
+				// position can't be reliably computed).
+				let makeMessageClickable = (messageEl, item) => {
+					messageEl.classList.add("llm-clickable-message");
+					messageEl.addEventListener("click", () => {
+						if (item.position) {
+							LLMCitation.navigateToPosition(item.position);
+						}
+						else {
+							LLMCitation.navigateToText(item.caption);
+						}
+					});
+				};
+
 				submitButton.addEventListener("click", async () => {
 					let prompt = input.value.trim();
 					if (!prompt) {
@@ -1057,7 +1075,8 @@ LLMChatPane = {
 							}
 							if (selectedTable) {
 								modelPrompt += `\n\n<TABLE_CONTEXT>\n${this._formatTableMarkdown(selectedTable)}\n</TABLE_CONTEXT>`;
-								appendMessage("System", `Including ${selectedTable.label} as table context (best match for your question, out of ${tableIndex.tables.length} extracted).`);
+								let msg = appendMessage("System", `Including ${selectedTable.label} as table context (best match for your question, out of ${tableIndex.tables.length} extracted). Click to jump to it.`);
+								makeMessageClickable(msg, selectedTable);
 							}
 							else {
 								appendMessage("System", `Extracted ${tableIndex.tables.length} table${tableIndex.tables.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
@@ -1072,7 +1091,9 @@ LLMChatPane = {
 								let bestFigure = await this.selectFigureWithLLM(figureIndex, prompt);
 								if (bestFigure?.image_data) {
 									images.push(bestFigure.image_data);
-									appendMessage("System", `Including ${bestFigure.label || `figure ${bestFigure.figure_num}`} as image context (best match for your question, ${currentModel} supports vision).`);
+									let label = bestFigure.label || `figure ${bestFigure.figure_num}`;
+									let msg = appendMessage("System", `Including ${label} as image context (best match for your question, ${currentModel} supports vision). Click to jump to it.`);
+									makeMessageClickable(msg, bestFigure);
 								}
 							}
 						}

@@ -47,6 +47,12 @@
 	font-family: inherit;
 }
 
+.llm-clickable-message {
+	cursor: pointer;
+	color: -moz-nativehyperlinktext;
+	text-decoration: underline;
+}
+
 /* Input controls */
 .llm-input {
 	box-sizing: border-box;

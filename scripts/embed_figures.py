@@ -113,6 +113,7 @@ if __name__ == '__main__':
                 'caption': fig['caption'],
                 'embedding': emb,
                 'image_data': fig['image_data'],
+                'position': fig.get('position'),
             })
 
         with open(sys.argv[2], 'w') as f:

@@ -211,4 +211,19 @@ LLMCitation = {
 		}, iwin);
 		fc.find(params);
 	},
+
+	// Navigates to (and briefly highlights) a specific region on a page, given
+	// a position in the reader's native format: { pageIndex, rects: [[x0,y0,x1,y1]] }
+	// in bottom-up PDF space. Used for figures/tables, where we already know the
+	// exact region from extraction — more precise than navigateToText's caption
+	// search, and works regardless of whether the PDF has named destinations.
+	async navigateToPosition(position) {
+		if (!Zotero.Reader || !position) return;
+		let win = Zotero.getMainWindow();
+		let selectedID = win?.Zotero_Tabs?.selectedID;
+		if (!selectedID) return;
+		let reader = Zotero.Reader.getByTabID(selectedID);
+		if (!reader) return;
+		await reader.navigate({ position });
+	},
 };

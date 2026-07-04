@@ -30,6 +30,10 @@ LLMChatPane = {
 		"The visible label in brackets must be the exact label as given in its context (e.g. 'Table 1', 'Figure 2a') — do not renumber, reletter, or rephrase it.",
 		"The angle brackets around ref: are mandatory, exactly like the citation format above.",
 		"Example: 'As shown in [Table 1](<ref:table:1>), the reaction rate doubles.'",
+		"A <REFERENCE_CONTEXT> block, if present, lists the papers cited in this PDF's own bibliography, numbered exactly as in the original paper.",
+		"You may cite one of these entries if it genuinely helps answer the question (e.g. it's the direct source of a claim, or clearly relevant further reading) — do not force one in otherwise, and do not list entries just because they exist.",
+		"Format any such citation as [N](<ref:reference:N>), where N is the bibliography number, e.g. '[3]' — matching how the paper itself cites its own references.",
+		"Example: 'This approach was first proposed by [12](<ref:reference:12>).'",
 	].join(" "),
 
 	init({ id, version, rootURI }) {
@@ -358,6 +362,10 @@ LLMChatPane = {
 		let mdHeader = header ? "| " + header.join(" | ") + " |" : "";
 		let mdRows = rows.map(r => "| " + r.join(" | ") + " |").join("\n");
 		return `**[p.${t.page_num}] ${t.label}:** ${t.caption}\n${mdHeader}\n${sep}\n${mdRows}`;
+	},
+
+	_formatReferenceContext(references) {
+		return references.map(r => `[${r.index}] ${r.text}`).join("\n");
 	},
 
 	// Asks the LLM to pick the most relevant table by number, given each table's
@@ -707,12 +715,17 @@ LLMChatPane = {
 				let [refType, refNum] = payload.split(":");
 				let entry = linkIndex?.[refType]?.get(parseInt(refNum, 10));
 				if (!entry) return label;
+				// linkIndex can override the visible text (e.g. references: the
+				// model only emits the bare number, and we substitute the full
+				// citation text here rather than trusting the model to
+				// reproduce it verbatim).
+				let displayLabel = entry.label || label;
 				if (entry.position) {
 					let posJson = this._escapeAttr(JSON.stringify(entry.position));
-					return `<a class="llm-find-link" data-position="${posJson}" title="${this._escapeAttr(label)}">${label}</a>`;
+					return `<a class="llm-find-link" data-position="${posJson}" title="${this._escapeAttr(displayLabel)}">${displayLabel}</a>`;
 				}
-				let escapedCaption = this._escapeAttr(entry.caption || label);
-				return `<a class="llm-find-link" data-query="${escapedCaption}" title="${escapedCaption}">${label}</a>`;
+				let escapedCaption = this._escapeAttr(entry.caption || displayLabel);
+				return `<a class="llm-find-link" data-query="${escapedCaption}" title="${escapedCaption}">${displayLabel}</a>`;
 			}
 		);
 		return marked.parse(processed);
@@ -1059,6 +1072,12 @@ LLMChatPane = {
 								return null;
 							})
 							: Promise.resolve(null);
+						let referenceIndexPromise = pdfItem
+							? LLMReferences.getReferenceIndex(pdfItem).catch((e) => {
+								this.log(`getReferenceIndex failed: ${e.message}`);
+								return null;
+							})
+							: Promise.resolve(null);
 						let selectionLine = selectedText
 							? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
 							: `Selected Text: (none — ${selectionInfo})`;
@@ -1131,12 +1150,33 @@ LLMChatPane = {
 							this.log(`Image context setup failed: ${e.message}`);
 						}
 
-						// Lets the model's own text mentions of any extracted table/figure
-						// (not just the one injected as full context) become clickable
-						// links -- see _renderMarkdown's `ref:table:N` / `ref:figure:N` handling.
+						// Unlike tables/figures, the reference list isn't pre-selected by a
+						// separate LLM call -- the whole bibliography (already short,
+						// citation-length entries) is given to the answering model
+						// directly, and the system prompt tells it it MAY cite one if
+						// genuinely relevant, not that it must.
+						let referenceIndex = await referenceIndexPromise;
+						if (referenceIndex?.references?.length) {
+							modelPrompt += `\n\n<REFERENCE_CONTEXT>\n${this._formatReferenceContext(referenceIndex.references)}\n</REFERENCE_CONTEXT>`;
+							appendMessage("System", `Including bibliography (${referenceIndex.references.length} references) as context.`);
+						}
+
+						// Lets the model's own text mentions of any extracted table/figure/
+						// reference (not just the one injected as full context) become
+						// clickable links -- see _renderMarkdown's `ref:table:N` /
+						// `ref:figure:N` / `ref:reference:N` handling. References have no
+						// stored position, so they fall back to a text search using the
+						// first few words of the citation (a full-length quote is too
+						// brittle a phrase-search target). The model only emits the bare
+						// number, e.g. [12](<ref:reference:12>) -- `label` here overrides
+						// the rendered link text with the full citation instead.
 						let linkIndex = {
 							table: new Map((tableIndex?.tables || []).map(t => [t.table_num, { position: t.position, caption: t.caption }])),
 							figure: new Map((figureIndex?.figures || []).map(f => [f.figure_num, { position: f.position, caption: f.caption }])),
+							reference: new Map((referenceIndex?.references || []).map(r => [r.index, {
+								label: `[${r.index}] ${r.text}`,
+								caption: r.text.split(/\s+/).slice(0, 8).join(" "),
+							}])),
 						};
 
 						let reply = appendMessage(providerLabel, `Waiting for ${providerLabel}...`);

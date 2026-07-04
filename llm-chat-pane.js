@@ -25,6 +25,11 @@ LLMChatPane = {
 		"The exact phrase is 4–8 consecutive words copied verbatim from the <PDF_CONTEXT> — no paraphrasing.",
 		"The angle brackets around find: are mandatory.",
 		"Example: 'The mutation rate increases [CITE](<find:error-prone DNA polymerases to increase>).'",
+		"Whenever you mention a table (e.g. from <TABLE_CONTEXT>) or a figure shown to you as an image, wrap that mention in a link so the reader can jump to it.",
+		"Format: [Table N](<ref:table:N>) or [Figure N](<ref:figure:N>), where N is the table/figure number.",
+		"The visible label in brackets must be the exact label as given in its context (e.g. 'Table 1', 'Figure 2a') — do not renumber, reletter, or rephrase it.",
+		"The angle brackets around ref: are mandatory, exactly like the citation format above.",
+		"Example: 'As shown in [Table 1](<ref:table:1>), the reaction rate doubles.'",
 	].join(" "),
 
 	init({ id, version, rootURI }) {
@@ -674,15 +679,40 @@ LLMChatPane = {
 		}
 	},
 
-	_renderMarkdown(text) {
+	_escapeAttr(str) {
+		return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+	},
+
+	// Renders markdown, converting two kinds of link tokens to HTML anchors
+	// (all sharing the `llm-find-link` class, so figure/table links look
+	// identical to citation links -- blue, underlined):
+	//   [label](<find:query>)      -- citation: text-search navigation
+	//   [label](<ref:table:N>) /
+	//   [label](<ref:figure:N>)    -- figure/table mention: looked up in
+	//                                  linkIndex for precise position-based
+	//                                  navigation, falling back to a
+	//                                  caption text-search if no position
+	//                                  was extracted (e.g. rotated tables)
+	// Done before marked parses, so spaces/special chars in the query don't
+	// break markdown link parsing.
+	_renderMarkdown(text, linkIndex) {
 		if (typeof marked === "undefined") return null;
-		// Convert [label](<find:query>) to HTML anchors before marked parses,
-		// so spaces and special chars in the query don't break markdown link parsing.
 		let processed = text.replace(
-			/\[([^\]]+)\]\(<find:([^>]+)>\)/g,
-			(_, label, query) => {
-				let escaped = query.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-				return `<a class="llm-find-link" data-query="${escaped}" title="${escaped}">${label}</a>`;
+			/\[([^\]]+)\]\(<(find|ref):([^>]+)>\)/g,
+			(_, label, kind, payload) => {
+				if (kind === "find") {
+					let escaped = this._escapeAttr(payload);
+					return `<a class="llm-find-link" data-query="${escaped}" title="${escaped}">${label}</a>`;
+				}
+				let [refType, refNum] = payload.split(":");
+				let entry = linkIndex?.[refType]?.get(parseInt(refNum, 10));
+				if (!entry) return label;
+				if (entry.position) {
+					let posJson = this._escapeAttr(JSON.stringify(entry.position));
+					return `<a class="llm-find-link" data-position="${posJson}" title="${this._escapeAttr(label)}">${label}</a>`;
+				}
+				let escapedCaption = this._escapeAttr(entry.caption || label);
+				return `<a class="llm-find-link" data-query="${escapedCaption}" title="${escapedCaption}">${label}</a>`;
 			}
 		);
 		return marked.parse(processed);
@@ -1084,10 +1114,10 @@ LLMChatPane = {
 						}
 
 						let images = [];
+						let figureIndex = await figureIndexPromise;
 						try {
 							let currentModel = await this.getCurrentModel();
-							if (await this.modelSupportsImages(currentModel)) {
-								let figureIndex = await figureIndexPromise;
+							if (figureIndex?.figures?.length && await this.modelSupportsImages(currentModel)) {
 								let bestFigure = await this.selectFigureWithLLM(figureIndex, prompt);
 								if (bestFigure?.image_data) {
 									images.push(bestFigure.image_data);
@@ -1100,6 +1130,14 @@ LLMChatPane = {
 						catch (e) {
 							this.log(`Image context setup failed: ${e.message}`);
 						}
+
+						// Lets the model's own text mentions of any extracted table/figure
+						// (not just the one injected as full context) become clickable
+						// links -- see _renderMarkdown's `ref:table:N` / `ref:figure:N` handling.
+						let linkIndex = {
+							table: new Map((tableIndex?.tables || []).map(t => [t.table_num, { position: t.position, caption: t.caption }])),
+							figure: new Map((figureIndex?.figures || []).map(f => [f.figure_num, { position: f.position, caption: f.caption }])),
+						};
 
 						let reply = appendMessage(providerLabel, `Waiting for ${providerLabel}...`);
 						this.log(`Submitting prompt to ${providerLabel}: ${prompt}`);
@@ -1117,7 +1155,7 @@ LLMChatPane = {
 						}
 						else {
 							let groundedText = await LLMCitation.groundCitations(result.text, citationIndex);
-							let html = this._renderMarkdown(groundedText);
+							let html = this._renderMarkdown(groundedText, linkIndex);
 							if (html) {
 								let rendered = doc.createElement("div");
 								rendered.className = "llm-markdown";
@@ -1126,6 +1164,15 @@ LLMChatPane = {
 									let anchor = e.target.closest(".llm-find-link");
 									if (!anchor) return;
 									e.preventDefault();
+									if (anchor.dataset.position) {
+										try {
+											LLMCitation.navigateToPosition(JSON.parse(anchor.dataset.position));
+										}
+										catch (err) {
+											this.log(`Failed to parse position for link: ${err.message}`);
+										}
+										return;
+									}
 									LLMCitation.navigateToText(anchor.dataset.query);
 								});
 								reply.replaceWith(rendered);

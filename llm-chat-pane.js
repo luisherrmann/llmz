@@ -877,21 +877,15 @@ LLMChatPane = {
 		}
 	},
 
-	// Toggles the chat pane: if it's already open AND the chat input already
-	// has focus, collapses the WHOLE side pane (item pane on the library tab,
-	// context pane on a reader tab) -- this is the "press again to dismiss"
-	// case, so it should give the screen back, not just close our one
-	// section while leaving the rest of the sidebar (info, abstract,
-	// attachments, etc.) sitting there open. Otherwise, expands the overall
-	// item/context pane and this section's own collapsible twisty (either
-	// may independently be collapsed) and focuses the chat input. Works
-	// uniformly for the library tab's item pane and a reader tab's context
-	// pane -- two separate DOM subtrees, each with its own
-	// <item-pane-sidenav>, but ZoteroContextPane.sidenav always resolves to
-	// whichever one is current for the active tab
+	// Expands both the overall item/context pane and this section's own
+	// collapsible twisty (either may independently be collapsed) and
+	// focuses the chat input. Works uniformly for the library tab's item
+	// pane and a reader tab's context pane -- two separate DOM subtrees,
+	// each with its own <item-pane-sidenav>, but ZoteroContextPane.sidenav
+	// always resolves to whichever one is current for the active tab
 	// (chrome/content/zotero/contextPane.js). Deliberately does NOT call
-	// container.scrollToPane() when opening -- that's <item-pane-sidenav>'s
-	// own click-handler behavior (chrome/content/zotero/elements/itemPaneSidenav.js),
+	// container.scrollToPane() -- that's <item-pane-sidenav>'s own
+	// click-handler behavior (chrome/content/zotero/elements/itemPaneSidenav.js),
 	// but it repositions the ENTIRE item-pane scroll container so the target
 	// section sits at the very top, shoving every section above it (info,
 	// abstract, attachments, etc.) out of view -- a jarring jump for a
@@ -900,34 +894,23 @@ LLMChatPane = {
 	// element already scrolls it into view natively, just far more gently
 	// (only as far as needed, not always to the top).
 	async openChatPane(win) {
-		let { ZoteroContextPane, ZoteroPane, Zotero_Tabs, document } = win;
+		let { ZoteroContextPane, ZoteroPane, Zotero_Tabs } = win;
 		let sidenav = ZoteroContextPane?.sidenav;
 		let container = sidenav?.container;
 		if (!container) return;
-		let pane = container.getPane(this.paneID);
-		if (!pane) return;
 
-		let isLibraryTab = Zotero_Tabs.selectedType === "library";
-		let input = pane.querySelector(".llm-input");
-		if (pane.open && input && document.activeElement === input) {
-			if (isLibraryTab) {
-				ZoteroPane.itemPane.collapsed = true;
-			}
-			else {
-				ZoteroContextPane.collapsed = true;
-			}
-			return;
-		}
-
-		if (isLibraryTab) {
+		if (Zotero_Tabs.selectedType === "library") {
 			ZoteroPane.itemPane.collapsed = false;
 		}
 		else {
 			ZoteroContextPane.collapsed = false;
 		}
 
-		pane.open = true;
-		input?.focus();
+		let pane = container.getPane(this.paneID);
+		if (pane) {
+			pane.open = true;
+			pane.querySelector(".llm-input")?.focus();
+		}
 	},
 
 	registerItemPane() {
@@ -1154,6 +1137,41 @@ LLMChatPane = {
 					row.append(span, input);
 					return row;
 				};
+
+				let shortcutsDetails = doc.createElement("details");
+				shortcutsDetails.className = "llm-shortcuts-details";
+				let shortcutsSummary = doc.createElement("summary");
+				shortcutsSummary.textContent = "Keyboard Shortcuts";
+				let shortcutsBody = doc.createElement("div");
+				shortcutsBody.className = "llm-shortcuts-body";
+				// Sorted by (keys.length, keys) -- shorter combos first, then
+				// ascending lexicographically (by the shortcut itself, not
+				// the description) within each length. Plain `<`/`>` rather
+				// than localeCompare(), since locale-aware collation could
+				// reorder these symbol characters unpredictably instead of
+				// by simple code-point order.
+				let shortcuts = [
+					{ keys: "⌘ ⏎", desc: "Submit" },
+					{ keys: "⌘ ⌫", desc: "Stop" },
+					{ keys: "⌘ ↓", desc: "Older message" },
+					{ keys: "⌘ ↑", desc: "Newer message" },
+					{ keys: "⌘ ⇧ ↓", desc: "Oldest message" },
+					{ keys: "⌘ ⇧ ↑", desc: "Newest message" },
+					{ keys: "⌘ I", desc: "Toggle chat pane" },
+				].sort((a, b) => a.keys.length - b.keys.length || (a.keys < b.keys ? -1 : a.keys > b.keys ? 1 : 0));
+				for (let { keys, desc } of shortcuts) {
+					let row = doc.createElement("div");
+					row.className = "llm-shortcut-row";
+					let badge = doc.createElement("span");
+					badge.className = "llm-shortcut-badge";
+					badge.textContent = keys;
+					let label = doc.createElement("span");
+					label.className = "llm-shortcut-desc";
+					label.textContent = desc;
+					row.append(badge, label);
+					shortcutsBody.appendChild(row);
+				}
+				shortcutsDetails.append(shortcutsSummary, shortcutsBody);
 
 				let advancedDetails = doc.createElement("details");
 				advancedDetails.className = "llm-advanced-details";
@@ -1662,7 +1680,7 @@ LLMChatPane = {
 					}
 				});
 
-				controls.append(modelRow, apiKeyRow, advancedDetails, input, buttonRow);
+				controls.append(modelRow, apiKeyRow, shortcutsDetails, advancedDetails, input, buttonRow);
 				container.append(controls, messageList);
 				body.appendChild(container);
 

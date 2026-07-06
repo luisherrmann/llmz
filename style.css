@@ -61,6 +61,47 @@
 	resize: vertical;
 }
 
+/* Keyboard shortcuts dropdown, same disclosure pattern as .llm-advanced-details
+   below. Rows are purely informational (no hover/focus/click affordances) --
+   display-only labels, not controls. */
+.llm-shortcuts-details {
+	font-size: 0.9em;
+}
+
+.llm-shortcuts-details summary {
+	cursor: pointer;
+	color: -moz-nativehyperlinktext;
+}
+
+.llm-shortcuts-body {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 6px;
+}
+
+.llm-shortcut-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.llm-shortcut-badge {
+	flex: 0 0 auto;
+	background: #1a5f7a;
+	color: #fff;
+	font-weight: 700;
+	font-size: 0.85em;
+	line-height: 1.2;
+	padding: 4px 10px;
+	border-radius: 14px;
+	white-space: nowrap;
+}
+
+.llm-shortcut-desc {
+	font-size: 0.85em;
+}
+
 .llm-button-row {
 	display: flex;
 	flex-direction: row;

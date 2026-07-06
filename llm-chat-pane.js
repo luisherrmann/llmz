@@ -5,6 +5,13 @@ LLMChatPane = {
 	initialized: false,
 	paneID: null,
 	_keydownHandlers: new WeakMap(),
+	// Per-paper history of submitted messages, so CMD+DOWN/CMD+UP (see
+	// onRender's input keydown handler) can navigate back/forward through
+	// what was previously typed for THIS paper specifically -- keyed by the
+	// active PDF attachment's item ID (or a fixed key when there's no active
+	// PDF), since a fresh <textarea> is created per item-pane render but the
+	// underlying history should survive switching away and back.
+	_messageHistory: new Map(),
 	maxPDFContextChars: 60000,
 	maxPageContextChars: 5000,
 	chunkContextTopK: 10,
@@ -430,6 +437,22 @@ LLMChatPane = {
 			return item;
 		}
 		return null;
+	},
+
+	// A stable key for "which paper" a chat input's message history belongs
+	// to -- the active PDF attachment's item ID, or a fixed fallback when
+	// there's no active PDF (general chat still gets its own shared history).
+	_paperHistoryKey() {
+		return this.getActiveReaderAttachment()?.id ?? "__no_pdf__";
+	},
+
+	_getMessageHistory(key) {
+		let history = this._messageHistory.get(key);
+		if (!history) {
+			history = [];
+			this._messageHistory.set(key, history);
+		}
+		return history;
 	},
 
 	// Opens a library item as a new reader tab (if it has a PDF attachment
@@ -1188,6 +1211,21 @@ LLMChatPane = {
 					rejectCancel?.(new Error("Cancelled"));
 				});
 
+				// History of messages previously submitted from THIS input,
+				// scoped to whichever paper was active when this section was
+				// rendered (see _paperHistoryKey) -- navigated with CMD+DOWN
+				// (back to an older message) / CMD+UP (forward toward the
+				// most recent one, then back to whatever was being typed
+				// before navigating). `historyIndex === history.length`
+				// means "not currently navigating" -- viewing the live
+				// draft; stepping back for the first time stashes that draft
+				// in `historyDraft` so stepping all the way forward again
+				// restores it, rather than just leaving the last history
+				// entry sitting there.
+				let history = this._getMessageHistory(this._paperHistoryKey());
+				let historyIndex = history.length;
+				let historyDraft = "";
+
 				input.addEventListener("keydown", (e) => {
 					if (!e.metaKey) return;
 					if (e.code === "Enter") {
@@ -1197,6 +1235,39 @@ LLMChatPane = {
 					else if (e.code === "Backspace") {
 						e.preventDefault();
 						if (!stopButton.disabled) stopButton.click();
+					}
+					// CMD+SHIFT+Down/Up jump straight to the oldest/newest ends
+					// of history, rather than stepping one message at a time
+					// like plain CMD+Down/Up (below) -- same "stash the live
+					// draft on the way out" behavior as a single step, so
+					// navigating all the way back to the present afterward
+					// still restores it.
+					else if (e.code === "ArrowDown" && e.shiftKey) {
+						e.preventDefault();
+						if (!history.length) return;
+						if (historyIndex === history.length) historyDraft = input.value;
+						historyIndex = 0;
+						input.value = history[0];
+					}
+					else if (e.code === "ArrowUp" && e.shiftKey) {
+						e.preventDefault();
+						if (!history.length) return;
+						if (historyIndex === history.length) historyDraft = input.value;
+						historyIndex = history.length - 1;
+						input.value = history[historyIndex];
+					}
+					else if (e.code === "ArrowDown") {
+						e.preventDefault();
+						if (historyIndex <= 0) return;
+						if (historyIndex === history.length) historyDraft = input.value;
+						historyIndex--;
+						input.value = history[historyIndex];
+					}
+					else if (e.code === "ArrowUp") {
+						e.preventDefault();
+						if (historyIndex >= history.length) return;
+						historyIndex++;
+						input.value = historyIndex === history.length ? historyDraft : history[historyIndex];
 					}
 				});
 
@@ -1289,6 +1360,19 @@ LLMChatPane = {
 						appendMessage("System", "Enter a prompt first.");
 						return;
 					}
+
+					// Recorded regardless of which flow the message triggers
+					// (download-reference lookup or normal chat) -- anything
+					// submitted from this field counts as "a message" for
+					// history purposes. Skips a duplicate of the immediately
+					// preceding entry (e.g. re-sending the same message
+					// twice in a row) rather than cluttering history with an
+					// identical adjacent one.
+					if (history[history.length - 1] !== prompt) {
+						history.push(prompt);
+					}
+					historyIndex = history.length;
+					historyDraft = "";
 
 					submitButton.disabled = true;
 					// Enabled immediately, rather than only once actual model

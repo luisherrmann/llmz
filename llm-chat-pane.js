@@ -431,6 +431,23 @@ LLMChatPane = {
 		return null;
 	},
 
+	// Opens a library item as a new reader tab (if it has a PDF attachment
+	// available), falling back to just selecting/highlighting it in the
+	// library pane otherwise -- used for the "already in your library" link
+	// on a download-reference request, so clicking the paper's title behaves
+	// like clicking it directly in the library.
+	async _openLibraryItem(item) {
+		let win = Zotero.getMainWindow();
+		if (!win) return;
+		let attachment = await item.getBestAttachment?.();
+		if (attachment?.isPDFAttachment?.()) {
+			await Zotero.Reader.open(attachment.id);
+		}
+		else {
+			await win.ZoteroPane.selectItem(item.id);
+		}
+	},
+
 	getReaderSelection() {
 		if (!Zotero.Reader) return { text: null, info: "no reader API" };
 		let win = Zotero.getMainWindow();
@@ -715,17 +732,25 @@ LLMChatPane = {
 				let [refType, refNum] = payload.split(":");
 				let entry = linkIndex?.[refType]?.get(parseInt(refNum, 10));
 				if (!entry) return label;
-				// linkIndex can override the visible text (e.g. references: the
-				// model only emits the bare number, and we substitute the full
-				// citation text here rather than trusting the model to
-				// reproduce it verbatim).
-				let displayLabel = entry.label || label;
+				// The rendered link text always stays short -- for a
+				// reference mention specifically, just "[12]" (the model
+				// emits the bare number as its markdown label, e.g.
+				// "[12](<ref:reference:12>)", and plain markdown rendering
+				// would otherwise drop the brackets entirely since they're
+				// consumed as link syntax; re-add them here so it still
+				// reads like an in-text citation). Tables/figures keep their
+				// own already-descriptive label (e.g. "Table 1") as-is.
+				// entry.label (the full citation text, when present) is used
+				// only for the hover tooltip, never inline -- a full
+				// bibliography entry inline would clutter the response.
+				let visibleLabel = refType === "reference" ? `[${label}]` : label;
+				let tooltipText = entry.label || entry.caption || label;
 				if (entry.position) {
 					let posJson = this._escapeAttr(JSON.stringify(entry.position));
-					return `<a class="llm-find-link" data-position="${posJson}" title="${this._escapeAttr(displayLabel)}">${displayLabel}</a>`;
+					return `<a class="llm-find-link" data-position="${posJson}" title="${this._escapeAttr(tooltipText)}">${visibleLabel}</a>`;
 				}
-				let escapedCaption = this._escapeAttr(entry.caption || displayLabel);
-				return `<a class="llm-find-link" data-query="${escapedCaption}" title="${escapedCaption}">${displayLabel}</a>`;
+				let escapedCaption = this._escapeAttr(entry.caption || tooltipText);
+				return `<a class="llm-find-link" data-query="${escapedCaption}" title="${this._escapeAttr(tooltipText)}">${visibleLabel}</a>`;
 			}
 		);
 		return marked.parse(processed);
@@ -1043,6 +1068,47 @@ LLMChatPane = {
 					});
 				};
 
+				// Renders a system message built from an ordered list of
+				// parts -- each either plain text ({ text }) or a real
+				// inline clickable link ({ label, title, onClick }) -- as
+				// opposed to makeMessageClickable's whole-row click target,
+				// so it reads as a normal sentence with just specific words
+				// as the clickable parts (matching how the model's own
+				// figure/table/reference links look). Used for the
+				// download-reference results, which need independent links
+				// for both the library item and its PDF source.
+				let appendRichMessage = (parts) => {
+					let message = doc.createElement("div");
+					message.className = "llm-message";
+
+					let label = doc.createElement("div");
+					label.className = "llm-message-label";
+					label.textContent = "System";
+
+					let content = doc.createElement("pre");
+					content.className = "llm-message-content";
+					for (let part of parts) {
+						if (part.text !== undefined) {
+							content.append(doc.createTextNode(part.text));
+							continue;
+						}
+						let link = doc.createElement("a");
+						link.className = "llm-find-link";
+						link.textContent = part.label;
+						if (part.title) link.title = part.title;
+						link.addEventListener("click", (e) => {
+							e.preventDefault();
+							part.onClick();
+						});
+						content.append(link);
+					}
+
+					message.append(label, content);
+					messageList.prepend(message);
+					messageList.scrollTop = 0;
+					return content;
+				};
+
 				submitButton.addEventListener("click", async () => {
 					let prompt = input.value.trim();
 					if (!prompt) {
@@ -1054,7 +1120,71 @@ LLMChatPane = {
 					let providerLabels = { ollama: "Ollama", lmstudio: "LM Studio", litellm: "LiteLLM" };
 					let providerLabel = providerLabels[this._provider] || "Ollama";
 
+					// Checked FIRST, before building the (comparatively expensive)
+					// full PDF-context prompt -- a "download reference N" request
+					// short-circuits the normal chat flow entirely, since the main
+					// model has nothing useful to add to a request this specific.
 					try {
+						let intent = await LLMReferenceRetrieval.detectDownloadIntent(prompt);
+						if (intent !== null) {
+							appendMessage("You", prompt);
+							let pdfItem = this.getActiveReaderAttachment();
+							let downloadRefNum = intent.index ?? null;
+							if (downloadRefNum === null && intent.description) {
+								if (!pdfItem) {
+									appendMessage("System", "No active PDF to look up references from.");
+									return;
+								}
+								let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
+								downloadRefNum = await LLMReferenceRetrieval.resolveReferenceByDescription(referenceIndex, intent.description);
+								if (downloadRefNum === null) {
+									appendMessage("System", `Could not find a reference matching "${intent.description}" in this paper's bibliography.`);
+									return;
+								}
+							}
+							appendMessage("System", `Looking up reference ${downloadRefNum} and searching for it online...`);
+							let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(downloadRefNum, pdfItem);
+							if (result.alreadyInLibrary) {
+								appendRichMessage([
+									{ text: "The paper is already included in your Zotero library: " },
+									{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => this._openLibraryItem(result.item) },
+									{ text: "." },
+								]);
+							}
+							else if (result.success) {
+								let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
+								let parts = [
+									{ text: `Added "` },
+									{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => this._openLibraryItem(result.item) },
+									{ text: `"${statusText}` },
+								];
+								if (result.sourceURL) {
+									parts.push(
+										{ text: " [source: " },
+										{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
+										{ text: "]" }
+									);
+								}
+								parts.push({ text: "." });
+								appendRichMessage(parts);
+							}
+							else {
+								appendMessage("System", result.message);
+							}
+							return;
+						}
+					}
+					catch (e) {
+						this.log(`LLMReferenceRetrieval.detectDownloadIntent/downloadReferenceToLibrary failed: ${e.message}`);
+						appendMessage("System", `Reference download failed: ${e.message}`);
+						return;
+					}
+					finally {
+						if (submitButton.disabled) submitButton.disabled = false;
+					}
+
+					try {
+						submitButton.disabled = true;
 						let { text: liveText, info: selectionInfo } = this.getReaderSelection();
 						let selectedText = liveText || capturedSelection;
 						capturedSelection = null;
@@ -1168,8 +1298,11 @@ LLMChatPane = {
 						// stored position, so they fall back to a text search using the
 						// first few words of the citation (a full-length quote is too
 						// brittle a phrase-search target). The model only emits the bare
-						// number, e.g. [12](<ref:reference:12>) -- `label` here overrides
-						// the rendered link text with the full citation instead.
+						// number, e.g. [12](<ref:reference:12>), and the rendered link
+						// KEEPS that bare "[12]" as its visible text -- `label` here is
+						// only used to enrich the hover tooltip with the full citation,
+						// not to replace the inline text (a full bibliography entry
+						// inline would clutter the response).
 						let linkIndex = {
 							table: new Map((tableIndex?.tables || []).map(t => [t.table_num, { position: t.position, caption: t.caption }])),
 							figure: new Map((figureIndex?.figures || []).map(f => [f.figure_num, { position: f.position, caption: f.caption }])),

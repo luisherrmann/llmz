@@ -4,6 +4,7 @@ var LLMFigures;
 var LLMTables;
 var LLMReferences;
 var LLMReferenceRetrieval;
+var LLMInterfaces;
 
 function log(msg) {
 	Zotero.debug("LLM Chat Pane: " + msg);
@@ -23,10 +24,11 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "llm-tables.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-references.js");
 	Services.scriptloader.loadSubScript(rootURI + "reference-retrieval.js");
+	Services.scriptloader.loadSubScript(rootURI + "llm-interfaces.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-chat-pane.js");
 	await LLMReferences.init(rootURI);
 	LLMChatPane.init({ id, version, rootURI });
-	LLMReferenceRetrieval.init(LLMChatPane.streamModel.bind(LLMChatPane));
+	LLMReferenceRetrieval.init(LLMInterfaces.streamModel.bind(LLMInterfaces));
 	LLMChatPane.addToAllWindows();
 	await LLMChatPane.main();
 }

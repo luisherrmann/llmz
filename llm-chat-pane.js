@@ -1011,8 +1011,31 @@ LLMChatPane = {
 					if (text) capturedSelection = text;
 				});
 
+				// `cancelStream` is the narrow, existing mechanism for interrupting
+				// an in-progress model response (a real reader.cancel() handle,
+				// wired up once actual token streaming begins -- see the
+				// onReady() callback below). `cancelled`/`rejectCancel` are the
+				// general mechanism layered on top: the ENTIRE submit handler
+				// body runs inside a single closure (`work`, below) that gets
+				// raced against a promise Stop can reject at any time, so
+				// clicking Stop works during EVERY phase of a request --
+				// download-reference lookups, prompt/context building, table/
+				// figure selection -- not just once the model is already
+				// streaming a reply. Whatever step `work` was in when cancelled
+				// keeps running to completion in the background (there's no way
+				// to hard-abort a Zotero.Translate call or HiddenBrowser page
+				// load partway through), but the race settles immediately, so
+				// the UI stops waiting/updating right away, and every checkpoint
+				// inside `work` checks `cancelled` before doing anything more so
+				// a stray message can't land after "Cancelled." is shown.
 				let cancelStream = null;
-				stopButton.addEventListener("click", () => cancelStream?.());
+				let cancelled = false;
+				let rejectCancel = null;
+				stopButton.addEventListener("click", () => {
+					cancelled = true;
+					cancelStream?.();
+					rejectCancel?.(new Error("Cancelled"));
+				});
 
 				input.addEventListener("keydown", (e) => {
 					if (!e.metaKey) return;
@@ -1117,250 +1140,290 @@ LLMChatPane = {
 					}
 
 					submitButton.disabled = true;
+					// Enabled immediately, rather than only once actual model
+					// token-streaming begins (the old behavior) -- Stop now
+					// needs to work during every phase of a request, not just
+					// the last one. See the cancellation-mechanism comment
+					// above stopButton's click listener.
+					stopButton.disabled = false;
+					cancelled = false;
+					let cancelPromise = new Promise((_, reject) => { rejectCancel = reject; });
 					let providerLabels = { ollama: "Ollama", lmstudio: "LM Studio", litellm: "LiteLLM" };
 					let providerLabel = providerLabels[this._provider] || "Ollama";
 
-					// Checked FIRST, before building the (comparatively expensive)
-					// full PDF-context prompt -- a "download reference N" request
-					// short-circuits the normal chat flow entirely, since the main
-					// model has nothing useful to add to a request this specific.
-					try {
-						let intent = await LLMReferenceRetrieval.detectDownloadIntent(prompt);
-						if (intent !== null) {
-							appendMessage("You", prompt);
-							let pdfItem = this.getActiveReaderAttachment();
-							let downloadRefNum = intent.index ?? null;
-							if (downloadRefNum === null && intent.description) {
-								if (!pdfItem) {
-									appendMessage("System", "No active PDF to look up references from.");
-									return;
-								}
-								let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
-								downloadRefNum = await LLMReferenceRetrieval.resolveReferenceByDescription(referenceIndex, intent.description);
-								if (downloadRefNum === null) {
-									appendMessage("System", `Could not find a reference matching "${intent.description}" in this paper's bibliography.`);
-									return;
-								}
-							}
-							appendMessage("System", `Looking up reference ${downloadRefNum} and searching for it online...`);
-							let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(downloadRefNum, pdfItem);
-							if (result.alreadyInLibrary) {
-								appendRichMessage([
-									{ text: "The paper is already included in your Zotero library: " },
-									{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => this._openLibraryItem(result.item) },
-									{ text: "." },
-								]);
-							}
-							else if (result.success) {
-								let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
-								let parts = [
-									{ text: `Added "` },
-									{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => this._openLibraryItem(result.item) },
-									{ text: `"${statusText}` },
-								];
-								if (result.sourceURL) {
-									parts.push(
-										{ text: " [source: " },
-										{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
-										{ text: "]" }
-									);
-								}
-								parts.push({ text: "." });
-								appendRichMessage(parts);
-							}
-							else {
-								appendMessage("System", result.message);
-							}
-							return;
-						}
-					}
-					catch (e) {
-						this.log(`LLMReferenceRetrieval.detectDownloadIntent/downloadReferenceToLibrary failed: ${e.message}`);
-						appendMessage("System", `Reference download failed: ${e.message}`);
-						return;
-					}
-					finally {
-						if (submitButton.disabled) submitButton.disabled = false;
-					}
-
-					try {
-						submitButton.disabled = true;
-						let { text: liveText, info: selectionInfo } = this.getReaderSelection();
-						let selectedText = liveText || capturedSelection;
-						capturedSelection = null;
-						let { text: pageText, pageNum, info: pageInfo } = await this.getReaderPageText();
-						let { prompt: modelPrompt, contextInfo, item: pdfItem, citationIndex } = await this.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
-						let tableIndexPromise = pdfItem
-							? LLMTables.getTableIndex(pdfItem).catch((e) => {
-								this.log(`getTableIndex failed: ${e.message}`);
-								return { error: e.message };
-							})
-							: Promise.resolve(null);
-						let figureIndexPromise = pdfItem
-							? LLMFigures.getFigureIndex(pdfItem).catch((e) => {
-								this.log(`getFigureIndex failed: ${e.message}`);
-								return null;
-							})
-							: Promise.resolve(null);
-						let referenceIndexPromise = pdfItem
-							? LLMReferences.getReferenceIndex(pdfItem).catch((e) => {
-								this.log(`getReferenceIndex failed: ${e.message}`);
-								return null;
-							})
-							: Promise.resolve(null);
-						let selectionLine = selectedText
-							? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
-							: `Selected Text: (none — ${selectionInfo})`;
-						let pageLine = pageText
-							? `Page Context: page ${pageNum}`
-							: `Page Context: (none — ${pageInfo})`;
-						let visiblePrompt = contextInfo
-							? `${selectionLine}\n${pageLine}\nPDF: ${contextInfo.title}\n\n${prompt}`
-							: `${selectionLine}\n${pageLine}\nPDF: (none)\n\n${prompt}`;
-						appendMessage("You", visiblePrompt);
-
-						if (contextInfo?.missingText) {
-							appendMessage("System", `No extracted text was available for "${contextInfo.title}". Asking without PDF context.`);
-						}
-						else if (contextInfo) {
-							appendMessage(
-								"System",
-								contextInfo.retrieved
-									? `Using PDF context from "${contextInfo.title}" (full PDF too large — showing top ${contextInfo.chunkCount} relevant paragraphs).`
-									: `Using PDF context from "${contextInfo.title}" (${contextInfo.charCount} characters${contextInfo.truncated ? ", truncated" : ""}).`
-							);
-						}
-						else {
-							appendMessage("System", "No active PDF reader tab found. Asking without PDF context.");
-						}
-
-						let tableIndex = await tableIndexPromise;
-						if (tableIndex === null) {
-							appendMessage("System", "Table extraction: no PDF attached.");
-						}
-						else if (tableIndex.error) {
-							appendMessage("System", `Table extraction failed: ${tableIndex.error}`);
-						}
-						else if (!tableIndex.tables.length) {
-							appendMessage("System", "Table extraction: no tables found in PDF.");
-						}
-						else {
-							let selectedTable = null;
-							try {
-								selectedTable = await this.selectTableWithLLM(tableIndex, prompt);
-							}
-							catch (e) {
-								this.log(`selectTableWithLLM failed: ${e.message}`);
-							}
-							if (selectedTable) {
-								modelPrompt += `\n\n<TABLE_CONTEXT>\n${this._formatTableMarkdown(selectedTable)}\n</TABLE_CONTEXT>`;
-								let msg = appendMessage("System", `Including ${selectedTable.label} as table context (best match for your question, out of ${tableIndex.tables.length} extracted). Click to jump to it.`);
-								makeMessageClickable(msg, selectedTable);
-							}
-							else {
-								appendMessage("System", `Extracted ${tableIndex.tables.length} table${tableIndex.tables.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
-							}
-						}
-
-						let images = [];
-						let figureIndex = await figureIndexPromise;
+					// The entire request -- download-reference lookup or normal
+					// chat -- runs inside this one closure so it can be raced
+					// against cancelPromise as a whole (see the outer
+					// try/finally below), rather than needing every internal
+					// step to separately understand cancellation.
+					let work = (async () => {
+						// Checked FIRST, before building the (comparatively expensive)
+						// full PDF-context prompt -- a "download reference N" request
+						// short-circuits the normal chat flow entirely, since the main
+						// model has nothing useful to add to a request this specific.
 						try {
-							let currentModel = await this.getCurrentModel();
-							if (figureIndex?.figures?.length && await this.modelSupportsImages(currentModel)) {
-								let bestFigure = await this.selectFigureWithLLM(figureIndex, prompt);
-								if (bestFigure?.image_data) {
-									images.push(bestFigure.image_data);
-									let label = bestFigure.label || `figure ${bestFigure.figure_num}`;
-									let msg = appendMessage("System", `Including ${label} as image context (best match for your question, ${currentModel} supports vision). Click to jump to it.`);
-									makeMessageClickable(msg, bestFigure);
+							let intent = await LLMReferenceRetrieval.detectDownloadIntent(prompt);
+							if (cancelled) return;
+							if (intent !== null) {
+								appendMessage("You", prompt);
+								let pdfItem = this.getActiveReaderAttachment();
+								let downloadRefNum = intent.index ?? null;
+								if (downloadRefNum === null && intent.description) {
+									if (!pdfItem) {
+										appendMessage("System", "No active PDF to look up references from.");
+										return;
+									}
+									let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
+									if (cancelled) return;
+									downloadRefNum = await LLMReferenceRetrieval.resolveReferenceByDescription(referenceIndex, intent.description);
+									if (cancelled) return;
+									if (downloadRefNum === null) {
+										appendMessage("System", `Could not find a reference matching "${intent.description}" in this paper's bibliography.`);
+										return;
+									}
 								}
+								appendMessage("System", `Looking up reference ${downloadRefNum} and searching for it online...`);
+								let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(downloadRefNum, pdfItem);
+								if (cancelled) return;
+								if (result.alreadyInLibrary) {
+									appendRichMessage([
+										{ text: "The paper is already included in your Zotero library: " },
+										{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => this._openLibraryItem(result.item) },
+										{ text: "." },
+									]);
+								}
+								else if (result.success) {
+									let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
+									let parts = [
+										{ text: `Added "` },
+										{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => this._openLibraryItem(result.item) },
+										{ text: `"${statusText}` },
+									];
+									if (result.sourceURL) {
+										parts.push(
+											{ text: " [source: " },
+											{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
+											{ text: "]" }
+										);
+									}
+									parts.push({ text: "." });
+									appendRichMessage(parts);
+								}
+								else {
+									appendMessage("System", result.message);
+								}
+								return;
 							}
 						}
 						catch (e) {
-							this.log(`Image context setup failed: ${e.message}`);
+							if (cancelled) return;
+							this.log(`LLMReferenceRetrieval.detectDownloadIntent/downloadReferenceToLibrary failed: ${e.message}`);
+							appendMessage("System", `Reference download failed: ${e.message}`);
+							return;
 						}
 
-						// Unlike tables/figures, the reference list isn't pre-selected by a
-						// separate LLM call -- the whole bibliography (already short,
-						// citation-length entries) is given to the answering model
-						// directly, and the system prompt tells it it MAY cite one if
-						// genuinely relevant, not that it must.
-						let referenceIndex = await referenceIndexPromise;
-						if (referenceIndex?.references?.length) {
-							modelPrompt += `\n\n<REFERENCE_CONTEXT>\n${this._formatReferenceContext(referenceIndex.references)}\n</REFERENCE_CONTEXT>`;
-							appendMessage("System", `Including bibliography (${referenceIndex.references.length} references) as context.`);
-						}
+						try {
+							let { text: liveText, info: selectionInfo } = this.getReaderSelection();
+							let selectedText = liveText || capturedSelection;
+							capturedSelection = null;
+							let { text: pageText, pageNum, info: pageInfo } = await this.getReaderPageText();
+							if (cancelled) return;
+							let { prompt: modelPrompt, contextInfo, item: pdfItem, citationIndex } = await this.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
+							if (cancelled) return;
+							let tableIndexPromise = pdfItem
+								? LLMTables.getTableIndex(pdfItem).catch((e) => {
+									this.log(`getTableIndex failed: ${e.message}`);
+									return { error: e.message };
+								})
+								: Promise.resolve(null);
+							let figureIndexPromise = pdfItem
+								? LLMFigures.getFigureIndex(pdfItem).catch((e) => {
+									this.log(`getFigureIndex failed: ${e.message}`);
+									return null;
+								})
+								: Promise.resolve(null);
+							let referenceIndexPromise = pdfItem
+								? LLMReferences.getReferenceIndex(pdfItem).catch((e) => {
+									this.log(`getReferenceIndex failed: ${e.message}`);
+									return null;
+								})
+								: Promise.resolve(null);
+							let selectionLine = selectedText
+								? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
+								: `Selected Text: (none — ${selectionInfo})`;
+							let pageLine = pageText
+								? `Page Context: page ${pageNum}`
+								: `Page Context: (none — ${pageInfo})`;
+							let visiblePrompt = contextInfo
+								? `${selectionLine}\n${pageLine}\nPDF: ${contextInfo.title}\n\n${prompt}`
+								: `${selectionLine}\n${pageLine}\nPDF: (none)\n\n${prompt}`;
+							appendMessage("You", visiblePrompt);
 
-						// Lets the model's own text mentions of any extracted table/figure/
-						// reference (not just the one injected as full context) become
-						// clickable links -- see _renderMarkdown's `ref:table:N` /
-						// `ref:figure:N` / `ref:reference:N` handling. References have no
-						// stored position, so they fall back to a text search using the
-						// first few words of the citation (a full-length quote is too
-						// brittle a phrase-search target). The model only emits the bare
-						// number, e.g. [12](<ref:reference:12>), and the rendered link
-						// KEEPS that bare "[12]" as its visible text -- `label` here is
-						// only used to enrich the hover tooltip with the full citation,
-						// not to replace the inline text (a full bibliography entry
-						// inline would clutter the response).
-						let linkIndex = {
-							table: new Map((tableIndex?.tables || []).map(t => [t.table_num, { position: t.position, caption: t.caption }])),
-							figure: new Map((figureIndex?.figures || []).map(f => [f.figure_num, { position: f.position, caption: f.caption }])),
-							reference: new Map((referenceIndex?.references || []).map(r => [r.index, {
-								label: `[${r.index}] ${r.text}`,
-								caption: r.text.split(/\s+/).slice(0, 8).join(" "),
-							}])),
-						};
-
-						let reply = appendMessage(providerLabel, `Waiting for ${providerLabel}...`);
-						this.log(`Submitting prompt to ${providerLabel}: ${prompt}`);
-						reply.textContent = "";
-						let result = await this.streamModel(modelPrompt, (token) => {
-							reply.textContent += token;
-						}, {
-							onReady(cancelFn) {
-								cancelStream = cancelFn;
-								stopButton.disabled = false;
-							},
-						}, images);
-						if (!result.text) {
-							reply.textContent = "(No response)";
-						}
-						else {
-							let groundedText = await LLMCitation.groundCitations(result.text, citationIndex);
-							let html = this._renderMarkdown(groundedText, linkIndex);
-							if (html) {
-								let rendered = doc.createElement("div");
-								rendered.className = "llm-markdown";
-								rendered.innerHTML = html;
-								rendered.addEventListener("click", (e) => {
-									let anchor = e.target.closest(".llm-find-link");
-									if (!anchor) return;
-									e.preventDefault();
-									if (anchor.dataset.position) {
-										try {
-											LLMCitation.navigateToPosition(JSON.parse(anchor.dataset.position));
-										}
-										catch (err) {
-											this.log(`Failed to parse position for link: ${err.message}`);
-										}
-										return;
-									}
-									LLMCitation.navigateToText(anchor.dataset.query);
-								});
-								reply.replaceWith(rendered);
+							if (contextInfo?.missingText) {
+								appendMessage("System", `No extracted text was available for "${contextInfo.title}". Asking without PDF context.`);
 							}
+							else if (contextInfo) {
+								appendMessage(
+									"System",
+									contextInfo.retrieved
+										? `Using PDF context from "${contextInfo.title}" (full PDF too large — showing top ${contextInfo.chunkCount} relevant paragraphs).`
+										: `Using PDF context from "${contextInfo.title}" (${contextInfo.charCount} characters${contextInfo.truncated ? ", truncated" : ""}).`
+								);
+							}
+							else {
+								appendMessage("System", "No active PDF reader tab found. Asking without PDF context.");
+							}
+
+							let tableIndex = await tableIndexPromise;
+							if (cancelled) return;
+							if (tableIndex === null) {
+								appendMessage("System", "Table extraction: no PDF attached.");
+							}
+							else if (tableIndex.error) {
+								appendMessage("System", `Table extraction failed: ${tableIndex.error}`);
+							}
+							else if (!tableIndex.tables.length) {
+								appendMessage("System", "Table extraction: no tables found in PDF.");
+							}
+							else {
+								let selectedTable = null;
+								try {
+									selectedTable = await this.selectTableWithLLM(tableIndex, prompt);
+								}
+								catch (e) {
+									this.log(`selectTableWithLLM failed: ${e.message}`);
+								}
+								if (cancelled) return;
+								if (selectedTable) {
+									modelPrompt += `\n\n<TABLE_CONTEXT>\n${this._formatTableMarkdown(selectedTable)}\n</TABLE_CONTEXT>`;
+									let msg = appendMessage("System", `Including ${selectedTable.label} as table context (best match for your question, out of ${tableIndex.tables.length} extracted). Click to jump to it.`);
+									makeMessageClickable(msg, selectedTable);
+								}
+								else {
+									appendMessage("System", `Extracted ${tableIndex.tables.length} table${tableIndex.tables.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
+								}
+							}
+
+							let images = [];
+							let figureIndex = await figureIndexPromise;
+							if (cancelled) return;
+							try {
+								let currentModel = await this.getCurrentModel();
+								if (figureIndex?.figures?.length && await this.modelSupportsImages(currentModel)) {
+									let bestFigure = await this.selectFigureWithLLM(figureIndex, prompt);
+									if (cancelled) return;
+									if (bestFigure?.image_data) {
+										images.push(bestFigure.image_data);
+										let label = bestFigure.label || `figure ${bestFigure.figure_num}`;
+										let msg = appendMessage("System", `Including ${label} as image context (best match for your question, ${currentModel} supports vision). Click to jump to it.`);
+										makeMessageClickable(msg, bestFigure);
+									}
+								}
+							}
+							catch (e) {
+								if (cancelled) return;
+								this.log(`Image context setup failed: ${e.message}`);
+							}
+
+							// Unlike tables/figures, the reference list isn't pre-selected by a
+							// separate LLM call -- the whole bibliography (already short,
+							// citation-length entries) is given to the answering model
+							// directly, and the system prompt tells it it MAY cite one if
+							// genuinely relevant, not that it must.
+							let referenceIndex = await referenceIndexPromise;
+							if (cancelled) return;
+							if (referenceIndex?.references?.length) {
+								modelPrompt += `\n\n<REFERENCE_CONTEXT>\n${this._formatReferenceContext(referenceIndex.references)}\n</REFERENCE_CONTEXT>`;
+								appendMessage("System", `Including bibliography (${referenceIndex.references.length} references) as context.`);
+							}
+
+							// Lets the model's own text mentions of any extracted table/figure/
+							// reference (not just the one injected as full context) become
+							// clickable links -- see _renderMarkdown's `ref:table:N` /
+							// `ref:figure:N` / `ref:reference:N` handling. References have no
+							// stored position, so they fall back to a text search using the
+							// first few words of the citation (a full-length quote is too
+							// brittle a phrase-search target). The model only emits the bare
+							// number, e.g. [12](<ref:reference:12>), and the rendered link
+							// KEEPS that bare "[12]" as its visible text -- `label` here is
+							// only used to enrich the hover tooltip with the full citation,
+							// not to replace the inline text (a full bibliography entry
+							// inline would clutter the response).
+							let linkIndex = {
+								table: new Map((tableIndex?.tables || []).map(t => [t.table_num, { position: t.position, caption: t.caption }])),
+								figure: new Map((figureIndex?.figures || []).map(f => [f.figure_num, { position: f.position, caption: f.caption }])),
+								reference: new Map((referenceIndex?.references || []).map(r => [r.index, {
+									label: `[${r.index}] ${r.text}`,
+									caption: r.text.split(/\s+/).slice(0, 8).join(" "),
+								}])),
+							};
+
+							let reply = appendMessage(providerLabel, `Waiting for ${providerLabel}...`);
+							this.log(`Submitting prompt to ${providerLabel}: ${prompt}`);
+							reply.textContent = "";
+							let result = await this.streamModel(modelPrompt, (token) => {
+								if (!cancelled) reply.textContent += token;
+							}, {
+								onReady(cancelFn) {
+									cancelStream = cancelFn;
+								},
+							}, images);
+							if (cancelled) return;
+							if (!result.text) {
+								reply.textContent = "(No response)";
+							}
+							else {
+								let groundedText = await LLMCitation.groundCitations(result.text, citationIndex);
+								if (cancelled) return;
+								let html = this._renderMarkdown(groundedText, linkIndex);
+								if (html) {
+									let rendered = doc.createElement("div");
+									rendered.className = "llm-markdown";
+									rendered.innerHTML = html;
+									rendered.addEventListener("click", (e) => {
+										let anchor = e.target.closest(".llm-find-link");
+										if (!anchor) return;
+										e.preventDefault();
+										if (anchor.dataset.position) {
+											try {
+												LLMCitation.navigateToPosition(JSON.parse(anchor.dataset.position));
+											}
+											catch (err) {
+												this.log(`Failed to parse position for link: ${err.message}`);
+											}
+											return;
+										}
+										LLMCitation.navigateToText(anchor.dataset.query);
+									});
+									reply.replaceWith(rendered);
+								}
+							}
+							this.log(`Received response from ${providerLabel} model ${result.model}`);
 						}
-						this.log(`Received response from ${providerLabel} model ${result.model}`);
+						catch (e) {
+							if (cancelled) return;
+							appendMessage(providerLabel, `${providerLabel} request failed: ${e.message}`);
+							this.log(`${providerLabel} request failed: ${e.message}`);
+						}
+					})();
+
+					try {
+						await Promise.race([work, cancelPromise]);
 					}
 					catch (e) {
-						appendMessage(providerLabel, `${providerLabel} request failed: ${e.message}`);
-						this.log(`${providerLabel} request failed: ${e.message}`);
+						if (cancelled) {
+							appendMessage("System", "Cancelled.");
+						}
+						else {
+							appendMessage("System", `Error: ${e.message}`);
+							this.log(`Submit failed: ${e.message}`);
+						}
 					}
 					finally {
 						submitButton.disabled = false;
 						stopButton.disabled = true;
 						cancelStream = null;
+						rejectCancel = null;
 					}
 				});
 

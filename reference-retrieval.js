@@ -93,25 +93,48 @@ LLMReferenceRetrieval = {
 		return match ? parseInt(match[0], 10) : null;
 	},
 
-	// Asks the model to pull just the paper's title out of a formatted
-	// citation (author list, venue, pages, year all stripped) -- citation
-	// styles vary too much for a regex to do this reliably (title position,
+	// Asks the model to pull structured metadata (title, authors, year,
+	// venue) out of a formatted citation in a single call -- citation styles
+	// vary too much for a regex to do this reliably (title position,
 	// quoting, and punctuation all differ across styles), and a clean title
 	// is a much better search query than the raw citation string: the venue
 	// name/page numbers/punctuation in a full citation measurably hurts
 	// match quality against both Crossref's bibliographic search and
 	// arXiv's title search (confirmed: a raw full-citation query missed a
-	// paper that a clean-title query found immediately on arXiv).
-	async _extractCitationTitle(citationText) {
+	// paper that a clean-title query found immediately on arXiv). Also
+	// extracting authors/year/venue here (rather than a second LLM call)
+	// lets the fast title-only web-search stage (see _saveMinimalItem) save
+	// a reasonably complete item without needing a slower, richer
+	// identity-discovery stage (page translation or Crossref) just for
+	// metadata. Returns { title, authors: [{firstName, lastName}], year,
+	// venue }, any of which may be null if the model couldn't determine it.
+	async _extractCitationMetadata(citationText) {
 		let prompt = [
-			"Extract ONLY the title of the paper from this bibliography citation.",
-			"Respond with just the title text -- no authors, no venue/journal name,",
-			"no page numbers, no year, no quotation marks, nothing else.",
+			"Extract structured metadata from this bibliography citation. Respond",
+			"with ONLY a JSON object (no code fences, no markdown, no explanation)",
+			"in exactly this shape:",
+			'{"title": "...", "authors": [{"firstName": "...", "lastName": "..."}], "year": "...", "venue": "..."}',
+			"Use null for any field you cannot determine. Split author names into",
+			'firstName/lastName as best as possible. Do not include "et al." as an',
+			"author.",
 			"",
 			`Citation: "${citationText}"`,
 		].join("\n");
 		let text = await this._callModel(prompt);
-		return text.replace(/^["'“]+|["'”]+$/g, "");
+		text = text.replace(/^```(?:json)?\s*|\s*```$/g, "");
+		try {
+			let parsed = JSON.parse(text);
+			return {
+				title: typeof parsed.title === "string" ? parsed.title.replace(/^["'“]+|["'”]+$/g, "") : null,
+				authors: Array.isArray(parsed.authors) ? parsed.authors : [],
+				year: parsed.year || null,
+				venue: parsed.venue || null,
+			};
+		}
+		catch (e) {
+			this.log(`_extractCitationMetadata: failed to parse model response as JSON: ${e.message}`);
+			return { title: null, authors: [], year: null, venue: null };
+		}
 	},
 
 	// Character-bigram Sørensen-Dice coefficient -- a plain substring-
@@ -320,54 +343,35 @@ LLMReferenceRetrieval = {
 		});
 	},
 
-	// Runs a FULL Zotero.Translate.Web detect+translate+SAVE on a page (as
-	// opposed to _findPDFAtURL's detect-only Zotero.Utilities.Internal.getFileFromDocument,
-	// which deliberately never creates an item) -- used when no item has
-	// been identified/saved at all yet, so a publisher/repository page's own
-	// dedicated web translator can produce a properly-cataloged new item
-	// (often already including a PDF attachment) directly. Confirmed this
-	// same setDocument()+translate({libraryID, saveAttachments}) call shape
-	// works in the main process without needing the actor-based
-	// RemoteTranslate wrapper (getFileFromDocument in
-	// chrome/content/zotero/xpcom/utilities_internal.js already does this,
-	// just with libraryID:false to skip saving -- passing a real libraryID
-	// instead performs a real save through the same ItemSaver).
-	async _translateAndSaveURL(url) {
-		// A raw PDF URL has no HTML landing page/translator to identify the
-		// item from, and loading one directly into a HiddenBrowser is
-		// unsafe -- Firefox's built-in PDF viewer inside a hidden/windowless
-		// browsing context doesn't reliably settle the way a normal document
-		// load does, which was observed to make Zotero appear to hang
-		// indefinitely on a "Looking up reference N..." request whenever a
-		// web-search candidate happened to be a direct PDF link (as is
-		// common -- e.g. a publisher's own open-access PDF). Skip those here;
-		// they're handled separately (and safely, via the Content-Type-only
-		// _isDirectPDF check with no HiddenBrowser involved) in the later
-		// PDF-attachment stage.
-		if (await this._isDirectPDF(url)) return [];
-		const { HiddenBrowser } = ChromeUtils.importESModule("chrome://zotero/content/HiddenBrowser.mjs");
-		let browser;
-		try {
-			browser = new HiddenBrowser({ blockRemoteResources: false });
-			await browser.load(url, { requireSuccessfulStatus: true });
-			let doc = await browser.getDocument();
-			let translate = new Zotero.Translate.Web();
-			translate.setDocument(doc);
-			let translators = await translate.getTranslators();
-			if (!translators.length) return [];
-			translate.setTranslator(translators[0]);
-			return await translate.translate({
-				libraryID: Zotero.Libraries.userLibraryID,
-				saveAttachments: true,
-			});
+	// A Zotero.Item used when a PDF is found via the fast title-only web
+	// search below, before any translator/Crossref-based identity-discovery
+	// stage has run. Populated straight from the same _extractCitationMetadata
+	// call already made for the title -- no extra LLM or network round-trip
+	// needed -- so it ends up reasonably complete (authors, year, venue)
+	// despite skipping the slower stages that would otherwise be needed just
+	// to get that metadata. `url` is set explicitly (unlike a
+	// translator-populated item, which sets it itself) since
+	// downloadReferenceToLibrary's sourceURL reporting reads it straight off
+	// the saved item via getField("url") -- without this, the "Added ..."
+	// message would have no source to show at all once hasPDF is already
+	// true (later PDF-only fallback stages, which would otherwise supply
+	// sourceURL, only run when hasPDF is still false).
+	async _saveMinimalItem(url, metadata) {
+		let item = new Zotero.Item("journalArticle");
+		item.libraryID = Zotero.Libraries.userLibraryID;
+		item.setField("title", metadata.title);
+		if (url) item.setField("url", url);
+		if (metadata.year) item.setField("date", metadata.year);
+		if (metadata.venue) item.setField("publicationTitle", metadata.venue);
+		if (metadata.authors?.length) {
+			item.setCreators(metadata.authors.map(a => ({
+				firstName: a.firstName || "",
+				lastName: a.lastName || "",
+				creatorType: "author",
+			})));
 		}
-		catch (e) {
-			this.log(`_translateAndSaveURL: ${url} failed: ${e.message}`);
-			return [];
-		}
-		finally {
-			if (browser) browser.destroy();
-		}
+		await item.saveTx();
+		return item;
 	},
 
 	// Validates that a batch of just-saved items actually matches the
@@ -491,34 +495,47 @@ LLMReferenceRetrieval = {
 	// (1) Identifiers already embedded in the citation text itself
 	// (DOI/arXiv/ISBN/PMID), via Zotero.Translate.Search.setIdentifier().
 	// No separate arXiv-by-title stage is needed here -- an arXiv preprint
-	// not cited with its own arXiv ID gets picked up by stage 3 (general web
-	// search) instead, same as any other freely-hosted source.
-	// (2) A free-text bibliographic query using the extracted TITLE (not the
-	// raw citation string) via Zotero.Translate.Search.setSearch(), typically
-	// resolved through a Crossref-style search translator.
-	// (3) A general web search for the title (see _searchWeb), running a
-	// FULL translate+save (_translateAndSaveURL) on each candidate page in
-	// turn -- recovers cases where Crossref doesn't index the source at all,
-	// or (confirmed concretely) ranks the wrong work above the real one.
-	// Stages 1-3 all save with saveAttachments:true in case the translator
-	// itself provides a PDF (reliably true for arXiv and many web
-	// translators, essentially never true for DOI/Crossref search). If the
+	// not cited with its own arXiv ID gets picked up by stage 2 (below)
+	// instead, same as any other freely-hosted source.
+	// (2) A FAST, title-only web search for a directly-downloadable PDF (see
+	// _findPDFViaWebSearch/_saveMinimalItem) -- just a HEAD request or two
+	// per candidate, rather than a full page load. The saved item's
+	// authors/year/venue come from the SAME _extractCitationMetadata call
+	// already made for the title, so this stays fast (no extra LLM call, no
+	// extra network round-trip) while still ending up reasonably
+	// well-cataloged, not just a bare title.
+	// (3) LAST-RESORT free-text bibliographic query via Zotero's own
+	// "Crossref REST" translator, selected directly by ID (see the code
+	// comment there for why getTranslators() can't be used). Only tried once
+	// stages 1-2 have BOTH failed to produce anything AT ALL -- Crossref
+	// search results essentially never carry a PDF, so this exists purely to
+	// salvage a metadata-only save (no freely-hosted copy exists anywhere)
+	// rather than failing outright, and it's the slowest stage besides
+	// (saves up to ~20 candidate items and erases all but the best match --
+	// see _validateAndCleanup).
+	// Stages 1-3 all save with saveAttachments:true (or attach directly, for
+	// stage 2) in case a PDF is available (reliably true for arXiv and many
+	// web translators, essentially never true for Crossref search). If the
 	// saved item still has no PDF afterward:
-	// (4) try resolving https://doi.org/<DOI> (if the item has one) via
-	// _findPDFAtURL -- publisher/repository web translators commonly DO
-	// populate a PDF attachment, unlike search-type translators.
-	// (5) try a general web search again, checking progressively looser
+	// (4) try a general web search again, checking progressively looser
 	// queries/candidates via _findPDFAtURL (detect-only, attach if found)
-	// until one yields a PDF (see _findPDFViaWebSearch).
+	// until one yields a PDF (see _findPDFViaWebSearch). (A DOI-resolved-
+	// landing-page stage used to run before this one -- removed since it
+	// needed a full HiddenBrowser page load per attempt, the slowest step in
+	// the pipeline, and failed more often than not on exactly the papers
+	// that reach this point: a DOI landing page gated enough to need a real
+	// page load tends to also be paywalled for the PDF itself, confirmed
+	// concretely with both IEEE Xplore and a Curran/proceedings.com reprint
+	// DOI -- while this stage finds the same open-access copies without
+	// that cost.)
 	// Mirrors the same HiddenBrowser + Zotero.Utilities.Internal.getFileFromDocument
 	// + Zotero.Attachments.importFromURL pattern Zotero's own
 	// addAvailableFile/downloadFirstAvailableFile machinery uses
-	// (chrome/content/zotero/xpcom/attachments.js) for stages 4-5 -- there's
-	// no ItemSaver-level API to redirect a web-translated save onto an
-	// existing item, so those two stages deliberately do the narrower
-	// "detect only, then download+attach the one PDF URL found" version of
-	// that flow, rather than a second full translate+save that might
-	// duplicate the item.
+	// (chrome/content/zotero/xpcom/attachments.js) for stage 4 -- there's no
+	// ItemSaver-level API to redirect a web-translated save onto an existing
+	// item, so this stage deliberately does the narrower "detect only, then
+	// download+attach the one PDF URL found" version of that flow, rather
+	// than a second full translate+save that might duplicate the item.
 	async downloadReferenceToLibrary(index, pdfItem) {
 		if (!pdfItem) {
 			return { success: false, message: "No active PDF to look up references from." };
@@ -534,11 +551,13 @@ LLMReferenceRetrieval = {
 		this.log(`downloadReferenceToLibrary: resolving reference ${index}: ${citationText.slice(0, 100)}`);
 
 		let title = null;
+		let metadata = { title: null, authors: [], year: null, venue: null };
 		try {
-			title = await this._extractCitationTitle(citationText);
+			metadata = await this._extractCitationMetadata(citationText);
+			title = metadata.title;
 		}
 		catch (e) {
-			this.log(`downloadReferenceToLibrary: title extraction failed: ${e.message}`);
+			this.log(`downloadReferenceToLibrary: metadata extraction failed: ${e.message}`);
 		}
 
 		// Checked before any search/save stage runs, so a reference the user
@@ -581,19 +600,45 @@ LLMReferenceRetrieval = {
 			}
 		}
 
-		// Stage 2: free-text bibliographic query (title only, not the raw
-		// citation), via Zotero's own "Crossref REST" translator
-		// (0a61e167-de9a-4f93-a68a-628b48855909). Selected DIRECTLY by ID
+		// Stage 2: fast, title-only web search for a directly-downloadable
+		// PDF (see _findPDFViaWebSearch) -- just a HEAD request or two per
+		// candidate, rather than a full HiddenBrowser page load + translator
+		// detection, or Crossref's save-~20-then-erase-most dance. Saves a
+		// reasonably complete item itself, using the authors/year/venue
+		// already pulled out by the same _extractCitationMetadata call as
+		// the title, at no extra LLM or network cost.
+		if (!savedItems.length && title) {
+			try {
+				let fileInfo = await this._findPDFViaWebSearch(title, title);
+				if (fileInfo) {
+					let item = await this._saveMinimalItem(fileInfo.url, metadata);
+					await this._attachPDF(fileInfo, item);
+					savedItems = [item];
+				}
+			}
+			catch (e) {
+				this.log(`downloadReferenceToLibrary: fast PDF-first web search failed: ${e.message}`);
+			}
+		}
+
+		// Stage 3: LAST-RESORT free-text bibliographic query (title only,
+		// not the raw citation), via Zotero's own "Crossref REST" translator
+		// (0a61e167-de9a-4f93-a68a-628b48855909), selected DIRECTLY by ID
 		// rather than through translate.getTranslators() -- confirmed by
 		// reading that translator's source that its detectSearch() is
 		// hardcoded to `return false` unconditionally, which (traced through
 		// Zotero's own translate.js: _detectTranslatorLoaded() only adds a
 		// translator to _foundTranslators when detectSearch's return value is
 		// truthy) means getTranslators() NEVER selects it for a plain
-		// query-based .setSearch() call, no matter what the query is. This
-		// stage was consequently a silent no-op the whole time despite
-		// Crossref's own REST API (which doSearch() calls into just fine)
-		// reliably resolving the right paper when queried directly.
+		// query-based .setSearch() call, no matter what the query is.
+		// Deliberately tried only after stages 1-2 have BOTH failed to
+		// produce anything at all (not merely "no PDF yet") -- Crossref
+		// search results essentially never carry a PDF, so this exists
+		// purely to salvage a metadata-only save (no arXiv/bioRxiv/etc. copy
+		// exists, e.g. an older paywalled journal article) rather than
+		// failing outright, and it's the slowest stage besides (saves up to
+		// ~20 candidate items and erases all but the best match -- see
+		// _validateAndCleanup), so it isn't worth trying any earlier.
 		if (!savedItems.length && title) {
 			try {
 				let translator = Zotero.Translators.get("0a61e167-de9a-4f93-a68a-628b48855909");
@@ -613,35 +658,6 @@ LLMReferenceRetrieval = {
 			}
 		}
 
-		// Stage 3: general web search for identity -- full translate+save on
-		// each candidate page in turn. Tries a quoted-exact query first, then
-		// falls back to an unquoted, looser query (mirroring
-		// _findPDFViaWebSearch's same two-step pattern) -- an exact-phrase
-		// search can come up empty for a title that isn't pristine, e.g. one
-		// with a PDF-extraction artifact (confirmed concretely: a citation's
-		// title mangled by a spurious inserted space/period, "Gpt3. int8 ()"
-		// instead of "GPT3.int8()"/"LLM.int8()").
-		if (!savedItems.length && title) {
-			try {
-				let queries = [`"${title}"`, title];
-				outer:
-				for (let query of queries) {
-					let candidates = await this._searchWeb(query, 8);
-					for (let { url } of candidates) {
-						let items = await this._translateAndSaveURL(url);
-						items = await this._validateAndCleanup(items, title);
-						if (items.length) {
-							savedItems = items;
-							break outer;
-						}
-					}
-				}
-			}
-			catch (e) {
-				this.log(`downloadReferenceToLibrary: web search identity fallback failed: ${e.message}`);
-			}
-		}
-
 		if (!savedItems.length) {
 			return { success: false, message: `Could not find "${ref.label ? ref.label + ": " : ""}${citationText.slice(0, 80)}${citationText.length > 80 ? "…" : ""}" online.` };
 		}
@@ -651,37 +667,22 @@ LLMReferenceRetrieval = {
 		let hasPDF = !!bestAttachment?.isPDFAttachment();
 		let doi = saved.getField("DOI");
 		// Defaults to wherever the item's own metadata was resolved from --
-		// overwritten below with the more specific PDF location if stages 5/6
-		// find one.
+		// overwritten below with the more specific PDF location if stage 4
+		// finds one.
 		let sourceURL = saved.getField("url") || (doi ? `https://doi.org/${doi}` : null);
 
-		// Stage 4: DOI-resolved landing page. The DOI itself is already
-		// trusted (it came from a title-validated item), but the PAGE it
-		// resolves to isn't necessarily what it should be -- e.g. a
-		// bot-protection challenge page served instead of the real one --
-		// so a real (translator-derived) title is still checked before
-		// attaching, same as the web-search fallback below.
-		if (!hasPDF && doi) {
-			try {
-				let fileInfo = await this._findPDFAtURL(`https://doi.org/${doi}`, saved.getField("title"));
-				if (fileInfo && fileInfo.titleIsReal && title && this._titleSimilarity(fileInfo.title, title) < this._TITLE_MATCH_THRESHOLD) {
-					this.log(`downloadReferenceToLibrary: rejecting mismatched DOI-resolved PDF page title "${fileInfo.title}" for "${title}"`);
-				}
-				else if (fileInfo) {
-					await this._attachPDF(fileInfo, saved);
-					hasPDF = true;
-					sourceURL = fileInfo.url;
-				}
-			}
-			catch (e) {
-				this.log(`downloadReferenceToLibrary: DOI web-translate fallback failed: ${e.message}`);
-			}
-		}
-
-		// Stage 5: general web search for the title, trying progressively
+		// Stage 4: general web search for the title, trying progressively
 		// looser queries/candidates until one yields a PDF (see
 		// _findPDFViaWebSearch) -- rather than giving up after one narrow
-		// query comes up empty.
+		// query comes up empty. (A DOI-resolved-landing-page stage used to
+		// run before this one -- removed: it needed a full HiddenBrowser
+		// page load per attempt, the slowest step in the whole pipeline, and
+		// empirically failed more often than not on exactly the papers that
+		// reach this point at all, since a DOI landing page that's paywalled/
+		// bot-protected enough to need a real page load is also usually
+		// paywalled for the PDF itself -- confirmed concretely with both
+		// IEEE Xplore and a Curran/proceedings.com reprint DOI. This stage
+		// finds the same open-access copies (arXiv, etc.) without that cost.)
 		if (!hasPDF && title) {
 			try {
 				let fileInfo = await this._findPDFViaWebSearch(title, saved.getField("title"));

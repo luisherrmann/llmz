@@ -4,6 +4,7 @@ LLMChatPane = {
 	rootURI: null,
 	initialized: false,
 	paneID: null,
+	_keydownHandlers: new WeakMap(),
 	maxPDFContextChars: 60000,
 	maxPageContextChars: 5000,
 	chunkContextTopK: 10,
@@ -671,35 +672,90 @@ LLMChatPane = {
 			});
 		}
 		if (typeof katex !== "undefined") {
+			// Two separate extensions, not one shared "inline" tokenizer for
+			// both $$ and $ (the original approach) -- confirmed concretely
+			// that combining them breaks in two distinct ways:
+			// (1) A single stray "$" earlier in the same paragraph (e.g. a
+			// currency amount, "$100. The formula is $$x=1$$.") gets matched
+			// as the OPENING of inline math by the single-$ pattern, which
+			// then greedily consumes everything up to the next "$" it can
+			// find -- which is the start of an unrelated $$ block -- turning
+			// an entire sentence into garbled "math" and leaving the real
+			// formula's closing $$ dangling as literal text.
+			// (2) A display math block containing a blank line (e.g. a
+			// multi-line derivation the model formatted with blank-line
+			// spacing) never renders AT ALL: marked's BLOCK-level lexer
+			// splits into separate paragraph tokens at the blank line before
+			// an "inline"-level tokenizer ever gets a chance to see the full
+			// $$...$$ span, so each half is left as literal, un-rendered "$$"
+			// text -- this matches the exact "I see $$ ... $$ not rendered"
+			// symptom directly.
 			marked.use({
-				extensions: [{
-					name: "math",
-					level: "inline",
-					start(src) { return src.indexOf("$"); },
-					tokenizer(src) {
-						let match = src.match(/^\$\$([\s\S]+?)\$\$/) || src.match(/^\$([^$\n]+?)\$/);
-						if (match) {
-							return {
-								type: "math",
-								raw: match[0],
-								text: match[1].trim(),
-								display: match[0].startsWith("$$"),
-							};
-						}
+				extensions: [
+					// Block-level: runs against the whole remaining source
+					// BEFORE marked's own blank-line paragraph-splitting, so
+					// a $$...$$ span containing a blank line is still matched
+					// as one token (fixes bug 2 above).
+					{
+						name: "blockMath",
+						level: "block",
+						start(src) {
+							let m = src.match(/\$\$/);
+							return m ? m.index : undefined;
+						},
+						tokenizer(src) {
+							let match = src.match(/^\$\$([\s\S]+?)\$\$/);
+							if (match) {
+								return { type: "blockMath", raw: match[0], text: match[1].trim() };
+							}
+						},
+						renderer(token) {
+							try {
+								return katex.renderToString(token.text, {
+									displayMode: true,
+									output: "mathml",
+									throwOnError: false,
+								}) + "\n";
+							}
+							catch (e) {
+								return `<span>${token.text}</span>`;
+							}
+						},
 					},
-					renderer(token) {
-						try {
-							return katex.renderToString(token.text, {
-								displayMode: token.display,
-								output: "mathml",
-								throwOnError: false,
-							});
-						}
-						catch (e) {
-							return `<span>${token.text}</span>`;
-						}
+					// Inline-level: single-$ math only (display $$ is fully
+					// handled by the block extension above, so this no longer
+					// needs to try $$ at all). Requires a non-space character
+					// on the inside of both delimiters, and no digit
+					// immediately after the closing $ -- so a lone currency
+					// "$" (e.g. "$100" or "$5 and $10") can't be mistaken for
+					// an opening/closing delimiter (fixes bug 1 above).
+					{
+						name: "inlineMath",
+						level: "inline",
+						start(src) {
+							let m = src.match(/\$/);
+							return m ? m.index : undefined;
+						},
+						tokenizer(src) {
+							let match = src.match(/^\$(?!\s)([^$\n]*?[^\s$])\$(?!\d)/);
+							if (match) {
+								return { type: "inlineMath", raw: match[0], text: match[1].trim() };
+							}
+						},
+						renderer(token) {
+							try {
+								return katex.renderToString(token.text, {
+									displayMode: false,
+									output: "mathml",
+									throwOnError: false,
+								});
+							}
+							catch (e) {
+								return `<span>${token.text}</span>`;
+							}
+						},
 					},
-				}],
+				],
 			});
 		}
 	},
@@ -754,6 +810,101 @@ LLMChatPane = {
 			}
 		);
 		return marked.parse(processed);
+	},
+
+	// Global CMD+I (Ctrl+I elsewhere) shortcut: opens/focuses the chat pane
+	// from anywhere in the main window, whether or not it's currently
+	// visible -- attached per-window (via onMainWindowLoad/addToAllWindows in
+	// bootstrap.js, the standard plugin pattern for main-window-scoped
+	// behavior, e.g. plugins/make-it-red) rather than globally, since each
+	// Zotero main window has its own document/keydown stream.
+	addToWindow(win) {
+		if (this._keydownHandlers.has(win)) return;
+		let handler = (event) => {
+			let accel = Zotero.isMac ? event.metaKey : event.ctrlKey;
+			if (accel && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "i") {
+				event.preventDefault();
+				event.stopPropagation();
+				this.openChatPane(win);
+			}
+		};
+		win.document.addEventListener("keydown", handler, true);
+		this._keydownHandlers.set(win, handler);
+	},
+
+	removeFromWindow(win) {
+		let handler = this._keydownHandlers.get(win);
+		if (handler) {
+			win.document.removeEventListener("keydown", handler, true);
+			this._keydownHandlers.delete(win);
+		}
+	},
+
+	addToAllWindows() {
+		for (let win of Zotero.getMainWindows()) {
+			if (!win.ZoteroPane) continue;
+			this.addToWindow(win);
+		}
+	},
+
+	removeFromAllWindows() {
+		for (let win of Zotero.getMainWindows()) {
+			if (!win.ZoteroPane) continue;
+			this.removeFromWindow(win);
+		}
+	},
+
+	// Toggles the chat pane: if it's already open AND the chat input already
+	// has focus, collapses the WHOLE side pane (item pane on the library tab,
+	// context pane on a reader tab) -- this is the "press again to dismiss"
+	// case, so it should give the screen back, not just close our one
+	// section while leaving the rest of the sidebar (info, abstract,
+	// attachments, etc.) sitting there open. Otherwise, expands the overall
+	// item/context pane and this section's own collapsible twisty (either
+	// may independently be collapsed) and focuses the chat input. Works
+	// uniformly for the library tab's item pane and a reader tab's context
+	// pane -- two separate DOM subtrees, each with its own
+	// <item-pane-sidenav>, but ZoteroContextPane.sidenav always resolves to
+	// whichever one is current for the active tab
+	// (chrome/content/zotero/contextPane.js). Deliberately does NOT call
+	// container.scrollToPane() when opening -- that's <item-pane-sidenav>'s
+	// own click-handler behavior (chrome/content/zotero/elements/itemPaneSidenav.js),
+	// but it repositions the ENTIRE item-pane scroll container so the target
+	// section sits at the very top, shoving every section above it (info,
+	// abstract, attachments, etc.) out of view -- a jarring jump for a
+	// keyboard shortcut whose only job is "get me to the input box".
+	// Focusing the textarea directly is enough: focusing an off-screen
+	// element already scrolls it into view natively, just far more gently
+	// (only as far as needed, not always to the top).
+	async openChatPane(win) {
+		let { ZoteroContextPane, ZoteroPane, Zotero_Tabs, document } = win;
+		let sidenav = ZoteroContextPane?.sidenav;
+		let container = sidenav?.container;
+		if (!container) return;
+		let pane = container.getPane(this.paneID);
+		if (!pane) return;
+
+		let isLibraryTab = Zotero_Tabs.selectedType === "library";
+		let input = pane.querySelector(".llm-input");
+		if (pane.open && input && document.activeElement === input) {
+			if (isLibraryTab) {
+				ZoteroPane.itemPane.collapsed = true;
+			}
+			else {
+				ZoteroContextPane.collapsed = true;
+			}
+			return;
+		}
+
+		if (isLibraryTab) {
+			ZoteroPane.itemPane.collapsed = false;
+		}
+		else {
+			ZoteroContextPane.collapsed = false;
+		}
+
+		pane.open = true;
+		input?.focus();
 	},
 
 	registerItemPane() {
@@ -1446,6 +1597,7 @@ LLMChatPane = {
 	},
 
 	shutdown() {
+		this.removeFromAllWindows();
 		if (this.paneID) {
 			Zotero.ItemPaneManager.unregisterSection(this.paneID);
 			this.paneID = null;

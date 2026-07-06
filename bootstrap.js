@@ -27,7 +27,16 @@ async function startup({ id, version, rootURI }) {
 	await LLMReferences.init(rootURI);
 	LLMChatPane.init({ id, version, rootURI });
 	LLMReferenceRetrieval.init(LLMChatPane.streamModel.bind(LLMChatPane));
+	LLMChatPane.addToAllWindows();
 	await LLMChatPane.main();
+}
+
+function onMainWindowLoad({ window }) {
+	LLMChatPane.addToWindow(window);
+}
+
+function onMainWindowUnload({ window }) {
+	LLMChatPane.removeFromWindow(window);
 }
 
 function shutdown() {

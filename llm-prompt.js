@@ -41,6 +41,9 @@ LLMPrompt = {
 		"You may cite one of these entries if it genuinely helps answer the question (e.g. it's the direct source of a claim, or clearly relevant further reading) — do not force one in otherwise, and do not list entries just because they exist.",
 		"Format any such citation as [N](<ref:reference:N>), where N is the bibliography number, e.g. '[3]' — matching how the paper itself cites its own references.",
 		"Example: 'This approach was first proposed by [12](<ref:reference:12>).'",
+		"A <NOTE_CONTEXT> block, if present, contains one or more of the user's own annotations on this PDF -- each either a sticky note they wrote, or a passage they highlighted/underlined (quoted verbatim from the PDF) together with any comment they added on it. Any 'Note:' text in it is the user's own authoritative commentary, distinct from the paper's own claims -- don't confuse the two.",
+		"Each entry in <NOTE_CONTEXT> starts with 'Note N (...):' -- when you mention one, wrap it in a link so the reader can jump to it: [Note N](<ref:note:N>), using the exact N shown for that entry (this N is unrelated to any other numbering in this conversation, e.g. reference numbers).",
+		"Example: 'Your highlight on this point [Note 1](<ref:note:1>) is directly relevant here.'",
 	].join(" "),
 
 	log(msg) {
@@ -161,6 +164,89 @@ LLMPrompt = {
 		if (!match) return null;
 		let tableNum = parseInt(match[0], 10);
 		return tables.find(t => t.table_num === tableNum) || null;
+	},
+
+	// `refNum` is a per-request index (1..K over just the notes actually
+	// selected for THIS message, not a stable paper-wide number like
+	// table/figure/equation numbers) -- notes have no natural number of their
+	// own, so this is purely a label the model can echo back in
+	// [Note N](<ref:note:N>) to make its own mention of it clickable. Not
+	// persisted or stable across turns -- linkIndex is rebuilt fresh per
+	// message anyway (see llm-chat-pane.js), so that's fine.
+	_formatNoteContext(note, refNum) {
+		return `**Note ${refNum} (${note.title}):** ${note.text}`;
+	},
+
+	// Asks the LLM which of the user's own notes on this paper are relevant,
+	// given each note's full text -- same "let the LLM read the full, short
+	// content and pick" approach as selectTableWithLLM, but multi-select
+	// (unlike the other selectXWithLLM helpers): a query like "what notes do
+	// I have on this page?" can genuinely have several right answers, not
+	// one. This is still a SINGLE round-trip over all candidates -- the model
+	// reads the whole list once and returns every relevant number, rather
+	// than one call per candidate (O(N) calls, and N here can be dozens).
+	// Notes have no paper-native number to key off of (unlike tables/
+	// figures/equations), so this numbers them 1..N purely for this one
+	// selection round-trip -- that index has no meaning outside this call
+	// and isn't persisted. Capped at MAX_SELECTED_NOTES as a sanity limit in
+	// case the model over-selects on a broad query -- extras beyond the cap
+	// are dropped (in the model's own returned order) rather than bloating
+	// the prompt with every note in the paper.
+	//
+	// readerContext ({ pageNum, selectedText, selectedAnnotationNote })
+	// surfaces what page the user is currently looking at, any text they have
+	// selected there, and any annotation they have actively selected/
+	// highlighted in the reader -- clicked on the page or in the sidebar, no
+	// distinction (LLMChatPane.getSelectedAnnotation(), pre-formatted via
+	// LLMNotes.formatAnnotation() into the same { title, text } shape as
+	// `notes`). Without pageNum, a page-scoped question like "what notes do I
+	// have on this page?" has nothing to match against, since the query
+	// itself carries no page number and each note's title only states ITS
+	// OWN page (e.g. "Highlight (p. 4)"), not what page the user means by
+	// "this page". selectedAnnotationNote is the strongest possible signal
+	// for a query like "explain this" -- the user is looking right at it.
+	async selectNotesWithLLM(notes, query, readerContext = {}) {
+		if (!notes?.length) return [];
+
+		const MAX_SELECTED_NOTES = 10;
+		let { pageNum, selectedText, selectedAnnotationNote } = readerContext;
+		let noteContext = notes.map((n, i) => `Note ${i + 1} (${n.title}): ${n.text}`).join("\n\n");
+		let contextLines = [];
+		if (pageNum) contextLines.push(`The user is currently viewing page ${pageNum} of the PDF.`);
+		if (selectedText) {
+			contextLines.push(`The user currently has this text selected on that page: "${selectedText.slice(0, 300)}${selectedText.length > 300 ? "…" : ""}"`);
+		}
+		if (selectedAnnotationNote) {
+			contextLines.push(`The user currently has this annotation selected/highlighted in the reader: ${selectedAnnotationNote.title}: ${selectedAnnotationNote.text}`);
+		}
+
+		let selectionPrompt = [
+			"You are choosing which of the user's own notes/highlights/underlines on this paper (if any) are relevant to a user's question. There may be zero, one, or several relevant notes -- include all of them, not just the single best one.",
+			...contextLines,
+			"Each note's title states the page it's on, e.g. \"Highlight (p. 4)\" -- use that to match page-scoped questions like \"what notes do I have on this page?\" against the user's current page above.",
+			"Here are the notes:",
+			"",
+			noteContext,
+			"",
+			`User's question: "${query}"`,
+			"",
+			'Respond with ONLY a comma-separated list of every relevant note number (e.g. "2, 5, 7"), or "none" if no note is relevant. Do not include any other text.',
+		].join("\n");
+
+		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
+		let text = (result.text || "").trim();
+		if (!text || /none/i.test(text)) return [];
+
+		let seen = new Set();
+		let selected = [];
+		for (let match of text.matchAll(/\d+/g)) {
+			let index = parseInt(match[0], 10) - 1;
+			if (seen.has(index) || !notes[index]) continue;
+			seen.add(index);
+			selected.push(notes[index]);
+			if (selected.length >= MAX_SELECTED_NOTES) break;
+		}
+		return selected;
 	},
 
 	async getAttachmentFullText(item) {

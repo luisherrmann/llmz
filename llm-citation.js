@@ -226,4 +226,22 @@ LLMCitation = {
 		if (!reader) return;
 		await reader.navigate({ position });
 	},
+
+	// Like navigateToPosition, but for an annotation specifically (`key` is
+	// the Zotero item key, e.g. from LLMNotes.formatAnnotation()'s
+	// `item.key`) -- navigate({ annotationID }) is reader.js's own mechanism
+	// for "select the annotation instead of just scrolling to a position"
+	// (see reader/src/common/reader.js's navigate(): "Select the annotation
+	// instead of just navigating when navigation is triggered externally"),
+	// so this reproduces exactly what clicking the annotation in the reader
+	// itself does -- scroll AND select/highlight it, not just scroll.
+	async navigateToAnnotation(key) {
+		if (!Zotero.Reader || !key) return;
+		let win = Zotero.getMainWindow();
+		let selectedID = win?.Zotero_Tabs?.selectedID;
+		if (!selectedID) return;
+		let reader = Zotero.Reader.getByTabID(selectedID);
+		if (!reader) return;
+		await reader.navigate({ annotationID: key });
+	},
 };

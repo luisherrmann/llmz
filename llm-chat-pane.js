@@ -106,6 +106,43 @@ LLMChatPane = {
 		}
 	},
 
+	// Returns { item: annotationItemOrNull, info } for the annotation the
+	// user currently has selected/highlighted in the reader -- whether they
+	// clicked a text-bound highlight/underline directly on the page, a
+	// standalone sticky-note pin, or the equivalent entry in the sidebar list
+	// (all three funnel into the same selection state; there's no separate
+	// "page click" vs. "sidebar click" concept in the reader). Used as an
+	// extra signal for note selection ("explain this" while an annotation is
+	// selected should strongly favor that one). Reached via the reader's
+	// internal React state -- reader._internalReader._state.selectedAnnotationIDs
+	// is an array of annotation *keys*, not ids (see reader.js's
+	// _getAnnotation(), which sets json.id = item.key for the reader's own
+	// bookkeeping) -- this is unofficial/internal reader state, not a public
+	// API, so it's wrapped defensively like getReaderSelection/
+	// getReaderPageText above; a future Zotero version could restructure it
+	// without warning. Only the first selected annotation is used, matching
+	// "the currently selected note" (singular) rather than a multi-select.
+	getSelectedAnnotation() {
+		if (!Zotero.Reader) return { item: null, info: "no reader API" };
+		let win = Zotero.getMainWindow();
+		let selectedID = win?.Zotero_Tabs?.selectedID;
+		if (!selectedID) return { item: null, info: "no tab selected" };
+		let reader = Zotero.Reader.getByTabID(selectedID);
+		if (!reader) return { item: null, info: "no PDF reader in tab" };
+		try {
+			let ids = reader._internalReader?._state?.selectedAnnotationIDs;
+			if (!ids?.length) return { item: null, info: "no annotation selected" };
+			let libraryID = reader._item?.libraryID;
+			if (libraryID == null) return { item: null, info: "reader._item unavailable" };
+			let item = Zotero.Items.getByLibraryAndKey(libraryID, ids[0]);
+			if (!item) return { item: null, info: `selected annotation key ${ids[0]} not found` };
+			return { item, info: "ok" };
+		}
+		catch (e) {
+			return { item: null, info: `error: ${e.message}` };
+		}
+	},
+
 	async getReaderPageText() {
 		if (!Zotero.Reader) return { text: null, info: "no reader API" };
 		let win = Zotero.getMainWindow();
@@ -287,11 +324,13 @@ LLMChatPane = {
 	//   [label](<find:query>)      -- citation: text-search navigation
 	//   [label](<ref:table:N>) /
 	//   [label](<ref:figure:N>) /
-	//   [label](<ref:equation:N>) -- table/figure/equation mention: looked up in
-	//                                  linkIndex for precise position-based
-	//                                  navigation, falling back to a
-	//                                  caption text-search if no position
-	//                                  was extracted (e.g. rotated tables)
+	//   [label](<ref:equation:N>) /
+	//   [label](<ref:note:N>)      -- table/figure/equation/note mention: looked
+	//                                  up in linkIndex for precise navigation --
+	//                                  by annotation key (select + scroll, notes
+	//                                  only) if present, else by position,
+	//                                  else falling back to a caption
+	//                                  text-search (e.g. rotated tables)
 	// Done before marked parses, so spaces/special chars in the query don't
 	// break markdown link parsing.
 	_renderMarkdown(text, linkIndex) {
@@ -312,13 +351,20 @@ LLMChatPane = {
 				// "[12](<ref:reference:12>)", and plain markdown rendering
 				// would otherwise drop the brackets entirely since they're
 				// consumed as link syntax; re-add them here so it still
-				// reads like an in-text citation). Tables/figures keep their
-				// own already-descriptive label (e.g. "Table 1") as-is.
+				// reads like an in-text citation). Tables/figures/notes keep
+				// their own already-descriptive label (e.g. "Table 1") as-is.
 				// entry.label (the full citation text, when present) is used
 				// only for the hover tooltip, never inline -- a full
 				// bibliography entry inline would clutter the response.
 				let visibleLabel = refType === "reference" ? `[${label}]` : label;
 				let tooltipText = entry.label || entry.caption || label;
+				// annotationKey (notes only) beats position -- navigate({ annotationID })
+				// selects+scrolls to the annotation itself, matching a manual click in
+				// the reader, rather than just scrolling to a coordinate region.
+				if (entry.annotationKey) {
+					let keyAttr = this._escapeAttr(entry.annotationKey);
+					return `<a class="llm-find-link" data-annotation-key="${keyAttr}" title="${this._escapeAttr(tooltipText)}">${visibleLabel}</a>`;
+				}
 				if (entry.position) {
 					let posJson = this._escapeAttr(JSON.stringify(entry.position));
 					return `<a class="llm-find-link" data-position="${posJson}" title="${this._escapeAttr(tooltipText)}">${visibleLabel}</a>`;
@@ -934,7 +980,13 @@ LLMChatPane = {
 				let makeMessageClickable = (messageEl, item) => {
 					messageEl.classList.add("llm-clickable-message");
 					messageEl.addEventListener("click", () => {
-						if (item.position) {
+						// annotationKey (notes only) beats position -- selects+scrolls to
+						// the annotation itself, matching a manual click in the reader,
+						// same reasoning as _renderMarkdown's ref:note:N handling.
+						if (item.annotationKey) {
+							LLMCitation.navigateToAnnotation(item.annotationKey);
+						}
+						else if (item.position) {
 							LLMCitation.navigateToPosition(item.position);
 						}
 						else {
@@ -1119,6 +1171,12 @@ LLMChatPane = {
 									return { error: e.message };
 								})
 								: Promise.resolve(null);
+							let notesPromise = pdfItem
+								? LLMNotes.getNotes(pdfItem).catch((e) => {
+									this.log(`getNotes failed: ${e.message}`);
+									return [];
+								})
+								: Promise.resolve([]);
 							let selectionLine = selectedText
 								? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
 								: `Selected Text: (none — ${selectionInfo})`;
@@ -1207,6 +1265,55 @@ LLMChatPane = {
 								}
 							}
 
+							// Always announced, even on the "found none"/"none matched"
+							// paths -- unlike the equation block above, this stays
+							// visible (matching the table block's style) since it's
+							// useful for debugging whether annotations are being picked
+							// up as expected.
+							let notes = await notesPromise;
+							if (cancelled) return;
+							// Hoisted above the if/else so it's still in scope down at
+							// linkIndex construction below, for ref:note:N resolution.
+							let selectedNotes = [];
+							if (!notes.length) {
+								appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
+							}
+							else {
+								// Extra signal for the selection prompt: if the user has an
+								// annotation actively selected/highlighted in the reader right
+								// now (clicked on the page or in the sidebar), that's about as
+								// strong a relevance hint as it gets for a query like "explain
+								// this".
+								let { item: selectedAnnotationItem } = this.getSelectedAnnotation();
+								let selectedAnnotationNote = selectedAnnotationItem
+									? LLMNotes.formatAnnotation(selectedAnnotationItem)
+									: null;
+
+								try {
+									selectedNotes = await LLMPrompt.selectNotesWithLLM(notes, prompt, { pageNum, selectedText, selectedAnnotationNote });
+								}
+								catch (e) {
+									this.log(`selectNotesWithLLM failed: ${e.message}`);
+								}
+								if (cancelled) return;
+								if (selectedNotes.length) {
+									let noteBlock = selectedNotes.map((n, i) => LLMPrompt._formatNoteContext(n, i + 1)).join("\n\n");
+									modelPrompt += `\n\n<NOTE_CONTEXT>\n${noteBlock}\n</NOTE_CONTEXT>`;
+									let titles = selectedNotes.map(n => n.title).join(", ");
+									let msg = appendMessage("System", `Including ${selectedNotes.length} note${selectedNotes.length === 1 ? "" : "s"} as context (out of ${notes.length} extracted): ${titles}. Click to jump to the first one.`);
+									// Whole-message click only jumps to the first selected note --
+									// makeMessageClickable is a single click target, not one per
+									// note -- good enough as a quick way in, the rest are visible in
+									// the model's own answer either way (each individually
+									// clickable via its own [Note N](<ref:note:N>) link, if the
+									// model includes one).
+									makeMessageClickable(msg, selectedNotes[0]);
+								}
+								else {
+									appendMessage("System", `Extracted ${notes.length} note${notes.length === 1 ? "" : "s"}/highlight${notes.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
+								}
+							}
+
 							let images = [];
 							let figureIndex = await figureIndexPromise;
 							if (cancelled) return;
@@ -1258,10 +1365,10 @@ LLMChatPane = {
 							}
 
 							// Lets the model's own text mentions of any extracted table/figure/
-							// reference/equation (not just the one injected as full context)
+							// reference/equation/note (not just the one injected as full context)
 							// become clickable links -- see _renderMarkdown's `ref:table:N` /
 							// `ref:figure:N` / `ref:reference:N` / `ref:equation:N` /
-							// `ref:formula:N` handling.
+							// `ref:formula:N` / `ref:note:N` handling.
 							// References have no stored position, so they fall back to a text search using the
 							// first few words of the citation (a full-length quote is too
 							// brittle a phrase-search target). The model only emits the bare
@@ -1295,6 +1402,15 @@ LLMChatPane = {
 										position: eq.position,
 										caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
 									}])),
+								// Keyed 1..K over just this message's selectedNotes (see
+								// _formatNoteContext's "Note N" numbering) -- not a stable
+								// paper-wide number, but linkIndex itself is rebuilt fresh per
+								// message anyway, so that's fine.
+								note: new Map(selectedNotes.map((n, i) => [i + 1, {
+									annotationKey: n.annotationKey,
+									position: n.position,
+									caption: n.caption,
+								}])),
 							};
 
 							let reply = appendMessage(providerLabel, `Waiting for ${providerLabel}...`);
@@ -1323,6 +1439,10 @@ LLMChatPane = {
 										let anchor = e.target.closest(".llm-find-link");
 										if (!anchor) return;
 										e.preventDefault();
+										if (anchor.dataset.annotationKey) {
+											LLMCitation.navigateToAnnotation(anchor.dataset.annotationKey);
+											return;
+										}
 										if (anchor.dataset.position) {
 											try {
 												LLMCitation.navigateToPosition(JSON.parse(anchor.dataset.position));

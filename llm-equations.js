@@ -128,4 +128,19 @@ LLMEquations = {
 		await this._saveDiskCache(item, index);
 		return index;
 	},
+
+	// Debug affordance ("Clear Cache" button) -- drops both the memory and
+	// disk cache for this item, so the next getEquationIndex() call re-runs
+	// extraction from scratch rather than reusing a possibly-stale result.
+	async clearCache(item) {
+		this._indexCache.delete(item.id);
+		try {
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			await IOUtils.remove(path, { ignoreAbsent: true });
+			this.log(`clearCache: cleared for item ${item.id}`);
+		}
+		catch (e) {
+			this.log(`clearCache: failed: ${e.message}`);
+		}
+	},
 };

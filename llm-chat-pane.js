@@ -559,6 +559,33 @@ LLMChatPane = {
 					renderPastedImages();
 				});
 
+				// Debug affordance: drops the memory+disk cache for tables/
+				// figures/equations/references on the active PDF (see each
+				// module's own clearCache()), so the next submitted prompt
+				// re-runs extraction from scratch instead of reusing whatever
+				// was cached from a prior run -- useful when a bundled
+				// extraction script has changed in a way _scriptFingerprint()
+				// doesn't catch, or just to force a clean re-extraction while
+				// debugging.
+				let clearCacheButton = doc.createElement("button");
+				clearCacheButton.textContent = "Clear Cache";
+				clearCacheButton.className = "llm-clear-cache";
+				clearCacheButton.title = "Clear cached table/figure/equation/reference extraction for this PDF";
+				clearCacheButton.addEventListener("click", async () => {
+					let item = this.getActiveReaderAttachment();
+					if (!item) {
+						appendMessage("System", "Clear Cache: no active PDF.");
+						return;
+					}
+					await Promise.all([
+						LLMTables.clearCache(item),
+						LLMFigures.clearCache(item),
+						LLMEquations.clearCache(item),
+						LLMReferences.clearCache(item),
+					]);
+					appendMessage("System", "Cleared extraction cache for the active PDF. The next prompt will re-run extraction from scratch.");
+				});
+
 				let renderPastedImages = () => {
 					imagesRow.innerHTML = "";
 					imagesRow.hidden = pastedImages.length === 0;
@@ -894,7 +921,7 @@ LLMChatPane = {
 
 				let buttonRow = doc.createElement("div");
 				buttonRow.className = "llm-button-row";
-				buttonRow.append(submitButton, stopButton, discardImagesButton);
+				buttonRow.append(submitButton, stopButton, discardImagesButton, clearCacheButton);
 
 				let capturedSelection = null;
 				input.addEventListener("focus", () => {

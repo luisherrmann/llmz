@@ -194,7 +194,7 @@
 	opacity: 1;
 }
 
-.llm-submit, .llm-stop, .llm-discard-images {
+.llm-submit, .llm-stop, .llm-discard-images, .llm-clear-cache {
 	align-self: flex-start;
 }
 

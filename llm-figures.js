@@ -36,7 +36,23 @@ LLMFigures = {
 			await IOUtils.makeDirectory(dir, { ignoreExisting: true });
 			for (let name of [this._scriptName, this._embedScriptName]) {
 				let src = await Zotero.File.getContentsFromURL(rootURI + "scripts/" + name);
-				await IOUtils.writeUTF8(this._scriptPath(name), src);
+				let destPath = this._scriptPath(name);
+				// Skipped when unchanged -- an unconditional rewrite here bumps
+				// the file's mtime on every single plugin startup even when its
+				// content is identical, which invalidates _scriptFingerprint()
+				// (and therefore the disk cache built on getFigureIndex below) on
+				// the first prompt after every restart, forcing a needless
+				// re-extraction.
+				let existing = null;
+				try {
+					existing = await IOUtils.readUTF8(destPath);
+				}
+				catch (e) {} // doesn't exist yet -- fall through to write
+				if (existing === src) {
+					this.log(`init: ${name} already up to date, skipping rewrite`);
+					continue;
+				}
+				await IOUtils.writeUTF8(destPath, src);
 				this.log(`init: deployed ${name}`);
 			}
 		}
@@ -178,6 +194,21 @@ LLMFigures = {
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
 		return index;
+	},
+
+	// Debug affordance ("Clear Cache" button) -- drops both the memory and
+	// disk cache for this item, so the next getFigureIndex() call re-runs
+	// extraction from scratch rather than reusing a possibly-stale result.
+	async clearCache(item) {
+		this._indexCache.delete(item.id);
+		try {
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			await IOUtils.remove(path, { ignoreAbsent: true });
+			this.log(`clearCache: cleared for item ${item.id}`);
+		}
+		catch (e) {
+			this.log(`clearCache: failed: ${e.message}`);
+		}
 	},
 
 	// Embeds each figure's "label: caption" as text (nomic-embed-text), so a

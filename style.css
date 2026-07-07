@@ -17,9 +17,10 @@
 .llm-message-list {
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
 	overflow-y: auto;
 	/* height is set by JS based on available pane space */
+	/* Spacing between messages comes from .llm-message's own margin-bottom
+	   below, not a gap here -- avoids double-spacing on top of that. */
 }
 
 .llm-controls {
@@ -31,9 +32,38 @@
 /* Messages */
 .llm-message {
 	box-sizing: border-box;
-	padding: 8px;
 	word-break: break-word;
 	user-select: text;
+	border-radius: 8px;
+	margin-bottom: 1em;
+}
+
+.llm-message-user {
+	margin-left: 20px;
+}
+
+.llm-message-images {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.llm-message-image-thumb {
+	width: 48px;
+	height: 48px;
+	border-radius: 4px;
+	object-fit: cover;
+	flex: 0 0 auto;
+}
+
+.llm-message-user .llm-message-label {
+	color: #4caf50;
+}
+
+.llm-message-assistant .llm-message-label {
+	color: #e74c3c;
 }
 
 .llm-message-label {
@@ -43,8 +73,16 @@
 
 .llm-message-content {
 	margin: 0;
+	padding: 1em;
+	box-sizing: border-box;
 	white-space: pre-wrap;
 	font-family: inherit;
+	/* Translucent white rather than a fixed hex -- always reads as "a few
+	   shades brighter than whatever's behind it" regardless of light/dark
+	   theme, since .llm-message itself has no background of its own to
+	   contrast against a hardcoded color reliably. */
+	background: rgba(255, 255, 255, 0.06);
+	border-radius: 6px;
 }
 
 .llm-clickable-message {
@@ -298,14 +336,19 @@
 
 /* Markdown output */
 .llm-markdown { line-height: 1.5; word-break: break-word; user-select: text; }
-.llm-markdown p { margin: 0 0 0.6em; }
+.llm-markdown p { margin: 0 0 0; }
 .llm-markdown p:last-child { margin-bottom: 0; }
 .llm-markdown h1, .llm-markdown h2, .llm-markdown h3,
 .llm-markdown h4, .llm-markdown h5, .llm-markdown h6 {
 	margin: 0.8em 0 0.3em; font-weight: 600; line-height: 1.3;
 }
-.llm-markdown ul, .llm-markdown ol { margin: 0 0 0.6em; padding-left: 1.4em; }
-.llm-markdown li { margin-bottom: 0.2em; }
+.llm-markdown ul, .llm-markdown ol { margin: 0 0 0; padding-left: 1.4em; }
+.llm-markdown li { margin-bottom: 0; }
+/* "Loose" lists (blank line between items in the source markdown -- common
+   in LLM output) make marked wrap each item's content in its own <p>, which
+   would otherwise add .llm-markdown p's 0.6em margin on top of the .2em
+   above, roughly quadrupling the gap between bullets. */
+.llm-markdown li p { margin: 0; }
 .llm-markdown code {
 	font-family: monospace; font-size: 0.9em;
 	background: rgba(128,128,128,0.15); padding: 0.1em 0.3em; border-radius: 3px;

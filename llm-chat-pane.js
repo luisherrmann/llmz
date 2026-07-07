@@ -1034,7 +1034,11 @@ LLMChatPane = {
 					}
 
 					let message = doc.createElement("div");
-					message.className = "llm-message";
+					// role is "You" for the user, or the provider's own label
+					// (e.g. "Ollama", "OpenAI") for the model's reply -- "System"
+					// is handled above, so anything reaching here is one of those
+					// two, distinguished here for styling purposes (see style.css).
+					message.className = `llm-message ${role === "You" ? "llm-message-user" : "llm-message-assistant"}`;
 
 					let label = doc.createElement("div");
 					label.className = "llm-message-label";
@@ -1269,7 +1273,23 @@ LLMChatPane = {
 								? `Page Context: page ${pageNum}`
 								: `Page Context: (none — ${pageInfo})`);
 							appendMessage("System", contextInfo ? `PDF: ${contextInfo.title}` : "PDF: (none)");
-							appendMessage("You", prompt);
+							let userReply = appendMessage("You", prompt);
+							// A visual record of what was actually attached to this
+							// specific message -- pastedImages itself keeps accumulating
+							// across turns (see the paste handler above), so this snapshot
+							// is what distinguishes "attached to THIS message" from
+							// "currently sitting in the attach tray for the next one".
+							if (pastedImages.length) {
+								let thumbsRow = doc.createElement("div");
+								thumbsRow.className = "llm-message-images";
+								for (let { dataUri } of pastedImages) {
+									let img = doc.createElement("img");
+									img.src = dataUri;
+									img.className = "llm-message-image-thumb";
+									thumbsRow.appendChild(img);
+								}
+								userReply.parentElement.appendChild(thumbsRow);
+							}
 
 							if (contextInfo?.missingText) {
 								appendMessage("System", `No extracted text was available for "${contextInfo.title}". Asking without PDF context.`);
@@ -1491,7 +1511,21 @@ LLMChatPane = {
 								}])),
 							};
 
-							let reply = appendMessage(providerLabel, `Waiting for ${providerLabel}...`);
+							// Resolved up front (rather than waiting for result.model after
+							// the response streams in) so the reply bubble's title shows
+							// which model is being queried immediately, not just once it
+							// answers. Falls back to the bare provider label if this fails
+							// for any reason -- the streamModel call right below will
+							// surface the same underlying error properly either way.
+							let currentModel = null;
+							try {
+								currentModel = await LLMInterfaces.getCurrentModel();
+							}
+							catch (e) {
+								this.log(`getCurrentModel failed before creating reply message: ${e.message}`);
+							}
+							let replyLabel = currentModel ? `${providerLabel} - ${currentModel}` : providerLabel;
+							let reply = appendMessage(replyLabel, `Waiting for ${providerLabel}...`);
 							this.log(`Submitting prompt to ${providerLabel}: ${prompt}`);
 							reply.textContent = "";
 							let result = await LLMInterfaces.streamModel(modelPrompt, (token) => {
@@ -1511,7 +1545,14 @@ LLMChatPane = {
 								let html = this._renderMarkdown(groundedText, linkIndex);
 								if (html) {
 									let rendered = doc.createElement("div");
-									rendered.className = "llm-markdown";
+									// llm-message-content too, not just llm-markdown -- this
+									// element replaces the <pre class="llm-message-content">
+									// that held the response during streaming (see
+									// reply.replaceWith below), and without that class it'd
+									// silently lose the "body" background/padding/spacing that
+									// class provides once the response finishes streaming and
+									// gets swapped from plain text to rendered markdown.
+									rendered.className = "llm-markdown llm-message-content";
 									rendered.innerHTML = html;
 									rendered.addEventListener("click", (e) => {
 										let anchor = e.target.closest(".llm-find-link");

@@ -678,6 +678,8 @@ LLMChatPane = {
 					{ value: "ollama", label: "Ollama" },
 					{ value: "lmstudio", label: "LM Studio" },
 					{ value: "litellm", label: "API (LiteLLM)" },
+					{ value: "openai", label: "OpenAI" },
+					{ value: "anthropic", label: "Anthropic" },
 				];
 				for (let { value, label } of providerOptions) {
 					let option = doc.createElement("option");
@@ -797,24 +799,52 @@ LLMChatPane = {
 					}
 				};
 
-				let apiKeyInput = doc.createElement("input");
-				apiKeyInput.type = "password";
-				apiKeyInput.className = "llm-api-key-input";
-				apiKeyInput.placeholder = "API key (optional)";
-				apiKeyInput.title = "LiteLLM proxy API key — kept in memory only, not saved to disk; re-enter after restarting Zotero";
-				apiKeyInput.value = LLMInterfaces._liteLLMApiKey;
-				apiKeyInput.addEventListener("input", () => {
-					LLMInterfaces._liteLLMApiKey = apiKeyInput.value;
-				});
-
-				let apiKeyRow = doc.createElement("div");
-				apiKeyRow.className = "llm-api-key-row";
-				apiKeyRow.append(apiKeyInput);
-				apiKeyRow.hidden = LLMInterfaces._provider !== "litellm";
+				// API keys are always editable here regardless of which
+				// provider is currently selected (unlike the old single
+				// LiteLLM-only field, which only showed up once LiteLLM was
+				// selected) -- letting the user pre-configure a provider
+				// before switching to it. Persisted via
+				// LLMInterfaces.setApiKey() (OS-keychain-encrypted, survives
+				// restarts -- see llm-interfaces.js) rather than kept only
+				// in memory, so they don't need to be re-entered every
+				// session.
+				let apiKeysDetails = doc.createElement("details");
+				apiKeysDetails.className = "llm-api-keys-details";
+				let apiKeysSummary = doc.createElement("summary");
+				apiKeysSummary.textContent = "API Keys";
+				let apiKeysBody = doc.createElement("div");
+				apiKeysBody.className = "llm-api-keys-body";
+				let apiKeyFields = [
+					{ providerKey: "litellm", label: "LiteLLM" },
+					{ providerKey: "openai", label: "OpenAI" },
+					{ providerKey: "anthropic", label: "Anthropic" },
+				];
+				for (let { providerKey, label } of apiKeyFields) {
+					let row = doc.createElement("label");
+					row.className = "llm-api-key-row";
+					let span = doc.createElement("span");
+					span.textContent = label;
+					let keyInput = doc.createElement("input");
+					keyInput.type = "password";
+					keyInput.className = "llm-api-key-input";
+					keyInput.placeholder = "API key";
+					keyInput.value = LLMInterfaces._apiKeys[providerKey];
+					keyInput.addEventListener("change", async () => {
+						try {
+							await LLMInterfaces.setApiKey(providerKey, keyInput.value);
+						}
+						catch (e) {
+							this.log(`Failed to save ${label} API key: ${e.message}`);
+							appendMessage("System", `Failed to save ${label} API key: ${e.message}`);
+						}
+					});
+					row.append(span, keyInput);
+					apiKeysBody.appendChild(row);
+				}
+				apiKeysDetails.append(apiKeysSummary, apiKeysBody);
 
 				providerSelect.addEventListener("change", () => {
 					LLMInterfaces._provider = providerSelect.value;
-					apiKeyRow.hidden = LLMInterfaces._provider !== "litellm";
 					refreshModelOptions();
 				});
 				modelSelect.addEventListener("change", () => {
@@ -1113,7 +1143,7 @@ LLMChatPane = {
 					stopButton.disabled = false;
 					cancelled = false;
 					let cancelPromise = new Promise((_, reject) => { rejectCancel = reject; });
-					let providerLabels = { ollama: "Ollama", lmstudio: "LM Studio", litellm: "LiteLLM" };
+					let providerLabels = { ollama: "Ollama", lmstudio: "LM Studio", litellm: "LiteLLM", openai: "OpenAI", anthropic: "Anthropic" };
 					let providerLabel = providerLabels[LLMInterfaces._provider] || "Ollama";
 
 					// The entire request -- download-reference lookup or normal
@@ -1392,7 +1422,7 @@ LLMChatPane = {
 					}
 				});
 
-				controls.append(modelRow, apiKeyRow, shortcutsDetails, advancedDetails, input, buttonRow);
+				controls.append(modelRow, apiKeysDetails, shortcutsDetails, advancedDetails, input, buttonRow);
 				container.append(controls, messageList);
 				body.appendChild(container);
 

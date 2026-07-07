@@ -29,6 +29,10 @@ async function startup({ id, version, rootURI }) {
 	await LLMReferences.init(rootURI);
 	LLMChatPane.init({ id, version, rootURI });
 	LLMReferenceRetrieval.init(LLMInterfaces.streamModel.bind(LLMInterfaces));
+	// Awaited before main() so any item-pane render that happens once main()
+	// resolves already has decrypted keys in LLMInterfaces._apiKeys, rather
+	// than momentarily rendering the API key fields empty.
+	await LLMInterfaces.loadApiKeys();
 	LLMChatPane.addToAllWindows();
 	await LLMChatPane.main();
 }

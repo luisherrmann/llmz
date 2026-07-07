@@ -132,13 +132,34 @@
 	flex: 0 0 auto;
 }
 
+.llm-api-keys-details {
+	font-size: 0.9em;
+}
+
+.llm-api-keys-details summary {
+	cursor: pointer;
+	color: -moz-nativehyperlinktext;
+}
+
+.llm-api-keys-body {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 6px;
+}
+
 .llm-api-key-row {
 	display: flex;
+	flex-direction: row;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
 }
 
 .llm-api-key-input {
 	box-sizing: border-box;
-	width: 100%;
+	flex: 1;
+	min-width: 0;
 }
 
 .llm-advanced-details {

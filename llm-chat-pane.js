@@ -254,7 +254,18 @@ LLMChatPane = {
 						name: "blockMath",
 						level: "block",
 						start(src) {
-							let m = src.match(/\$\$/);
+							// Requires a FULL $$...$$ match ahead, not just any bare "$$"
+							// substring -- a bare-"$$" search false-positives on the
+							// accidental "$$" formed at the boundary between two adjacent
+							// inline math spans with no separator (e.g. "$3$$4$": the
+							// closing $ of the first span sits right against the opening $
+							// of the second). That false positive made the lexer split the
+							// text there before the inline extension below ever got a
+							// chance to tokenize the first span, leaving it as broken
+							// literal "$3" text. Requiring a full pair ahead means start()
+							// only reports a position where the tokenizer will actually
+							// succeed.
+							let m = src.match(/\$\$[\s\S]+?\$\$/);
 							return m ? m.index : undefined;
 						},
 						tokenizer(src) {

@@ -1530,16 +1530,24 @@ LLMChatPane = {
 								this.log(`Image context setup failed: ${e.message}`);
 							}
 
-							// Unlike tables/figures, the reference list isn't pre-selected by a
-							// separate LLM call -- the whole bibliography (already short,
-							// citation-length entries) is given to the answering model
-							// directly, and the system prompt tells it it MAY cite one if
-							// genuinely relevant, not that it must.
 							let referenceIndex = await referenceIndexPromise;
 							if (cancelled) return;
 							if (referenceIndex?.references?.length) {
-								modelPrompt += `\n\n<REFERENCE_CONTEXT>\n${LLMPrompt._formatReferenceContext(referenceIndex.references)}\n</REFERENCE_CONTEXT>`;
-								appendMessage("System", `Including bibliography (${referenceIndex.references.length} references) as context.`);
+								let includeReferences = false;
+								try {
+									includeReferences = await LLMPrompt.shouldIncludeReferencesWithLLM(referenceIndex, prompt, readerContext);
+								}
+								catch (e) {
+									this.log(`shouldIncludeReferencesWithLLM failed: ${e.message}`);
+								}
+								if (cancelled) return;
+								if (includeReferences) {
+									modelPrompt += `\n\n<REFERENCE_CONTEXT>\n${LLMPrompt._formatReferenceContext(referenceIndex.references)}\n</REFERENCE_CONTEXT>`;
+									appendMessage("System", `Including bibliography (${referenceIndex.references.length} references) as context.`);
+								}
+								else {
+									appendMessage("System", `Extracted ${referenceIndex.references.length} reference${referenceIndex.references.length === 1 ? "" : "s"} from bibliography; not relevant enough to include.`);
+								}
 							}
 
 							// Lets the model's own text mentions of any extracted table/figure/

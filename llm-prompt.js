@@ -139,6 +139,37 @@ LLMPrompt = {
 		return references.map(r => `[${r.index}] ${r.text}`).join("\n");
 	},
 
+	// Asks the LLM whether the paper's bibliography, as a whole, would help
+	// answer a user's question -- unlike selectTablesWithLLM/
+	// selectFiguresWithLLM/etc. (multi-select from many standalone
+	// candidates, each potentially large), this is a single yes/no call:
+	// reference entries are individually just short citation-length text, so
+	// there's no real cost to including the whole list versus filtering it
+	// entry-by-entry -- the only question worth asking the model is whether
+	// the bibliography is relevant to this question AT ALL (e.g. "what prior
+	// work does this build on", "who else has studied this") versus clearly
+	// not (e.g. "what does figure 2 show").
+	async shouldIncludeReferencesWithLLM(referenceIndex, query, readerContext = {}) {
+		let references = referenceIndex?.references;
+		if (!references?.length) return false;
+
+		let selectionPrompt = [
+			"You are deciding whether a scientific paper's full bibliography/reference list would help answer a user's question.",
+			...this._buildReaderContextLines(readerContext),
+			"Here are the entries in this paper's bibliography, each preceded by its number:",
+			"",
+			this._formatReferenceContext(references),
+			"",
+			`User's question: "${query}"`,
+			"",
+			'Respond with ONLY "yes" if the bibliography would genuinely help answer the question (e.g. the user is asking about related/prior work, sources, or a specific citation), or "no" otherwise. Do not include any other text.',
+		].join("\n");
+
+		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
+		let text = (result.text || "").trim();
+		return /^yes/i.test(text);
+	},
+
 	_formatEquationText(eq) {
 		return `**${eq.label}:** ${eq.text}`;
 	},

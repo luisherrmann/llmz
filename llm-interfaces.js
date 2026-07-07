@@ -382,12 +382,16 @@ LLMInterfaces = {
 	// talks to it directly (no LiteLLM proxy involved) via the same shared
 	// helpers used for LM Studio/LiteLLM. The generic listOpenAICompatibleModels
 	// filter (just excluding "embed") isn't enough here -- OpenAI's own
-	// /v1/models list includes many non-chat model IDs (whisper, tts,
-	// dall-e, moderation, legacy completion-only models) that would just
-	// error if picked from the dropdown, so this filters those out too.
+	// /v1/models list includes many non-chat model IDs (image generation,
+	// speech-to-text/text-to-speech, realtime, computer-use, moderation,
+	// legacy completion-only models) that would just error out of the chat
+	// completions endpoint this plugin uses, so this filters those out too.
+	// There's no "type" field to key off of, so this is necessarily a
+	// denylist -- new non-chat model families may need to be added here.
 	async listOpenAIModels() {
 		let models = await this.listOpenAICompatibleModels(this.openaiBaseURL, this._apiKeys.openai || null);
-		return models.filter(m => !/whisper|tts|dall-e|moderation|davinci|babbage|-instruct$/i.test(m));
+		let nonChatPattern = /whisper|tts|dall-e|gpt-image|image-gen|moderation|davinci|babbage|-instruct$|realtime|transcribe|computer-use/i;
+		return models.filter(m => !nonChatPattern.test(m));
 	},
 
 	async getOpenAIModel() {

@@ -506,6 +506,10 @@ LLMChatPane = {
 				let container = doc.createElement("div");
 				container.className = "llm-container";
 
+				let inputLabel = doc.createElement("div");
+				inputLabel.className = "llm-section-label";
+				inputLabel.textContent = "Prompt";
+
 				let input = doc.createElement("textarea");
 				input.placeholder = "Type here...";
 				input.className = "llm-input";
@@ -872,6 +876,22 @@ LLMChatPane = {
 				);
 				advancedDetails.append(advancedSummary, advancedBody);
 
+				// System messages (extraction/selection status, errors, etc.) render
+				// here instead of the main message list -- see appendMessage/
+				// appendRichMessage below, which route "System"-labeled content to
+				// appendLogEntry() rather than messageList. Keeps the user/assistant
+				// conversation readable without dozens of "Table extraction: ..."/
+				// "Including N notes as context..." lines interleaved into it, while
+				// still keeping that information available (and clickable, where
+				// applicable) for debugging.
+				let logsDetails = doc.createElement("details");
+				logsDetails.className = "llm-logs-details";
+				let logsSummary = doc.createElement("summary");
+				logsSummary.textContent = "Logs";
+				let logsBody = doc.createElement("div");
+				logsBody.className = "llm-logs-body";
+				logsDetails.append(logsSummary, logsBody);
+
 				let buttonRow = doc.createElement("div");
 				buttonRow.className = "llm-button-row";
 				buttonRow.append(submitButton, stopButton, discardImagesButton);
@@ -968,13 +988,51 @@ LLMChatPane = {
 					}
 				});
 
+				let messageListLabel = doc.createElement("div");
+				messageListLabel.className = "llm-section-label";
+				messageListLabel.textContent = "Conversation";
+
 				let messageList = doc.createElement("div");
 				messageList.className = "llm-message-list";
 
 				let controls = doc.createElement("div");
 				controls.className = "llm-controls";
 
+				// [DD/MM/YYYY - hh:mm:ss], local time, zero-padded.
+				let formatLogTimestamp = () => {
+					let d = new Date();
+					let pad = n => String(n).padStart(2, "0");
+					return `[${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} - ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
+				};
+
+				// Prepends a timestamped entry to the Logs panel (see logsBody
+				// above) -- same "newest at the top, scrollTop reset to show it"
+				// convention as messageList below, just a separate, collapsed-by-
+				// default panel so system/status messages don't clutter the actual
+				// conversation. `contentEl` carries its own "llm-log-text" class
+				// (see appendMessage/appendRichMessage) for the white-text/
+				// blue-link styling in style.css.
+				let appendLogEntry = (contentEl) => {
+					let entry = doc.createElement("div");
+					entry.className = "llm-log-entry";
+					let timestampEl = doc.createElement("span");
+					timestampEl.className = "llm-log-timestamp";
+					timestampEl.textContent = formatLogTimestamp() + " ";
+					entry.append(timestampEl, contentEl);
+					logsBody.prepend(entry);
+					logsBody.scrollTop = 0;
+					return entry;
+				};
+
 				let appendMessage = (role, text) => {
+					if (role === "System") {
+						let content = doc.createElement("span");
+						content.className = "llm-log-text";
+						content.textContent = text;
+						appendLogEntry(content);
+						return content;
+					}
+
 					let message = doc.createElement("div");
 					message.className = "llm-message";
 
@@ -1026,15 +1084,8 @@ LLMChatPane = {
 				// download-reference results, which need independent links
 				// for both the library item and its PDF source.
 				let appendRichMessage = (parts) => {
-					let message = doc.createElement("div");
-					message.className = "llm-message";
-
-					let label = doc.createElement("div");
-					label.className = "llm-message-label";
-					label.textContent = "System";
-
-					let content = doc.createElement("pre");
-					content.className = "llm-message-content";
+					let content = doc.createElement("span");
+					content.className = "llm-log-text";
 					for (let part of parts) {
 						if (part.text !== undefined) {
 							content.append(doc.createTextNode(part.text));
@@ -1050,10 +1101,7 @@ LLMChatPane = {
 						});
 						content.append(link);
 					}
-
-					message.append(label, content);
-					messageList.prepend(message);
-					messageList.scrollTop = 0;
+					appendLogEntry(content);
 					return content;
 				};
 
@@ -1209,16 +1257,19 @@ LLMChatPane = {
 									return [];
 								})
 								: Promise.resolve([]);
-							let selectionLine = selectedText
+							// Debug/status metadata about the request, not part of the actual
+							// message -- logged rather than shown inline in the "You" bubble
+							// (which now shows just the raw prompt), same reasoning as every
+							// other appendMessage("System", ...) call routing to the Logs
+							// panel.
+							appendMessage("System", selectedText
 								? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
-								: `Selected Text: (none — ${selectionInfo})`;
-							let pageLine = pageText
+								: `Selected Text: (none — ${selectionInfo})`);
+							appendMessage("System", pageText
 								? `Page Context: page ${pageNum}`
-								: `Page Context: (none — ${pageInfo})`;
-							let visiblePrompt = contextInfo
-								? `${selectionLine}\n${pageLine}\nPDF: ${contextInfo.title}\n\n${prompt}`
-								: `${selectionLine}\n${pageLine}\nPDF: (none)\n\n${prompt}`;
-							appendMessage("You", visiblePrompt);
+								: `Page Context: (none — ${pageInfo})`);
+							appendMessage("System", contextInfo ? `PDF: ${contextInfo.title}` : "PDF: (none)");
+							appendMessage("You", prompt);
 
 							if (contextInfo?.missingText) {
 								appendMessage("System", `No extracted text was available for "${contextInfo.title}". Asking without PDF context.`);
@@ -1517,8 +1568,8 @@ LLMChatPane = {
 					}
 				});
 
-				controls.append(modelRow, apiKeysDetails, shortcutsDetails, advancedDetails, input, imagesRow, buttonRow);
-				container.append(controls, messageList);
+				controls.append(modelRow, apiKeysDetails, shortcutsDetails, advancedDetails, logsDetails, inputLabel, input, imagesRow, buttonRow);
+				container.append(controls, messageListLabel, messageList);
 				body.appendChild(container);
 
 				if (section && scrollContainer) {

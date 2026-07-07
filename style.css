@@ -54,9 +54,14 @@
 }
 
 /* Input controls */
+.llm-section-label {
+	font-weight: 600;
+}
+
 .llm-input {
 	box-sizing: border-box;
-	height: 10vh;
+	/* resize: vertical lets the user drag it taller than this floor. */
+	min-height: 10em;
 	width: 100%;
 	resize: vertical;
 }
@@ -232,6 +237,63 @@
 .llm-advanced-row input {
 	width: 90px;
 	box-sizing: border-box;
+}
+
+.llm-logs-details {
+	font-size: 0.9em;
+}
+
+.llm-logs-details summary {
+	cursor: pointer;
+	color: -moz-nativehyperlinktext;
+}
+
+/* -moz-Field matches .llm-input's native (unstyled) textbox background
+   exactly, light or dark, since .llm-input relies on that same native
+   rendering rather than an explicit background-color of its own. */
+.llm-logs-body {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin-top: 6px;
+	/* Fixed (not min-) height, in em so it scales with this element's own
+	   font-size below -- 15 lines' worth, always; content scrolls within it
+	   rather than growing the box. */
+	height: 15em;
+	overflow-y: auto;
+	box-sizing: border-box;
+	padding: 6px 8px;
+	border-radius: 4px;
+	background: -moz-Field;
+	font-family: monospace;
+	font-size: 0.85em;
+}
+
+.llm-log-entry {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.llm-log-timestamp {
+	color: #2ecc71;
+}
+
+.llm-log-text {
+	color: #ffffff;
+}
+
+.llm-logs-body .llm-find-link {
+	color: #4ea1ff;
+}
+
+/* makeMessageClickable's whole-entry click target (no <a> tag involved) --
+   recolored blue here too so it still reads as "this is clickable" the same
+   way an actual link does, just via the entry's own text color rather than
+   the base .llm-clickable-message rule's -moz-nativehyperlinktext (which
+   would be illegible against -moz-Field in some themes). Selector specificity
+   (3 classes) beats the plain .llm-log-text rule above (2 classes). */
+.llm-logs-body .llm-clickable-message.llm-log-text {
+	color: #4ea1ff;
 }
 
 /* Markdown output */

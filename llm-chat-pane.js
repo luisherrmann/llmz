@@ -567,414 +567,34 @@ LLMChatPane = {
 				input.placeholder = "Type here...";
 				input.className = "llm-input";
 
-				let submitButton = doc.createElement("button");
-				submitButton.textContent = "Submit";
-				submitButton.className = "llm-submit";
-				submitButton.title = "Submit (⌘ ⇧ Return)";
+				let imagePaste = LLMUIImagePaste.create(doc, input, (text) => appendMessage("System", text));
 
-				let stopButton = doc.createElement("button");
-				stopButton.textContent = "Stop";
-				stopButton.className = "llm-stop";
-				stopButton.disabled = true;
-				stopButton.title = "Stop (⌘ ⇧ ⌫)";
+				let providerModelSelect = LLMUIProviderModelSelect.create(doc);
 
-				// Images pasted (⌘V) into the input, attached as context for the
-				// next request(s) -- capped at MAX_PASTED_IMAGES since providers'
-				// per-request image limits, while generous, aren't unlimited, and
-				// a runaway paste of a large batch would silently balloon request
-				// size/cost. Not cleared on submit (matching the existing
-				// behavior of the text input itself, which also isn't cleared)
-				// -- images stay attached across turns until removed via the
-				// thumbnail's "x", so a follow-up question about the same
-				// image(s) doesn't require re-pasting.
-				const MAX_PASTED_IMAGES = 10;
-				// Each entry is { dataUri, fingerprint } -- fingerprint is a SHA-256
-				// hash of the data URI, used to silently skip re-adding an image
-				// that's already attached (e.g. pasting the same screenshot twice).
-				let pastedImages = [];
-
-				let fingerprintDataUri = async (dataUri) => {
-					let digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(dataUri));
-					return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
-				};
-
-				let imagesRow = doc.createElement("div");
-				imagesRow.className = "llm-images-row";
-				imagesRow.hidden = true;
-
-				let discardImagesButton = doc.createElement("button");
-				discardImagesButton.textContent = "Discard All";
-				discardImagesButton.className = "llm-discard-images";
-				discardImagesButton.disabled = true;
-				discardImagesButton.title = "Remove all attached images";
-				discardImagesButton.addEventListener("click", () => {
-					pastedImages = [];
-					renderPastedImages();
+				let apiKeys = LLMUIApiKeys.create(doc, (label, message) => {
+					appendMessage("System", `Failed to save ${label} API key: ${message}`);
 				});
 
-				// Debug affordance: drops the memory+disk cache for tables/
-				// figures/equations/references on the active PDF (see each
-				// module's own clearCache()), so the next submitted prompt
-				// re-runs extraction from scratch instead of reusing whatever
-				// was cached from a prior run -- useful when a bundled
-				// extraction script has changed in a way _scriptFingerprint()
-				// doesn't catch, or just to force a clean re-extraction while
-				// debugging.
-				let clearCacheButton = doc.createElement("button");
-				clearCacheButton.textContent = "Clear Cache";
-				clearCacheButton.className = "llm-clear-cache";
-				clearCacheButton.title = "Clear cached table/figure/equation/reference extraction for this PDF";
-				clearCacheButton.addEventListener("click", async () => {
-					let item = this.getActiveReaderAttachment();
-					if (!item) {
-						appendMessage("System", "Clear Cache: no active PDF.");
-						return;
-					}
-					await Promise.all([
-						LLMTables.clearCache(item),
-						LLMFigures.clearCache(item),
-						LLMEquations.clearCache(item),
-						LLMReferences.clearCache(item),
-					]);
-					appendMessage("System", "Cleared extraction cache for the active PDF. The next prompt will re-run extraction from scratch.");
-				});
+				let keyboardShortcuts = LLMUIKeyboardShortcuts.create(doc);
 
-				let renderPastedImages = () => {
-					imagesRow.innerHTML = "";
-					imagesRow.hidden = pastedImages.length === 0;
-					discardImagesButton.disabled = pastedImages.length === 0;
-					for (let [index, { dataUri }] of pastedImages.entries()) {
-						let thumb = doc.createElement("div");
-						thumb.className = "llm-image-thumb";
-						let img = doc.createElement("img");
-						img.src = dataUri;
-						let removeButton = doc.createElement("span");
-						removeButton.className = "llm-image-thumb-remove";
-						removeButton.textContent = "×";
-						removeButton.title = "Remove image";
-						removeButton.addEventListener("click", () => {
-							pastedImages.splice(index, 1);
-							renderPastedImages();
-						});
-						thumb.append(img, removeButton);
-						imagesRow.appendChild(thumb);
-					}
-				};
-
-				input.addEventListener("paste", async (e) => {
-					let items = e.clipboardData?.items;
-					if (!items) return;
-					let imageItems = Array.from(items).filter(item => item.kind === "file" && item.type.startsWith("image/"));
-					if (!imageItems.length) return;
-					// Only swallow the paste when it actually carries an image --
-					// clipboard content that's just text should still paste normally.
-					e.preventDefault();
-					for (let item of imageItems) {
-						if (pastedImages.length >= MAX_PASTED_IMAGES) {
-							appendMessage("System", `You can attach up to ${MAX_PASTED_IMAGES} images at once.`);
-							break;
-						}
-						let blob = item.getAsFile();
-						if (!blob) continue;
-						let dataUri = await new Promise((resolve, reject) => {
-							let reader = new FileReader();
-							reader.onload = () => resolve(reader.result);
-							reader.onerror = () => reject(reader.error);
-							reader.readAsDataURL(blob);
-						});
-						let fingerprint = await fingerprintDataUri(dataUri);
-						if (pastedImages.some(img => img.fingerprint === fingerprint)) {
-							appendMessage("System", "That image is already attached.");
-							continue;
-						}
-						pastedImages.push({ dataUri, fingerprint });
-						renderPastedImages();
-					}
-				});
-
-				let providerSelect = doc.createElement("select");
-				providerSelect.className = "llm-provider-select";
-				providerSelect.title = "Model provider";
-				let providerOptions = [
-					{ value: "ollama", label: "Ollama" },
-					{ value: "lmstudio", label: "LM Studio" },
-					{ value: "litellm", label: "API (LiteLLM)" },
-					{ value: "openai", label: "OpenAI" },
-					{ value: "anthropic", label: "Anthropic" },
-				];
-				for (let { value, label } of providerOptions) {
-					let option = doc.createElement("option");
-					option.value = value;
-					option.textContent = label;
-					providerSelect.appendChild(option);
-				}
-				providerSelect.value = LLMInterfaces._provider;
-
-				let modelSelect = doc.createElement("select");
-				modelSelect.className = "llm-model-select";
-				modelSelect.title = "Model";
-				modelSelect.disabled = true;
-
-				let modelRefreshButton = doc.createElement("button");
-				modelRefreshButton.textContent = "⟳";
-				modelRefreshButton.className = "llm-model-refresh";
-				modelRefreshButton.title = "Refresh model list";
-
-				let modelGroupLabels = {
-					openai: "OpenAI",
-					anthropic: "Anthropic",
-					ollama: "Ollama",
-					ollama_chat: "Ollama",
-					gemini: "Gemini",
-					vertex_ai: "Vertex AI",
-					xai: "XAI",
-					vllm: "VLLM",
-					fireworks_ai: "Fireworks AI",
-				};
-
-				let addModelOption = (parent, name) => {
-					let option = doc.createElement("option");
-					option.value = name;
-					option.textContent = name;
-					parent.appendChild(option);
-				};
-
-				// Extracts the leading dotted/dashed version run (e.g. "5" from "gpt-5-pro",
-				// [4, 5] from "claude-sonnet-4-5") as an array of numeric components, so models
-				// sort newest-version-first without relying on provider metadata (which turned
-				// out to be a fake placeholder, not real dates).
-				let modelVersionParts = (name) => {
-					let match = name.match(/\d+(?:[.-]\d+)*/);
-					if (!match) return [];
-					return match[0].split(/[.-]/).map(n => parseInt(n, 10));
-				};
-				let pathDepth = (name) => (name.match(/\//g) || []).length;
-				let compareModelNames = (a, b) => {
-					let depthDiff = pathDepth(a) - pathDepth(b); // ascending: shorter paths first
-					if (depthDiff !== 0) return depthDiff;
-					let va = modelVersionParts(a);
-					let vb = modelVersionParts(b);
-					let len = Math.max(va.length, vb.length);
-					for (let i = 0; i < len; i++) {
-						let diff = (vb[i] || 0) - (va[i] || 0); // descending: higher version first
-						if (diff !== 0) return diff;
-					}
-					return a.localeCompare(b);
-				};
-
-				let populateModelOptions = (models) => {
-					let groups = new Map();
-					let ungrouped = [];
-					for (let name of models) {
-						let slash = name.indexOf("/");
-						if (slash > 0) {
-							let prefix = name.slice(0, slash);
-							if (!groups.has(prefix)) groups.set(prefix, []);
-							groups.get(prefix).push(name);
-						}
-						else {
-							ungrouped.push(name);
-						}
-					}
-					ungrouped.sort(compareModelNames);
-					for (let name of ungrouped) addModelOption(modelSelect, name);
-					for (let [prefix, names] of groups) {
-						names.sort(compareModelNames);
-						let optgroup = doc.createElement("optgroup");
-						optgroup.label = modelGroupLabels[prefix] || (prefix.charAt(0).toUpperCase() + prefix.slice(1));
-						for (let name of names) addModelOption(optgroup, name);
-						modelSelect.appendChild(optgroup);
-					}
-				};
-
-				let refreshModelOptions = async () => {
-					let provider = LLMInterfaces._provider;
-					modelSelect.disabled = true;
-					modelSelect.replaceChildren();
-					let loadingOption = doc.createElement("option");
-					loadingOption.textContent = "Loading models…";
-					modelSelect.appendChild(loadingOption);
-					try {
-						let models = await LLMInterfaces._withTimeout(LLMInterfaces.listModels(), 15000, "listModels");
-						if (provider !== LLMInterfaces._provider) return; // provider changed while fetching
-						modelSelect.replaceChildren();
-						if (!models.length) {
-							let emptyOption = doc.createElement("option");
-							emptyOption.textContent = "No models found";
-							modelSelect.appendChild(emptyOption);
-							return;
-						}
-						populateModelOptions(models);
-						let selected = LLMInterfaces._selectedModel[provider];
-						modelSelect.value = models.includes(selected) ? selected : models[0];
-						LLMInterfaces.saveSelectedModel(provider, modelSelect.value);
-						modelSelect.disabled = false;
-					}
-					catch (e) {
-						if (provider !== LLMInterfaces._provider) return;
-						modelSelect.replaceChildren();
-						let errorOption = doc.createElement("option");
-						errorOption.textContent = "Unavailable";
-						modelSelect.appendChild(errorOption);
-						this.log(`Failed to list models for ${provider}: ${e.message}`);
-					}
-				};
-
-				// API keys are always editable here regardless of which
-				// provider is currently selected (unlike the old single
-				// LiteLLM-only field, which only showed up once LiteLLM was
-				// selected) -- letting the user pre-configure a provider
-				// before switching to it. Persisted via
-				// LLMInterfaces.setApiKey() (OS-keychain-encrypted, survives
-				// restarts -- see llm-interfaces.js) rather than kept only
-				// in memory, so they don't need to be re-entered every
-				// session.
-				let apiKeysDetails = doc.createElement("details");
-				apiKeysDetails.className = "llm-api-keys-details";
-				let apiKeysSummary = doc.createElement("summary");
-				apiKeysSummary.textContent = "API Keys";
-				let apiKeysBody = doc.createElement("div");
-				apiKeysBody.className = "llm-api-keys-body";
-				let apiKeyFields = [
-					{ providerKey: "litellm", label: "LiteLLM" },
-					{ providerKey: "openai", label: "OpenAI" },
-					{ providerKey: "anthropic", label: "Anthropic" },
-				];
-				for (let { providerKey, label } of apiKeyFields) {
-					let row = doc.createElement("label");
-					row.className = "llm-api-key-row";
-					let span = doc.createElement("span");
-					span.textContent = label;
-					let keyInput = doc.createElement("input");
-					keyInput.type = "password";
-					keyInput.className = "llm-api-key-input";
-					keyInput.placeholder = "API key";
-					keyInput.value = LLMInterfaces._apiKeys[providerKey];
-					keyInput.addEventListener("change", async () => {
-						try {
-							await LLMInterfaces.setApiKey(providerKey, keyInput.value);
-						}
-						catch (e) {
-							this.log(`Failed to save ${label} API key: ${e.message}`);
-							appendMessage("System", `Failed to save ${label} API key: ${e.message}`);
-						}
-					});
-					row.append(span, keyInput);
-					apiKeysBody.appendChild(row);
-				}
-				apiKeysDetails.append(apiKeysSummary, apiKeysBody);
-
-				providerSelect.addEventListener("change", () => {
-					LLMInterfaces.saveProvider(providerSelect.value);
-					refreshModelOptions();
-				});
-				modelSelect.addEventListener("change", () => {
-					LLMInterfaces.saveSelectedModel(LLMInterfaces._provider, modelSelect.value);
-				});
-				modelRefreshButton.addEventListener("click", () => refreshModelOptions());
-				refreshModelOptions();
-
-				let modelRow = doc.createElement("div");
-				modelRow.className = "llm-model-row";
-				modelRow.append(providerSelect, modelSelect, modelRefreshButton);
-
-				let makeIntegerSetting = (labelText, get, set, { min = 1 } = {}) => {
-					let row = doc.createElement("label");
-					row.className = "llm-advanced-row";
-					let span = doc.createElement("span");
-					span.textContent = labelText;
-					let input = doc.createElement("input");
-					input.type = "number";
-					input.min = String(min);
-					input.step = "1";
-					input.value = get();
-					input.addEventListener("change", () => {
-						let value = parseInt(input.value, 10);
-						if (Number.isInteger(value) && value >= min) {
-							set(value);
-						}
-						else {
-							input.value = get();
-						}
-					});
-					row.append(span, input);
-					return row;
-				};
-
-				let shortcutsDetails = doc.createElement("details");
-				shortcutsDetails.className = "llm-shortcuts-details";
-				let shortcutsSummary = doc.createElement("summary");
-				shortcutsSummary.textContent = "Keyboard Shortcuts";
-				let shortcutsBody = doc.createElement("div");
-				shortcutsBody.className = "llm-shortcuts-body";
-				// Sorted by (keys.length, keys) -- shorter combos first, then
-				// ascending lexicographically (by the shortcut itself, not
-				// the description) within each length. Plain `<`/`>` rather
-				// than localeCompare(), since locale-aware collation could
-				// reorder these symbol characters unpredictably instead of
-				// by simple code-point order.
-				let shortcuts = [
-					{ keys: "⌘ ⇧ ⏎", desc: "Submit" },
-					{ keys: "⌘ ⇧ ⌫", desc: "Stop" },
-					{ keys: "⌘ ↓", desc: "Older message" },
-					{ keys: "⌘ ↑", desc: "Newer message" },
-					{ keys: "⌘ ⇧ ↓", desc: "Oldest message" },
-					{ keys: "⌘ ⇧ ↑", desc: "Newest message" },
-					{ keys: "⌘ I", desc: "Toggle chat pane" },
-				].sort((a, b) => a.keys.length - b.keys.length || (a.keys < b.keys ? -1 : a.keys > b.keys ? 1 : 0));
-				for (let { keys, desc } of shortcuts) {
-					let row = doc.createElement("div");
-					row.className = "llm-shortcut-row";
-					let badge = doc.createElement("span");
-					badge.className = "llm-shortcut-badge";
-					badge.textContent = keys;
-					let label = doc.createElement("span");
-					label.className = "llm-shortcut-desc";
-					label.textContent = desc;
-					row.append(badge, label);
-					shortcutsBody.appendChild(row);
-				}
-				shortcutsDetails.append(shortcutsSummary, shortcutsBody);
-
-				let advancedDetails = doc.createElement("details");
-				advancedDetails.className = "llm-advanced-details";
-				let advancedSummary = doc.createElement("summary");
-				advancedSummary.textContent = "Advanced";
-				let advancedBody = doc.createElement("div");
-				advancedBody.className = "llm-advanced-body";
-				advancedBody.append(
-					makeIntegerSetting(
-						"Max PDF context (characters)",
-						() => LLMPrompt.maxPDFContextChars,
-						(value) => { LLMPrompt.maxPDFContextChars = value; }
-					),
-					makeIntegerSetting(
-						"Chunk context top-K",
-						() => LLMPrompt.chunkContextTopK,
-						(value) => { LLMPrompt.chunkContextTopK = value; }
-					)
-				);
-				advancedDetails.append(advancedSummary, advancedBody);
+				let advanced = LLMUIAdvanced.create(doc);
 
 				// System messages (extraction/selection status, errors, etc.) render
 				// here instead of the main message list -- see appendMessage/
 				// appendRichMessage below, which route "System"-labeled content to
-				// appendLogEntry() rather than messageList. Keeps the user/assistant
+				// logs.appendMessage/appendRichMessage (ui/logs.js) rather than
+				// chat.appendMessage (ui/chat.js). Keeps the user/assistant
 				// conversation readable without dozens of "Table extraction: ..."/
 				// "Including N notes as context..." lines interleaved into it, while
 				// still keeping that information available (and clickable, where
 				// applicable) for debugging.
-				let logsDetails = doc.createElement("details");
-				logsDetails.className = "llm-logs-details";
-				let logsSummary = doc.createElement("summary");
-				logsSummary.textContent = "Logs";
-				let logsBody = doc.createElement("div");
-				logsBody.className = "llm-logs-body";
-				logsDetails.append(logsSummary, logsBody);
+				let logs = LLMUILogs.create(doc);
 
-				let buttonRow = doc.createElement("div");
-				buttonRow.className = "llm-button-row";
-				buttonRow.append(submitButton, stopButton, discardImagesButton, clearCacheButton);
+				let { element: buttonRow, submitButton, stopButton } = LLMUIButtonRow.create(doc, {
+					getActiveItem: () => this.getActiveReaderAttachment(),
+					onMessage: (text) => appendMessage("System", text),
+					discardImagesButton: imagePaste.discardButton,
+				});
 
 				let capturedSelection = null;
 				input.addEventListener("focus", () => {
@@ -1068,81 +688,34 @@ LLMChatPane = {
 					}
 				});
 
-				let messageListLabel = doc.createElement("div");
-				messageListLabel.className = "llm-section-label";
-				messageListLabel.textContent = "Conversation";
-
-				let messageList = doc.createElement("div");
-				messageList.className = "llm-message-list";
+				let chat = LLMUIChat.create(doc);
 
 				let controls = doc.createElement("div");
 				controls.className = "llm-controls";
 
-				// [DD/MM/YYYY - hh:mm:ss], local time, zero-padded.
-				let formatLogTimestamp = () => {
-					let d = new Date();
-					let pad = n => String(n).padStart(2, "0");
-					return `[${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} - ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}]`;
-				};
-
-				// Prepends a timestamped entry to the Logs panel (see logsBody
-				// above) -- same "newest at the top, scrollTop reset to show it"
-				// convention as messageList below, just a separate, collapsed-by-
-				// default panel so system/status messages don't clutter the actual
-				// conversation. `contentEl` carries its own "llm-log-text" class
-				// (see appendMessage/appendRichMessage) for the white-text/
-				// blue-link styling in style.css.
-				let appendLogEntry = (contentEl) => {
-					let entry = doc.createElement("div");
-					entry.className = "llm-log-entry";
-					let timestampEl = doc.createElement("span");
-					timestampEl.className = "llm-log-timestamp";
-					timestampEl.textContent = formatLogTimestamp() + " ";
-					entry.append(timestampEl, contentEl);
-					logsBody.prepend(entry);
-					logsBody.scrollTop = 0;
-					return entry;
-				};
-
+				// Dispatches to whichever UI module actually owns rendering for
+				// this role -- "System" goes to the Logs panel (ui/logs.js),
+				// everything else ("You" or the model's provider label) goes to
+				// the conversation message list (ui/chat.js).
 				let appendMessage = (role, text) => {
-					if (role === "System") {
-						let content = doc.createElement("span");
-						content.className = "llm-log-text";
-						content.textContent = text;
-						appendLogEntry(content);
-						return content;
-					}
-
-					let message = doc.createElement("div");
-					// role is "You" for the user, or the provider's own label
-					// (e.g. "Ollama", "OpenAI") for the model's reply -- "System"
-					// is handled above, so anything reaching here is one of those
-					// two, distinguished here for styling purposes (see style.css).
-					message.className = `llm-message ${role === "You" ? "llm-message-user" : "llm-message-assistant"}`;
-
-					let label = doc.createElement("div");
-					label.className = "llm-message-label";
-					label.textContent = role;
-
-					let content = doc.createElement("pre");
-					content.className = "llm-message-content";
-					content.textContent = text;
-
-					message.append(label, content);
-					messageList.prepend(message);
-					messageList.scrollTop = 0;
-					return content;
+					if (role === "System") return logs.appendMessage(text);
+					return chat.appendMessage(role, text);
 				};
+				let appendRichMessage = (parts) => logs.appendRichMessage(parts);
 
 				// Makes a system message clickable to jump to the figure/table it
 				// refers to: precise region navigation via its stored `position`
 				// (native PDF-space rects, computed at extraction time) when
 				// available, falling back to caption text-search otherwise (e.g.
 				// for tables found via rotation-normalization, where a real-page
-				// position can't be reliably computed).
+				// position can't be reliably computed). Only ever used on logged
+				// (System) messages, so this wraps logs.makeClickable rather than
+				// living in ui/logs.js itself -- the annotationKey/position/
+				// caption navigation preference below is LLMCitation-specific
+				// business logic, not something the Logs UI module needs to know
+				// about.
 				let makeMessageClickable = (messageEl, item) => {
-					messageEl.classList.add("llm-clickable-message");
-					messageEl.addEventListener("click", () => {
+					logs.makeClickable(messageEl, () => {
 						// annotationKey (notes only) beats position -- selects+scrolls to
 						// the annotation itself, matching a manual click in the reader,
 						// same reasoning as _renderMarkdown's ref:note:N handling.
@@ -1156,37 +729,6 @@ LLMChatPane = {
 							LLMCitation.navigateToText(item.caption);
 						}
 					});
-				};
-
-				// Renders a system message built from an ordered list of
-				// parts -- each either plain text ({ text }) or a real
-				// inline clickable link ({ label, title, onClick }) -- as
-				// opposed to makeMessageClickable's whole-row click target,
-				// so it reads as a normal sentence with just specific words
-				// as the clickable parts (matching how the model's own
-				// figure/table/reference links look). Used for the
-				// download-reference results, which need independent links
-				// for both the library item and its PDF source.
-				let appendRichMessage = (parts) => {
-					let content = doc.createElement("span");
-					content.className = "llm-log-text";
-					for (let part of parts) {
-						if (part.text !== undefined) {
-							content.append(doc.createTextNode(part.text));
-							continue;
-						}
-						let link = doc.createElement("a");
-						link.className = "llm-find-link";
-						link.textContent = part.label;
-						if (part.title) link.title = part.title;
-						link.addEventListener("click", (e) => {
-							e.preventDefault();
-							part.onClick();
-						});
-						content.append(link);
-					}
-					appendLogEntry(content);
-					return content;
 				};
 
 				submitButton.addEventListener("click", async () => {
@@ -1355,20 +897,13 @@ LLMChatPane = {
 							appendMessage("System", contextInfo ? `PDF: ${contextInfo.title}` : "PDF: (none)");
 							let userReply = appendMessage("You", prompt);
 							// A visual record of what was actually attached to this
-							// specific message -- pastedImages itself keeps accumulating
-							// across turns (see the paste handler above), so this snapshot
-							// is what distinguishes "attached to THIS message" from
-							// "currently sitting in the attach tray for the next one".
-							if (pastedImages.length) {
-								let thumbsRow = doc.createElement("div");
-								thumbsRow.className = "llm-message-images";
-								for (let { dataUri } of pastedImages) {
-									let img = doc.createElement("img");
-									img.src = dataUri;
-									img.className = "llm-message-image-thumb";
-									thumbsRow.appendChild(img);
-								}
-								userReply.parentElement.appendChild(thumbsRow);
+							// specific message -- imagePaste's own list keeps accumulating
+							// across turns (see ui/image-paste.js), so this snapshot is what
+							// distinguishes "attached to THIS message" from "currently
+							// sitting in the attach tray for the next one".
+							let pastedImageDataUris = imagePaste.getDataUris();
+							if (pastedImageDataUris.length) {
+								chat.appendImages(userReply, pastedImageDataUris);
 							}
 
 							if (contextInfo?.missingText) {
@@ -1497,15 +1032,16 @@ LLMChatPane = {
 							try {
 								let currentModel = await LLMInterfaces.getCurrentModel();
 								let supportsImages = await LLMInterfaces.modelSupportsImages(currentModel);
-								// Snapshotted rather than referenced live, so a mid-request
-								// removal via the thumbnail's "x" doesn't retroactively
-								// change what's sent for a request already in flight.
-								if (pastedImages.length) {
+								// pastedImageDataUris was already snapshotted above (before this
+								// request's async work began), so a mid-request removal via the
+								// thumbnail's "x" doesn't retroactively change what's sent for a
+								// request already in flight.
+								if (pastedImageDataUris.length) {
 									if (supportsImages) {
-										images.push(...pastedImages.map(img => img.dataUri));
+										images.push(...pastedImageDataUris);
 									}
 									else {
-										appendMessage("System", `${currentModel} doesn't support image input -- the ${pastedImages.length} attached image${pastedImages.length === 1 ? "" : "s"} won't be sent.`);
+										appendMessage("System", `${currentModel} doesn't support image input -- the ${pastedImageDataUris.length} attached image${pastedImageDataUris.length === 1 ? "" : "s"} won't be sent.`);
 									}
 								}
 								// Skipped when the user already attached image(s) themselves --
@@ -1513,7 +1049,7 @@ LLMChatPane = {
 								// as image context when image context has already been provided.
 								// figureIndex itself is still fetched above regardless (used below
 								// for citation-link resolution on figures the model's text mentions).
-								if (figureIndex?.figures?.length && supportsImages && !pastedImages.length) {
+								if (figureIndex?.figures?.length && supportsImages && !pastedImageDataUris.length) {
 									let bestFigures = await LLMPrompt.selectFiguresWithLLM(figureIndex, prompt, readerContext);
 									if (cancelled) return;
 									let figuresWithImages = bestFigures.filter(f => f.image_data);
@@ -1720,8 +1256,8 @@ LLMChatPane = {
 					}
 				});
 
-				controls.append(modelRow, apiKeysDetails, shortcutsDetails, advancedDetails, logsDetails, inputLabel, input, imagesRow, buttonRow);
-				container.append(controls, messageListLabel, messageList);
+				controls.append(providerModelSelect.element, apiKeys.element, keyboardShortcuts.element, advanced.element, logs.element, inputLabel, input, imagePaste.row, buttonRow);
+				container.append(controls, chat.label, chat.list);
 				body.appendChild(container);
 
 				if (section && scrollContainer) {
@@ -1731,7 +1267,7 @@ LLMChatPane = {
 					let availForSection = scrollContainer.clientHeight - sectionOffsetFromTop;
 					let overhead = 32; // 8px top padding + 16px bottom padding + 8px gap
 					let listH = Math.max(80, availForSection - controls.offsetHeight - overhead);
-					messageList.style.height = listH + "px";
+					chat.list.style.height = listH + "px";
 					section.style.minHeight = (controls.offsetHeight + listH + overhead) + "px";
 				}
 			},

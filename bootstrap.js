@@ -1,4 +1,12 @@
 var LLMChatPane;
+var LLMUILogs;
+var LLMUIChat;
+var LLMUIProviderModelSelect;
+var LLMUIImagePaste;
+var LLMUIApiKeys;
+var LLMUIKeyboardShortcuts;
+var LLMUIAdvanced;
+var LLMUIButtonRow;
 var LLMCitation;
 var LLMFigures;
 var LLMTables;
@@ -31,6 +39,14 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "reference-retrieval.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-interfaces.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-prompt.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/logs.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/chat.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/provider_model_select.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/image-paste.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/api_keys.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/keyboard_shortcuts.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/advanced.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/button-row.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-chat-pane.js");
 	await LLMReferences.init(rootURI);
 	LLMChatPane.init({ id, version, rootURI });

@@ -39,6 +39,10 @@ async function startup({ id, version, rootURI }) {
 	// resolves already has decrypted keys in LLMInterfaces._apiKeys, rather
 	// than momentarily rendering the API key fields empty.
 	await LLMInterfaces.loadApiKeys();
+	// Synchronous (plain Zotero.Prefs, no keychain decrypt needed) -- must
+	// still run before main() renders the provider/model dropdowns, which
+	// read _provider/_selectedModel directly.
+	LLMInterfaces.loadSelection();
 	LLMChatPane.addToAllWindows();
 	await LLMChatPane.main();
 }

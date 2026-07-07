@@ -727,7 +727,7 @@ LLMChatPane = {
 						populateModelOptions(models);
 						let selected = LLMInterfaces._selectedModel[provider];
 						modelSelect.value = models.includes(selected) ? selected : models[0];
-						LLMInterfaces._selectedModel[provider] = modelSelect.value;
+						LLMInterfaces.saveSelectedModel(provider, modelSelect.value);
 						modelSelect.disabled = false;
 					}
 					catch (e) {
@@ -785,11 +785,11 @@ LLMChatPane = {
 				apiKeysDetails.append(apiKeysSummary, apiKeysBody);
 
 				providerSelect.addEventListener("change", () => {
-					LLMInterfaces._provider = providerSelect.value;
+					LLMInterfaces.saveProvider(providerSelect.value);
 					refreshModelOptions();
 				});
 				modelSelect.addEventListener("change", () => {
-					LLMInterfaces._selectedModel[LLMInterfaces._provider] = modelSelect.value;
+					LLMInterfaces.saveSelectedModel(LLMInterfaces._provider, modelSelect.value);
 				});
 				modelRefreshButton.addEventListener("click", () => refreshModelOptions());
 				refreshModelOptions();

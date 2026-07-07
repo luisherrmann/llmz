@@ -28,6 +28,54 @@ LLMInterfaces = {
 		]);
 	},
 
+	// Persisted provider/model selection, so switching providers or picking a
+	// specific model doesn't need to be redone every time Zotero or the
+	// plugin reloads. Unlike the API keys above, this isn't sensitive data,
+	// so a plain Zotero.Prefs entry is enough -- no OS-keychain encryption
+	// needed. `global: true` on every Zotero.Prefs call is required here --
+	// without it, Zotero.Prefs silently prefixes the key with its own
+	// extensions.zotero. branch, which isn't where this plugin's own prefs
+	// (see prefs.js) live.
+	_providerPref: "extensions.llm-chat-pane.provider",
+	_selectedModelPref: "extensions.llm-chat-pane.selectedModels",
+
+	loadSelection() {
+		try {
+			let provider = Zotero.Prefs.get(this._providerPref, true);
+			if (provider) this._provider = provider;
+		}
+		catch (e) {
+			this.log(`loadSelection: failed to read provider pref: ${e.message}`);
+		}
+		try {
+			let json = Zotero.Prefs.get(this._selectedModelPref, true);
+			if (json) this._selectedModel = JSON.parse(json);
+		}
+		catch (e) {
+			this.log(`loadSelection: failed to read selectedModel pref: ${e.message}`);
+		}
+	},
+
+	saveProvider(provider) {
+		this._provider = provider;
+		try {
+			Zotero.Prefs.set(this._providerPref, provider, true);
+		}
+		catch (e) {
+			this.log(`saveProvider: failed to persist provider: ${e.message}`);
+		}
+	},
+
+	saveSelectedModel(provider, model) {
+		this._selectedModel[provider] = model;
+		try {
+			Zotero.Prefs.set(this._selectedModelPref, JSON.stringify(this._selectedModel), true);
+		}
+		catch (e) {
+			this.log(`saveSelectedModel: failed to persist selected model: ${e.message}`);
+		}
+	},
+
 	// Secure, persistent storage for provider API keys (LiteLLM, OpenAI,
 	// Anthropic -- LM Studio and Ollama don't need one), using the exact
 	// mechanism Zotero's own sync code uses for the Zotero Web API key

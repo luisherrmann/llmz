@@ -663,13 +663,100 @@ LLMChatPane = {
 				let submitButton = doc.createElement("button");
 				submitButton.textContent = "Submit";
 				submitButton.className = "llm-submit";
-				submitButton.title = "Submit (⌘ Return)";
+				submitButton.title = "Submit (⌘ ⇧ Return)";
 
 				let stopButton = doc.createElement("button");
 				stopButton.textContent = "Stop";
 				stopButton.className = "llm-stop";
 				stopButton.disabled = true;
-				stopButton.title = "Stop (⌘ ⌫)";
+				stopButton.title = "Stop (⌘ ⇧ ⌫)";
+
+				// Images pasted (⌘V) into the input, attached as context for the
+				// next request(s) -- capped at MAX_PASTED_IMAGES since providers'
+				// per-request image limits, while generous, aren't unlimited, and
+				// a runaway paste of a large batch would silently balloon request
+				// size/cost. Not cleared on submit (matching the existing
+				// behavior of the text input itself, which also isn't cleared)
+				// -- images stay attached across turns until removed via the
+				// thumbnail's "x", so a follow-up question about the same
+				// image(s) doesn't require re-pasting.
+				const MAX_PASTED_IMAGES = 10;
+				// Each entry is { dataUri, fingerprint } -- fingerprint is a SHA-256
+				// hash of the data URI, used to silently skip re-adding an image
+				// that's already attached (e.g. pasting the same screenshot twice).
+				let pastedImages = [];
+
+				let fingerprintDataUri = async (dataUri) => {
+					let digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(dataUri));
+					return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
+				};
+
+				let imagesRow = doc.createElement("div");
+				imagesRow.className = "llm-images-row";
+				imagesRow.hidden = true;
+
+				let discardImagesButton = doc.createElement("button");
+				discardImagesButton.textContent = "Discard All";
+				discardImagesButton.className = "llm-discard-images";
+				discardImagesButton.disabled = true;
+				discardImagesButton.title = "Remove all attached images";
+				discardImagesButton.addEventListener("click", () => {
+					pastedImages = [];
+					renderPastedImages();
+				});
+
+				let renderPastedImages = () => {
+					imagesRow.innerHTML = "";
+					imagesRow.hidden = pastedImages.length === 0;
+					discardImagesButton.disabled = pastedImages.length === 0;
+					for (let [index, { dataUri }] of pastedImages.entries()) {
+						let thumb = doc.createElement("div");
+						thumb.className = "llm-image-thumb";
+						let img = doc.createElement("img");
+						img.src = dataUri;
+						let removeButton = doc.createElement("span");
+						removeButton.className = "llm-image-thumb-remove";
+						removeButton.textContent = "×";
+						removeButton.title = "Remove image";
+						removeButton.addEventListener("click", () => {
+							pastedImages.splice(index, 1);
+							renderPastedImages();
+						});
+						thumb.append(img, removeButton);
+						imagesRow.appendChild(thumb);
+					}
+				};
+
+				input.addEventListener("paste", async (e) => {
+					let items = e.clipboardData?.items;
+					if (!items) return;
+					let imageItems = Array.from(items).filter(item => item.kind === "file" && item.type.startsWith("image/"));
+					if (!imageItems.length) return;
+					// Only swallow the paste when it actually carries an image --
+					// clipboard content that's just text should still paste normally.
+					e.preventDefault();
+					for (let item of imageItems) {
+						if (pastedImages.length >= MAX_PASTED_IMAGES) {
+							appendMessage("System", `You can attach up to ${MAX_PASTED_IMAGES} images at once.`);
+							break;
+						}
+						let blob = item.getAsFile();
+						if (!blob) continue;
+						let dataUri = await new Promise((resolve, reject) => {
+							let reader = new FileReader();
+							reader.onload = () => resolve(reader.result);
+							reader.onerror = () => reject(reader.error);
+							reader.readAsDataURL(blob);
+						});
+						let fingerprint = await fingerprintDataUri(dataUri);
+						if (pastedImages.some(img => img.fingerprint === fingerprint)) {
+							appendMessage("System", "That image is already attached.");
+							continue;
+						}
+						pastedImages.push({ dataUri, fingerprint });
+						renderPastedImages();
+					}
+				});
 
 				let providerSelect = doc.createElement("select");
 				providerSelect.className = "llm-provider-select";
@@ -893,8 +980,8 @@ LLMChatPane = {
 				// reorder these symbol characters unpredictably instead of
 				// by simple code-point order.
 				let shortcuts = [
-					{ keys: "⌘ ⏎", desc: "Submit" },
-					{ keys: "⌘ ⌫", desc: "Stop" },
+					{ keys: "⌘ ⇧ ⏎", desc: "Submit" },
+					{ keys: "⌘ ⇧ ⌫", desc: "Stop" },
 					{ keys: "⌘ ↓", desc: "Older message" },
 					{ keys: "⌘ ↑", desc: "Newer message" },
 					{ keys: "⌘ ⇧ ↓", desc: "Oldest message" },
@@ -937,7 +1024,7 @@ LLMChatPane = {
 
 				let buttonRow = doc.createElement("div");
 				buttonRow.className = "llm-button-row";
-				buttonRow.append(submitButton, stopButton);
+				buttonRow.append(submitButton, stopButton, discardImagesButton);
 
 				let capturedSelection = null;
 				input.addEventListener("focus", () => {
@@ -988,11 +1075,11 @@ LLMChatPane = {
 
 				input.addEventListener("keydown", (e) => {
 					if (!e.metaKey) return;
-					if (e.code === "Enter") {
+					if (e.code === "Enter" && e.shiftKey) {
 						e.preventDefault();
 						if (!submitButton.disabled) submitButton.click();
 					}
-					else if (e.code === "Backspace") {
+					else if (e.code === "Backspace" && e.shiftKey) {
 						e.preventDefault();
 						if (!stopButton.disabled) stopButton.click();
 					}
@@ -1304,7 +1391,24 @@ LLMChatPane = {
 							if (cancelled) return;
 							try {
 								let currentModel = await LLMInterfaces.getCurrentModel();
-								if (figureIndex?.figures?.length && await LLMInterfaces.modelSupportsImages(currentModel)) {
+								let supportsImages = await LLMInterfaces.modelSupportsImages(currentModel);
+								// Snapshotted rather than referenced live, so a mid-request
+								// removal via the thumbnail's "x" doesn't retroactively
+								// change what's sent for a request already in flight.
+								if (pastedImages.length) {
+									if (supportsImages) {
+										images.push(...pastedImages.map(img => img.dataUri));
+									}
+									else {
+										appendMessage("System", `${currentModel} doesn't support image input -- the ${pastedImages.length} attached image${pastedImages.length === 1 ? "" : "s"} won't be sent.`);
+									}
+								}
+								// Skipped when the user already attached image(s) themselves --
+								// no need to spend an extra LLM call hunting for a figure to use
+								// as image context when image context has already been provided.
+								// figureIndex itself is still fetched above regardless (used below
+								// for citation-link resolution on figures the model's text mentions).
+								if (figureIndex?.figures?.length && supportsImages && !pastedImages.length) {
 									let bestFigure = await this.selectFigureWithLLM(figureIndex, prompt);
 									if (cancelled) return;
 									if (bestFigure?.image_data) {
@@ -1422,7 +1526,7 @@ LLMChatPane = {
 					}
 				});
 
-				controls.append(modelRow, apiKeysDetails, shortcutsDetails, advancedDetails, input, buttonRow);
+				controls.append(modelRow, apiKeysDetails, shortcutsDetails, advancedDetails, input, imagesRow, buttonRow);
 				container.append(controls, messageList);
 				body.appendChild(container);
 

@@ -12,6 +12,11 @@
 // callable directly from plugin code, so we vendor+run the source ourselves.
 LLMReferences = {
 	_scriptName: "extract_references.js",
+	// Other node/document-worker-based scripts that share this same deployed
+	// sdt/ copy (see _deployFromPackedXPI below) -- currently just
+	// LLMEquations, which reuses this module's _extensionRoot/_nodePath/
+	// _pdfjsSetupPath rather than deploying a second copy of sdt/ itself.
+	_siblingScriptNames: ["extract_equations.js"],
 	_cacheVersion: 1, // bump when the cached index schema changes (JS-side, not just the script/model)
 	_indexCache: new Map(),
 	_extensionRoot: null,
@@ -80,10 +85,12 @@ LLMReferences = {
 				if (entry.endsWith("/")) continue;
 				zipReader.extract(entry, Zotero.File.pathToFile(PathUtils.join(destDir, ...entry.split("/"))));
 			}
-			zipReader.extract(
-				"scripts/extract_references.js",
-				Zotero.File.pathToFile(PathUtils.join(destDir, "scripts", "extract_references.js"))
-			);
+			for (let name of [this._scriptName, ...this._siblingScriptNames]) {
+				zipReader.extract(
+					"scripts/" + name,
+					Zotero.File.pathToFile(PathUtils.join(destDir, "scripts", name))
+				);
+			}
 
 			await IOUtils.writeUTF8(markerPath, marker);
 		}

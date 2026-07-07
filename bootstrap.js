@@ -3,6 +3,7 @@ var LLMCitation;
 var LLMFigures;
 var LLMTables;
 var LLMReferences;
+var LLMEquations;
 var LLMReferenceRetrieval;
 var LLMInterfaces;
 
@@ -23,6 +24,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "llm-figures.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-tables.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-references.js");
+	Services.scriptloader.loadSubScript(rootURI + "llm-equations.js");
 	Services.scriptloader.loadSubScript(rootURI + "reference-retrieval.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-interfaces.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-chat-pane.js");

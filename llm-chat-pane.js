@@ -28,11 +28,15 @@ LLMChatPane = {
 		"The exact phrase is 4–8 consecutive words copied verbatim from the <PDF_CONTEXT> — no paraphrasing.",
 		"The angle brackets around find: are mandatory.",
 		"Example: 'The mutation rate increases [CITE](<find:error-prone DNA polymerases to increase>).'",
-		"Whenever you mention a table (e.g. from <TABLE_CONTEXT>) or a figure shown to you as an image, wrap that mention in a link so the reader can jump to it.",
-		"Format: [Table N](<ref:table:N>) or [Figure N](<ref:figure:N>), where N is the table/figure number.",
-		"The visible label in brackets must be the exact label as given in its context (e.g. 'Table 1', 'Figure 2a') — do not renumber, reletter, or rephrase it.",
+		"Whenever you mention a table (e.g. from <TABLE_CONTEXT>), a figure shown to you as an image, or a numbered equation the paper itself labels (e.g. from <EQUATION_CONTEXT>, or one you see numbered like '(3)' in the PDF text), wrap that mention in a link so the reader can jump to it.",
+		"Format: [Table N](<ref:table:N>), [Figure N](<ref:figure:N>), or [Equation N](<ref:equation:N>), where N is the table/figure/equation number.",
+		"For equations, N is the bare number the PDF prints next to the equation (e.g. for '(3)', use ref:equation:3), and only use this for equations the PDF itself numbers this way — never invent a number for an unlabeled formula.",
+		"An equation shown to you in <EQUATION_CONTEXT> labeled 'Formula N' has no number in the original paper, so it uses a different link format: [Formula N](<ref:formula:N>), using the exact N shown to you in <EQUATION_CONTEXT> (do not confuse this with the ref:equation:N format above, which is only for equations the PDF itself numbers).",
+		"The visible label in brackets must be the exact label as given in its context (e.g. 'Table 1', 'Figure 2a', 'Equation 3', 'Formula 8') — do not renumber, reletter, or rephrase it.",
 		"The angle brackets around ref: are mandatory, exactly like the citation format above.",
 		"Example: 'As shown in [Table 1](<ref:table:1>), the reaction rate doubles.'",
+		"Example: 'Substituting into [Equation 3](<ref:equation:3>) gives the closed-form solution.'",
+		"Example: 'The training objective combines these into [Formula 8](<ref:formula:8>).'",
 		"A <REFERENCE_CONTEXT> block, if present, lists the papers cited in this PDF's own bibliography, numbered exactly as in the original paper.",
 		"You may cite one of these entries if it genuinely helps answer the question (e.g. it's the direct source of a claim, or clearly relevant further reading) — do not force one in otherwise, and do not list entries just because they exist.",
 		"Format any such citation as [N](<ref:reference:N>), where N is the bibliography number, e.g. '[3]' — matching how the paper itself cites its own references.",
@@ -96,6 +100,42 @@ LLMChatPane = {
 
 	_formatReferenceContext(references) {
 		return references.map(r => `[${r.index}] ${r.text}`).join("\n");
+	},
+
+	_formatEquationText(eq) {
+		return `**${eq.label}:** ${eq.text}`;
+	},
+
+	// Asks the LLM to pick the most relevant equation, given each equation's
+	// full extracted text (equations are text-native and short, like tables'
+	// contentText, so showing all of them in full is cheap) — same approach
+	// and rationale as selectTableWithLLM above. Equations come in two label
+	// series -- "Equation N" (the paper's own number) and "Formula N"
+	// (document-order among unlabeled ones) -- which share the same numeric
+	// range and would collide under a bare-number response (e.g. "3" could
+	// mean either), so selection is matched against the exact label text
+	// instead, unlike the numeric matching selectTableWithLLM/
+	// selectFigureWithLLM use.
+	async selectEquationWithLLM(equationIndex, query) {
+		let equations = equationIndex?.equations;
+		if (!equations?.length) return null;
+
+		let equationContext = equations.map(eq => `${eq.label}: ${eq.text}`).join("\n");
+		let selectionPrompt = [
+			"You are choosing which equation (if any) from a scientific paper best helps answer a user's question.",
+			"Here are the equations in this paper, each preceded by its exact label:",
+			"",
+			equationContext,
+			"",
+			`User's question: "${query}"`,
+			"",
+			'Respond with ONLY the exact label of the best-matching equation (e.g. "Equation 3" or "Formula 2"), or "none" if no equation is relevant. Do not include any other text.',
+		].join("\n");
+
+		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
+		let text = (result.text || "").trim().replace(/^["'.]+|["'.]+$/g, "");
+		if (!text || /^none$/i.test(text)) return null;
+		return equations.find(eq => eq.label.toLowerCase() === text.toLowerCase()) || null;
 	},
 
 	// Asks the LLM to pick the most relevant table by number, given each table's
@@ -504,7 +544,8 @@ LLMChatPane = {
 	// identical to citation links -- blue, underlined):
 	//   [label](<find:query>)      -- citation: text-search navigation
 	//   [label](<ref:table:N>) /
-	//   [label](<ref:figure:N>)    -- figure/table mention: looked up in
+	//   [label](<ref:figure:N>) /
+	//   [label](<ref:equation:N>) -- table/figure/equation mention: looked up in
 	//                                  linkIndex for precise position-based
 	//                                  navigation, falling back to a
 	//                                  caption text-search if no position
@@ -1330,6 +1371,12 @@ LLMChatPane = {
 									return null;
 								})
 								: Promise.resolve(null);
+							let equationIndexPromise = pdfItem
+								? LLMEquations.getEquationIndex(pdfItem).catch((e) => {
+									this.log(`getEquationIndex failed: ${e.message}`);
+									return { error: e.message };
+								})
+								: Promise.resolve(null);
 							let selectionLine = selectedText
 								? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
 								: `Selected Text: (none — ${selectionInfo})`;
@@ -1386,6 +1433,38 @@ LLMChatPane = {
 								}
 							}
 
+							// Unlike tables (present in most papers), the large majority of
+							// PDFs have zero *numbered* equations at all -- so, unlike the
+							// table block above, this stays silent for the "none found" and
+							// "none matched" cases rather than announcing an absence that's
+							// the overwhelmingly common case and not something the user asked
+							// about.
+							let equationIndex = await equationIndexPromise;
+							if (cancelled) return;
+							if (equationIndex?.error) {
+								appendMessage("System", `Equation extraction failed: ${equationIndex.error}`);
+							}
+							else if (equationIndex?.equations?.length) {
+								let selectedEquation = null;
+								try {
+									selectedEquation = await this.selectEquationWithLLM(equationIndex, prompt);
+								}
+								catch (e) {
+									this.log(`selectEquationWithLLM failed: ${e.message}`);
+								}
+								if (cancelled) return;
+								if (selectedEquation) {
+									modelPrompt += `\n\n<EQUATION_CONTEXT>\n${this._formatEquationText(selectedEquation)}\n</EQUATION_CONTEXT>`;
+									let msg = appendMessage("System", `Including ${selectedEquation.label} as equation context (best match for your question, out of ${equationIndex.equations.length} extracted equations). Click to jump to it.`);
+									// caption fallback mirrors linkIndex's equation entries below --
+									// selectedEquation itself has no `caption` field, only `text`.
+									makeMessageClickable(msg, {
+										position: selectedEquation.position,
+										caption: selectedEquation.text.split(/\s+/).slice(0, 8).join(" "),
+									});
+								}
+							}
+
 							let images = [];
 							let figureIndex = await figureIndexPromise;
 							if (cancelled) return;
@@ -1437,10 +1516,11 @@ LLMChatPane = {
 							}
 
 							// Lets the model's own text mentions of any extracted table/figure/
-							// reference (not just the one injected as full context) become
-							// clickable links -- see _renderMarkdown's `ref:table:N` /
-							// `ref:figure:N` / `ref:reference:N` handling. References have no
-							// stored position, so they fall back to a text search using the
+							// reference/equation (not just the one injected as full context)
+							// become clickable links -- see _renderMarkdown's `ref:table:N` /
+							// `ref:figure:N` / `ref:reference:N` / `ref:equation:N` /
+							// `ref:formula:N` handling.
+							// References have no stored position, so they fall back to a text search using the
 							// first few words of the citation (a full-length quote is too
 							// brittle a phrase-search target). The model only emits the bare
 							// number, e.g. [12](<ref:reference:12>), and the rendered link
@@ -1455,6 +1535,24 @@ LLMChatPane = {
 									label: `[${r.index}] ${r.text}`,
 									caption: r.text.split(/\s+/).slice(0, 8).join(" "),
 								}])),
+								// Real numbered equations key on equation_num (matching the
+								// paper's own printed number, cited via ref:equation:N); Formulas
+								// key on formula_num under a separate map instead (cited via
+								// ref:formula:N) -- they share the same numeric range, so merging
+								// them into one map would let a formula_num collide with an
+								// unrelated equation_num.
+								equation: new Map((equationIndex?.equations || [])
+									.filter(eq => eq.equation_num !== null)
+									.map(eq => [eq.equation_num, {
+										position: eq.position,
+										caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
+									}])),
+								formula: new Map((equationIndex?.equations || [])
+									.filter(eq => eq.formula_num !== null)
+									.map(eq => [eq.formula_num, {
+										position: eq.position,
+										caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
+									}])),
 							};
 
 							let reply = appendMessage(providerLabel, `Waiting for ${providerLabel}...`);

@@ -152,7 +152,15 @@ LLMCitation = {
 	},
 
 	async groundCitations(text, index) {
-		let pattern = /\[CITE\]\(<find:([^>]+)>\)/g;
+		// Lazy match up to the literal ">)" close, not just any bare ">" --
+		// the citation phrase is copied verbatim from the PDF (per the system
+		// prompt) and can itself contain a literal ">" (e.g. "values >20"),
+		// which would otherwise terminate the match early and leave the
+		// whole [CITE](<find:...>) token completely unmatched (silently
+		// left as literal, un-grounded text) -- see llm-chat-pane.js's
+		// _renderMarkdown for the matching fix on the other regex that
+		// processes this same token format downstream.
+		let pattern = /\[CITE\]\(<find:([\s\S]+?)>\)/g;
 		let matches = [...text.matchAll(pattern)];
 		if (!matches.length) return text;
 

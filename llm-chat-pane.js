@@ -216,6 +216,17 @@ LLMChatPane = {
 
 	_configureMarkdown() {
 		if (typeof marked === "undefined") return;
+		// Local (not this._escapeAttr) since the katex extension renderers
+		// below are plain object methods handed to marked, which doesn't
+		// necessarily invoke them with `this` bound to LLMChatPane. Escapes
+		// for safe use as HTML TEXT content (unlike _escapeAttr, which is
+		// for quoted attribute values specifically and doesn't need to
+		// escape "<"/">" -- this one does, since it's used inside a
+		// <span>...</span> body).
+		let escapeHtmlText = (str) => String(str)
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;");
 		if (typeof hljs !== "undefined") {
 			marked.setOptions({
 				highlight(code, lang) {
@@ -283,7 +294,7 @@ LLMChatPane = {
 								}) + "\n";
 							}
 							catch (e) {
-								return `<span>${token.text}</span>`;
+								return `<span>${escapeHtmlText(token.text)}</span>`;
 							}
 						},
 					},
@@ -316,7 +327,7 @@ LLMChatPane = {
 								});
 							}
 							catch (e) {
-								return `<span>${token.text}</span>`;
+								return `<span>${escapeHtmlText(token.text)}</span>`;
 							}
 						},
 					},
@@ -325,8 +336,19 @@ LLMChatPane = {
 		}
 	},
 
+	// Was missing "<"/">" escaping -- harmless for most attribute values, but
+	// a real bug for ones built from model-generated or PDF-extracted text
+	// (grounded citation phrases, captions, etc.) that can contain a literal
+	// "<" or ">" (e.g. an inequality like "x < 5"), which then corrupts the
+	// surrounding HTML once inserted unescaped -- this was the root cause of
+	// a "innerHTML: An invalid or illegal string was specified" crash on
+	// longer replies (more grounded citations = more chances of hitting one).
 	_escapeAttr(str) {
-		return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+		return String(str)
+			.replace(/&/g, "&amp;")
+			.replace(/"/g, "&quot;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;");
 	},
 
 	// Renders markdown, converting three kinds of link tokens to HTML anchors
@@ -352,7 +374,21 @@ LLMChatPane = {
 	_renderMarkdown(text, linkIndex) {
 		if (typeof marked === "undefined") return null;
 		let processed = text.replace(
-			/\[([^\]]+)\]\(<(find|ref):([^>]+)>\)/g,
+			// Lazy match up to the literal ">)" close, not just any bare ">"
+			// -- a "find" payload can be a citation phrase grounded to a
+			// verbatim PDF sentence (see llm-citation.js's groundCitations),
+			// which can itself contain a literal ">" (e.g. "values >20").
+			// With a bare-">" terminator, that truncates the match early and
+			// the whole token fails to match at all (regex backtracking
+			// can't recover -- [^>]+ can never include the very ">" it
+			// needs to stop before), leaving raw "[label](<find:...>)" text
+			// in the output. marked's own inline-HTML tokenizer then treats
+			// the leftover "<find:...>" as an attempted (invalid,
+			// colon-containing) tag, which is what actually threw
+			// "innerHTML: An invalid or illegal string was specified" on
+			// longer replies (more grounded citations = more chances of
+			// grounding to a PDF sentence with a stray ">" in it).
+			/\[([^\]]+)\]\(<(find|ref):([\s\S]+?)>\)/g,
 			(_, label, kind, payload) => {
 				if (kind === "find") {
 					let escaped = this._escapeAttr(payload);
@@ -394,7 +430,24 @@ LLMChatPane = {
 				return `<a class="llm-find-link" data-query="${escapedCaption}" title="${this._escapeAttr(tooltipText)}">${visibleLabel}</a>`;
 			}
 		);
-		return marked.parse(processed);
+		let html = marked.parse(processed);
+		// Zotero's item pane is an XHTML (XML) document, so innerHTML parsing
+		// there requires XML-well-formed markup -- unlike a plain HTML
+		// document, where innerHTML parsing is lenient. marked emits
+		// HTML5-style void elements with no self-closing slash (bare "<br>",
+		// "<hr>", etc.), which is valid HTML5 but NOT valid XML (XML requires
+		// every element to be explicitly closed, e.g. "<br/>"). A bare "<br>"
+		// from a markdown hard line break (trailing "  \n") was exactly what
+		// caused "innerHTML: An invalid or illegal string was specified" --
+		// confirmed via the browser console showing the underlying "XML
+		// Parsing Error: mismatched tag. Expected: </br>." error that
+		// precedes it. Self-close every void element here so the string is
+		// XML-safe before it ever reaches innerHTML.
+		html = html.replace(
+			/<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)((?:\s+[^<>]*)?)\s*\/?>/gi,
+			(_, tag, attrs) => `<${tag}${attrs}/>`
+		);
+		return html;
 	},
 
 	// Global CMD+I (Ctrl+I elsewhere) shortcut: opens/focuses the chat pane
@@ -1580,7 +1633,24 @@ LLMChatPane = {
 									// class provides once the response finishes streaming and
 									// gets swapped from plain text to rendered markdown.
 									rendered.className = "llm-markdown llm-message-content";
-									rendered.innerHTML = html;
+									try {
+										rendered.innerHTML = html;
+									}
+									catch (e) {
+										// Logs the FULL generated HTML string, not just e.message --
+										// past occurrences of this exact failure ("innerHTML: An
+										// invalid or illegal string was specified") couldn't be
+										// pinned down from the error message/stack alone, since it
+										// depends on the SPECIFIC content Gecko's parser rejected
+										// (seemingly MathML/foreign-content-related, based on prior
+										// investigation, but not reproducible via plain string-level
+										// testing outside a real Gecko innerHTML parse). Falls back
+										// to the unrendered markdown as plain text -- no math/links/
+										// formatting, but the user still gets the actual response
+										// instead of losing it entirely.
+										this.log(`rendered.innerHTML assignment failed: ${e.message}\nFull generated HTML:\n${html}`);
+										rendered.textContent = groundedText;
+									}
 									rendered.addEventListener("click", (e) => {
 										let anchor = e.target.closest(".llm-find-link");
 										if (!anchor) return;
@@ -1612,7 +1682,13 @@ LLMChatPane = {
 						catch (e) {
 							if (cancelled) return;
 							appendMessage(providerLabel, `${providerLabel} request failed: ${e.message}`);
-							this.log(`${providerLabel} request failed: ${e.message}`);
+							// Only e.message was logged before -- this whole try wraps
+							// everything from PDF-context building through table/figure/
+							// equation/note extraction, streamModel, citation grounding,
+							// and markdown+KaTeX rendering, so without e.stack there was no
+							// way to tell WHERE in that chain a given error actually came
+							// from.
+							this.log(`${providerLabel} request failed: ${e.message}\n${e.stack || "(no stack)"}`);
 						}
 					})();
 

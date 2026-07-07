@@ -1156,6 +1156,17 @@ LLMChatPane = {
 							capturedSelection = null;
 							let { text: pageText, pageNum, info: pageInfo } = await this.getReaderPageText();
 							if (cancelled) return;
+							// Shared reader-context signal for every selectXWithLLM call
+							// below (tables/equations/figures/notes) -- if the user has an
+							// annotation actively selected/highlighted in the reader right
+							// now (clicked on the page or in the sidebar), that's about as
+							// strong a relevance hint as it gets for a query like "explain
+							// this".
+							let { item: selectedAnnotationItem } = this.getSelectedAnnotation();
+							let selectedAnnotationNote = selectedAnnotationItem
+								? LLMNotes.formatAnnotation(selectedAnnotationItem)
+								: null;
+							let readerContext = { pageNum, selectedText, selectedAnnotationNote };
 							let { prompt: modelPrompt, contextInfo, item: pdfItem, citationIndex } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
 							if (cancelled) return;
 							let tableIndexPromise = pdfItem
@@ -1226,18 +1237,20 @@ LLMChatPane = {
 								appendMessage("System", "Table extraction: no tables found in PDF.");
 							}
 							else {
-								let selectedTable = null;
+								let selectedTables = [];
 								try {
-									selectedTable = await LLMPrompt.selectTableWithLLM(tableIndex, prompt);
+									selectedTables = await LLMPrompt.selectTablesWithLLM(tableIndex, prompt, readerContext);
 								}
 								catch (e) {
-									this.log(`selectTableWithLLM failed: ${e.message}`);
+									this.log(`selectTablesWithLLM failed: ${e.message}`);
 								}
 								if (cancelled) return;
-								if (selectedTable) {
-									modelPrompt += `\n\n<TABLE_CONTEXT>\n${LLMPrompt._formatTableMarkdown(selectedTable)}\n</TABLE_CONTEXT>`;
-									let msg = appendMessage("System", `Including ${selectedTable.label} as table context (best match for your question, out of ${tableIndex.tables.length} extracted). Click to jump to it.`);
-									makeMessageClickable(msg, selectedTable);
+								if (selectedTables.length) {
+									let tableBlock = selectedTables.map(t => LLMPrompt._formatTableMarkdown(t)).join("\n\n");
+									modelPrompt += `\n\n<TABLE_CONTEXT>\n${tableBlock}\n</TABLE_CONTEXT>`;
+									let labels = selectedTables.map(t => t.label).join(", ");
+									let msg = appendMessage("System", `Including ${selectedTables.length} table${selectedTables.length === 1 ? "" : "s"} as context (out of ${tableIndex.tables.length} extracted): ${labels}. Click to jump to the first one.`);
+									makeMessageClickable(msg, selectedTables[0]);
 								}
 								else {
 									appendMessage("System", `Extracted ${tableIndex.tables.length} table${tableIndex.tables.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
@@ -1256,22 +1269,24 @@ LLMChatPane = {
 								appendMessage("System", `Equation extraction failed: ${equationIndex.error}`);
 							}
 							else if (equationIndex?.equations?.length) {
-								let selectedEquation = null;
+								let selectedEquations = [];
 								try {
-									selectedEquation = await LLMPrompt.selectEquationWithLLM(equationIndex, prompt);
+									selectedEquations = await LLMPrompt.selectEquationsWithLLM(equationIndex, prompt, readerContext);
 								}
 								catch (e) {
-									this.log(`selectEquationWithLLM failed: ${e.message}`);
+									this.log(`selectEquationsWithLLM failed: ${e.message}`);
 								}
 								if (cancelled) return;
-								if (selectedEquation) {
-									modelPrompt += `\n\n<EQUATION_CONTEXT>\n${LLMPrompt._formatEquationText(selectedEquation)}\n</EQUATION_CONTEXT>`;
-									let msg = appendMessage("System", `Including ${selectedEquation.label} as equation context (best match for your question, out of ${equationIndex.equations.length} extracted equations). Click to jump to it.`);
+								if (selectedEquations.length) {
+									let eqBlock = selectedEquations.map(eq => LLMPrompt._formatEquationText(eq)).join("\n\n");
+									modelPrompt += `\n\n<EQUATION_CONTEXT>\n${eqBlock}\n</EQUATION_CONTEXT>`;
+									let labels = selectedEquations.map(eq => eq.label).join(", ");
+									let msg = appendMessage("System", `Including ${selectedEquations.length} equation${selectedEquations.length === 1 ? "" : "s"} as equation context (out of ${equationIndex.equations.length} extracted): ${labels}. Click to jump to the first one.`);
 									// caption fallback mirrors linkIndex's equation entries below --
-									// selectedEquation itself has no `caption` field, only `text`.
+									// selectedEquations entries have no `caption` field, only `text`.
 									makeMessageClickable(msg, {
-										position: selectedEquation.position,
-										caption: selectedEquation.text.split(/\s+/).slice(0, 8).join(" "),
+										position: selectedEquations[0].position,
+										caption: selectedEquations[0].text.split(/\s+/).slice(0, 8).join(" "),
 									});
 								}
 							}
@@ -1290,18 +1305,8 @@ LLMChatPane = {
 								appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
 							}
 							else {
-								// Extra signal for the selection prompt: if the user has an
-								// annotation actively selected/highlighted in the reader right
-								// now (clicked on the page or in the sidebar), that's about as
-								// strong a relevance hint as it gets for a query like "explain
-								// this".
-								let { item: selectedAnnotationItem } = this.getSelectedAnnotation();
-								let selectedAnnotationNote = selectedAnnotationItem
-									? LLMNotes.formatAnnotation(selectedAnnotationItem)
-									: null;
-
 								try {
-									selectedNotes = await LLMPrompt.selectNotesWithLLM(notes, prompt, { pageNum, selectedText, selectedAnnotationNote });
+									selectedNotes = await LLMPrompt.selectNotesWithLLM(notes, prompt, readerContext);
 								}
 								catch (e) {
 									this.log(`selectNotesWithLLM failed: ${e.message}`);
@@ -1348,13 +1353,14 @@ LLMChatPane = {
 								// figureIndex itself is still fetched above regardless (used below
 								// for citation-link resolution on figures the model's text mentions).
 								if (figureIndex?.figures?.length && supportsImages && !pastedImages.length) {
-									let bestFigure = await LLMPrompt.selectFigureWithLLM(figureIndex, prompt);
+									let bestFigures = await LLMPrompt.selectFiguresWithLLM(figureIndex, prompt, readerContext);
 									if (cancelled) return;
-									if (bestFigure?.image_data) {
-										images.push(bestFigure.image_data);
-										let label = bestFigure.label || `figure ${bestFigure.figure_num}`;
-										let msg = appendMessage("System", `Including ${label} as image context (best match for your question, ${currentModel} supports vision). Click to jump to it.`);
-										makeMessageClickable(msg, bestFigure);
+									let figuresWithImages = bestFigures.filter(f => f.image_data);
+									if (figuresWithImages.length) {
+										images.push(...figuresWithImages.map(f => f.image_data));
+										let labels = figuresWithImages.map(f => f.label || `figure ${f.figure_num}`).join(", ");
+										let msg = appendMessage("System", `Including ${figuresWithImages.length} figure${figuresWithImages.length === 1 ? "" : "s"} as image context (best match for your question, ${currentModel} supports vision): ${labels}. Click to jump to the first one.`);
+										makeMessageClickable(msg, figuresWithImages[0]);
 									}
 								}
 							}

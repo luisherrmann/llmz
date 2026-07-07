@@ -50,39 +50,79 @@ LLMPrompt = {
 		Zotero.debug("LLM Chat Pane [Prompt]: " + msg);
 	},
 
-	// Asks the LLM itself to pick the most relevant figure by number, given the
-	// list of figure captions. Tried embedding-based retrieval first (both plain
-	// image-embedding similarity and text/image score fusion via raw max, z-score
-	// max, and Reciprocal Rank Fusion at various k) — all of them conflated a
-	// merely topically-adjacent caption with genuine relevance on queries like
-	// "is there a figure describing model performance", consistently picking a
-	// data-prep figure that shares vocabulary ("model", "evaluate", "test") over
-	// the actual performance-metrics figure. An LLM reading the captions can
-	// reason about what they mean rather than just measuring vector distance,
-	// and got this and three other test queries right where every embedding
-	// fusion approach failed at least one.
-	async selectFigureWithLLM(figureIndex, query) {
-		let figures = figureIndex?.figures;
-		if (!figures?.length) return null;
+	// Shared by every selectXWithLLM below: surfaces what page the user is
+	// currently looking at, any text they have selected there, and any
+	// annotation they have actively selected/highlighted in the reader
+	// (clicked on the page or in the sidebar, no distinction --
+	// LLMChatPane.getSelectedAnnotation(), pre-formatted via
+	// LLMNotes.formatAnnotation()). Without pageNum, a page-scoped question
+	// like "what figures are on this page?" has nothing to match against,
+	// since the query itself carries no page number. selectedAnnotationNote
+	// is the strongest possible signal for a query like "explain this" -- the
+	// user is looking right at it.
+	_buildReaderContextLines({ pageNum, selectedText, selectedAnnotationNote } = {}) {
+		let lines = [];
+		if (pageNum) lines.push(`The user is currently viewing page ${pageNum} of the PDF.`);
+		if (selectedText) {
+			lines.push(`The user currently has this text selected on that page: "${selectedText.slice(0, 300)}${selectedText.length > 300 ? "…" : ""}"`);
+		}
+		if (selectedAnnotationNote) {
+			lines.push(`The user currently has this annotation selected/highlighted in the reader: ${selectedAnnotationNote.title}: ${selectedAnnotationNote.text}`);
+		}
+		return lines;
+	},
 
+	// Asks the LLM itself to pick which figures (if any) help answer a user's
+	// question, given the list of figure captions. Tried embedding-based
+	// retrieval first (both plain image-embedding similarity and text/image
+	// score fusion via raw max, z-score max, and Reciprocal Rank Fusion at
+	// various k) — all of them conflated a merely topically-adjacent caption
+	// with genuine relevance on queries like "is there a figure describing
+	// model performance", consistently picking a data-prep figure that shares
+	// vocabulary ("model", "evaluate", "test") over the actual
+	// performance-metrics figure. An LLM reading the captions can reason
+	// about what they mean rather than just measuring vector distance, and
+	// got this and three other test queries right where every embedding
+	// fusion approach failed at least one.
+	//
+	// Multi-select (up to MAX_SELECTED_FIGURES) in a single round-trip, same
+	// rationale as selectNotesWithLLM below: a query can genuinely have
+	// several relevant figures, and reading the whole caption list once and
+	// returning every relevant number is one call regardless of how many
+	// match, vs. O(N) calls for a one-call-per-candidate approach.
+	async selectFiguresWithLLM(figureIndex, query, readerContext = {}) {
+		let figures = figureIndex?.figures;
+		if (!figures?.length) return [];
+
+		const MAX_SELECTED_FIGURES = 10;
 		let captionList = figures.map(f => `${f.label}: ${f.caption}`).join("\n");
 		let selectionPrompt = [
-			"You are choosing which figure (if any) from a scientific paper best helps answer a user's question.",
+			"You are choosing which figures (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant figures -- include all of them, not just the single best one.",
+			...this._buildReaderContextLines(readerContext),
 			"Here are the figures in this paper:",
 			captionList,
 			"",
 			`User's question: "${query}"`,
 			"",
-			'Respond with ONLY the figure number (e.g. "4") that best matches the question, or "none" if no figure is relevant. Do not include any other text.',
+			'Respond with ONLY a comma-separated list of every relevant figure number (e.g. "2, 5"), or "none" if no figure is relevant. Do not include any other text.',
 		].join("\n");
 
 		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
 		let text = (result.text || "").trim();
-		if (!text || /none/i.test(text)) return null;
-		let match = text.match(/\d+/);
-		if (!match) return null;
-		let figureNum = parseInt(match[0], 10);
-		return figures.find(f => f.figure_num === figureNum) || null;
+		if (!text || /none/i.test(text)) return [];
+
+		let seen = new Set();
+		let selected = [];
+		for (let match of text.matchAll(/\d+/g)) {
+			let figureNum = parseInt(match[0], 10);
+			if (seen.has(figureNum)) continue;
+			let figure = figures.find(f => f.figure_num === figureNum);
+			if (!figure) continue;
+			seen.add(figureNum);
+			selected.push(figure);
+			if (selected.length >= MAX_SELECTED_FIGURES) break;
+		}
+		return selected;
 	},
 
 	_formatTableMarkdown(t) {
@@ -101,69 +141,99 @@ LLMPrompt = {
 		return `**${eq.label}:** ${eq.text}`;
 	},
 
-	// Asks the LLM to pick the most relevant equation, given each equation's
-	// full extracted text (equations are text-native and short, like tables'
-	// contentText, so showing all of them in full is cheap) — same approach
-	// and rationale as selectTableWithLLM above. Equations come in two label
-	// series -- "Equation N" (the paper's own number) and "Formula N"
-	// (document-order among unlabeled ones) -- which share the same numeric
-	// range and would collide under a bare-number response (e.g. "3" could
-	// mean either), so selection is matched against the exact label text
-	// instead, unlike the numeric matching selectTableWithLLM/
-	// selectFigureWithLLM use.
-	async selectEquationWithLLM(equationIndex, query) {
+	// Asks the LLM which equations (if any) help answer a user's question,
+	// given each equation's full extracted text (equations are text-native
+	// and short, like tables' contentText, so showing all of them in full is
+	// cheap) — same approach and rationale as selectTablesWithLLM below.
+	// Equations come in two label series -- "Equation N" (the paper's own
+	// number) and "Formula N" (document-order among unlabeled ones) -- which
+	// share the same numeric range and would collide under a bare-number
+	// response (e.g. "3" could mean either), so selection is matched against
+	// exact label text instead, unlike the numeric matching
+	// selectTablesWithLLM/selectFiguresWithLLM use. Multi-select (up to
+	// MAX_SELECTED_EQUATIONS) in a single round-trip, same rationale as
+	// selectNotesWithLLM below.
+	async selectEquationsWithLLM(equationIndex, query, readerContext = {}) {
 		let equations = equationIndex?.equations;
-		if (!equations?.length) return null;
+		if (!equations?.length) return [];
 
+		const MAX_SELECTED_EQUATIONS = 10;
 		let equationContext = equations.map(eq => `${eq.label}: ${eq.text}`).join("\n");
 		let selectionPrompt = [
-			"You are choosing which equation (if any) from a scientific paper best helps answer a user's question.",
+			"You are choosing which equations (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant equations -- include all of them, not just the single best one.",
+			...this._buildReaderContextLines(readerContext),
 			"Here are the equations in this paper, each preceded by its exact label:",
 			"",
 			equationContext,
 			"",
 			`User's question: "${query}"`,
 			"",
-			'Respond with ONLY the exact label of the best-matching equation (e.g. "Equation 3" or "Formula 2"), or "none" if no equation is relevant. Do not include any other text.',
+			'Respond with ONLY a comma-separated list of the exact labels of every relevant equation (e.g. "Equation 3, Formula 2"), or "none" if no equation is relevant. Do not include any other text.',
 		].join("\n");
 
 		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
-		let text = (result.text || "").trim().replace(/^["'.]+|["'.]+$/g, "");
-		if (!text || /^none$/i.test(text)) return null;
-		return equations.find(eq => eq.label.toLowerCase() === text.toLowerCase()) || null;
+		let text = (result.text || "").trim();
+		if (!text || /^none$/i.test(text)) return [];
+
+		let seen = new Set();
+		let selected = [];
+		for (let rawLabel of text.split(",")) {
+			let label = rawLabel.trim().replace(/^["'.]+|["'.]+$/g, "").toLowerCase();
+			if (!label || seen.has(label)) continue;
+			let equation = equations.find(eq => eq.label.toLowerCase() === label);
+			if (!equation) continue;
+			seen.add(label);
+			selected.push(equation);
+			if (selected.length >= MAX_SELECTED_EQUATIONS) break;
+		}
+		return selected;
 	},
 
-	// Asks the LLM to pick the most relevant table by number, given each table's
-	// full content (not just captions — unlike figures, table content is text-native
-	// and cheap to show in full). Validated against image embedding and text-embedding
-	// max(caption, content) on 5 content-specific queries: image embedding scored 1/5
-	// (table images are visually near-identical grids, giving it little to work with —
-	// worse than for figures, which are visually distinctive), text-max scored 3/5
-	// (failed when one table merely mentioned the query's keywords more often than the
-	// table that actually answered it), LLM selection scored 5/5.
-	async selectTableWithLLM(tableIndex, query) {
+	// Asks the LLM which tables (if any) help answer a user's question,
+	// given each table's full content (not just captions — unlike figures,
+	// table content is text-native and cheap to show in full). Validated
+	// against image embedding and text-embedding max(caption, content) on 5
+	// content-specific queries: image embedding scored 1/5 (table images are
+	// visually near-identical grids, giving it little to work with — worse
+	// than for figures, which are visually distinctive), text-max scored 3/5
+	// (failed when one table merely mentioned the query's keywords more often
+	// than the table that actually answered it), LLM selection scored 5/5.
+	// Multi-select (up to MAX_SELECTED_TABLES) in a single round-trip, same
+	// rationale as selectNotesWithLLM below.
+	async selectTablesWithLLM(tableIndex, query, readerContext = {}) {
 		let tables = tableIndex?.tables;
-		if (!tables?.length) return null;
+		if (!tables?.length) return [];
 
+		const MAX_SELECTED_TABLES = 10;
 		let tableContext = tables.map(t => `${t.label}: ${t.caption}\n${t.contentText}`).join("\n\n");
 		let selectionPrompt = [
-			"You are choosing which table (if any) from a scientific paper best helps answer a user's question.",
+			"You are choosing which tables (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant tables -- include all of them, not just the single best one.",
+			...this._buildReaderContextLines(readerContext),
 			"Here are the tables in this paper:",
 			"",
 			tableContext,
 			"",
 			`User's question: "${query}"`,
 			"",
-			'Respond with ONLY the table number (e.g. "3") that best matches the question, or "none" if no table is relevant. Do not include any other text.',
+			'Respond with ONLY a comma-separated list of every relevant table number (e.g. "1, 3"), or "none" if no table is relevant. Do not include any other text.',
 		].join("\n");
 
 		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
 		let text = (result.text || "").trim();
-		if (!text || /none/i.test(text)) return null;
-		let match = text.match(/\d+/);
-		if (!match) return null;
-		let tableNum = parseInt(match[0], 10);
-		return tables.find(t => t.table_num === tableNum) || null;
+		if (!text || /none/i.test(text)) return [];
+
+		let seen = new Set();
+		let selected = [];
+		for (let match of text.matchAll(/\d+/g)) {
+			let tableNum = parseInt(match[0], 10);
+			if (seen.has(tableNum)) continue;
+			let table = tables.find(t => t.table_num === tableNum);
+			if (!table) continue;
+			seen.add(tableNum);
+			selected.push(table);
+			if (selected.length >= MAX_SELECTED_TABLES) break;
+		}
+		return selected;
 	},
 
 	// `refNum` is a per-request index (1..K over just the notes actually
@@ -179,50 +249,26 @@ LLMPrompt = {
 
 	// Asks the LLM which of the user's own notes on this paper are relevant,
 	// given each note's full text -- same "let the LLM read the full, short
-	// content and pick" approach as selectTableWithLLM, but multi-select
-	// (unlike the other selectXWithLLM helpers): a query like "what notes do
-	// I have on this page?" can genuinely have several right answers, not
-	// one. This is still a SINGLE round-trip over all candidates -- the model
-	// reads the whole list once and returns every relevant number, rather
-	// than one call per candidate (O(N) calls, and N here can be dozens).
-	// Notes have no paper-native number to key off of (unlike tables/
-	// figures/equations), so this numbers them 1..N purely for this one
-	// selection round-trip -- that index has no meaning outside this call
-	// and isn't persisted. Capped at MAX_SELECTED_NOTES as a sanity limit in
-	// case the model over-selects on a broad query -- extras beyond the cap
-	// are dropped (in the model's own returned order) rather than bloating
-	// the prompt with every note in the paper.
+	// content and pick" approach as selectTablesWithLLM. Multi-select (up to
+	// MAX_SELECTED_NOTES) in a single round-trip, same rationale as the other
+	// selectXWithLLM helpers above. Notes have no paper-native number to key
+	// off of (unlike tables/figures/equations), so this numbers them 1..N
+	// purely for this one selection round-trip -- that index has no meaning
+	// outside this call and isn't persisted.
 	//
-	// readerContext ({ pageNum, selectedText, selectedAnnotationNote })
-	// surfaces what page the user is currently looking at, any text they have
-	// selected there, and any annotation they have actively selected/
-	// highlighted in the reader -- clicked on the page or in the sidebar, no
-	// distinction (LLMChatPane.getSelectedAnnotation(), pre-formatted via
-	// LLMNotes.formatAnnotation() into the same { title, text } shape as
-	// `notes`). Without pageNum, a page-scoped question like "what notes do I
-	// have on this page?" has nothing to match against, since the query
-	// itself carries no page number and each note's title only states ITS
-	// OWN page (e.g. "Highlight (p. 4)"), not what page the user means by
-	// "this page". selectedAnnotationNote is the strongest possible signal
-	// for a query like "explain this" -- the user is looking right at it.
+	// See _buildReaderContextLines for readerContext -- worth noting here
+	// specifically: each note's own title states ITS OWN page (e.g.
+	// "Highlight (p. 4)"), which is what lets a page-scoped question like
+	// "what notes do I have on this page?" be matched against pageNum below.
 	async selectNotesWithLLM(notes, query, readerContext = {}) {
 		if (!notes?.length) return [];
 
 		const MAX_SELECTED_NOTES = 10;
-		let { pageNum, selectedText, selectedAnnotationNote } = readerContext;
 		let noteContext = notes.map((n, i) => `Note ${i + 1} (${n.title}): ${n.text}`).join("\n\n");
-		let contextLines = [];
-		if (pageNum) contextLines.push(`The user is currently viewing page ${pageNum} of the PDF.`);
-		if (selectedText) {
-			contextLines.push(`The user currently has this text selected on that page: "${selectedText.slice(0, 300)}${selectedText.length > 300 ? "…" : ""}"`);
-		}
-		if (selectedAnnotationNote) {
-			contextLines.push(`The user currently has this annotation selected/highlighted in the reader: ${selectedAnnotationNote.title}: ${selectedAnnotationNote.text}`);
-		}
 
 		let selectionPrompt = [
 			"You are choosing which of the user's own notes/highlights/underlines on this paper (if any) are relevant to a user's question. There may be zero, one, or several relevant notes -- include all of them, not just the single best one.",
-			...contextLines,
+			...this._buildReaderContextLines(readerContext),
 			"Each note's title states the page it's on, e.g. \"Highlight (p. 4)\" -- use that to match page-scoped questions like \"what notes do I have on this page?\" against the user's current page above.",
 			"Here are the notes:",
 			"",

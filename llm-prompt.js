@@ -44,6 +44,8 @@ LLMPrompt = {
 		"A <NOTE_CONTEXT> block, if present, contains one or more of the user's own annotations on this PDF -- each either a sticky note they wrote, or a passage they highlighted/underlined (quoted verbatim from the PDF) together with any comment they added on it. Any 'Note:' text in it is the user's own authoritative commentary, distinct from the paper's own claims -- don't confuse the two.",
 		"Each entry in <NOTE_CONTEXT> starts with 'Note N (...):' -- when you mention one, wrap it in a link so the reader can jump to it: [Note N](<ref:note:N>), using the exact N shown for that entry (this N is unrelated to any other numbering in this conversation, e.g. reference numbers).",
 		"Example: 'Your highlight on this point [Note 1](<ref:note:1>) is directly relevant here.'",
+		"Whenever you mention a specific page of the PDF by number (e.g. 'on page 5', 'see page 12'), wrap the page number in a link so the reader can jump straight there: [page N](<ref:page:N>), where N is the page number -- this works for any page, not just ones with a table/figure/equation/note on them, and is separate from those ref: formats above.",
+		"Example: 'The methodology is described in more detail on [page 7](<ref:page:7>).'",
 	].join(" "),
 
 	log(msg) {

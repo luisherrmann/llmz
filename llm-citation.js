@@ -244,4 +244,24 @@ LLMCitation = {
 		if (!reader) return;
 		await reader.navigate({ annotationID: key });
 	},
+
+	// Scrolls to a specific page, given `pageNum` in the same 1-based
+	// physical-page-number convention used elsewhere in this plugin (e.g.
+	// getReaderPageText's pageNum, from PDFViewerApplication.page) --
+	// navigate({ pageIndex }) (0-based) is used rather than navigate({
+	// pageNumber }), which reader.js's pdf-view.js first tries to match
+	// against the PDF's own PRINTED page labels (e.g. roman numerals, or an
+	// offset from front matter) before falling back to a physical index --
+	// that could silently jump to the wrong page if a label happens to
+	// string-match the number. pageIndex is unambiguous: always the Nth
+	// physical page.
+	async navigateToPage(pageNum) {
+		if (!Zotero.Reader || !pageNum) return;
+		let win = Zotero.getMainWindow();
+		let selectedID = win?.Zotero_Tabs?.selectedID;
+		if (!selectedID) return;
+		let reader = Zotero.Reader.getByTabID(selectedID);
+		if (!reader) return;
+		await reader.navigate({ pageIndex: pageNum - 1 });
+	},
 };

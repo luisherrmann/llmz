@@ -329,7 +329,7 @@ LLMChatPane = {
 		return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 	},
 
-	// Renders markdown, converting two kinds of link tokens to HTML anchors
+	// Renders markdown, converting three kinds of link tokens to HTML anchors
 	// (all sharing the `llm-find-link` class, so figure/table links look
 	// identical to citation links -- blue, underlined):
 	//   [label](<find:query>)      -- citation: text-search navigation
@@ -342,6 +342,11 @@ LLMChatPane = {
 	//                                  only) if present, else by position,
 	//                                  else falling back to a caption
 	//                                  text-search (e.g. rotated tables)
+	//   [label](<ref:page:N>)      -- bare page-number mention: scrolls directly
+	//                                  to page N, no linkIndex lookup needed --
+	//                                  unlike the others, this isn't tied to a
+	//                                  specific extracted item, just the page
+	//                                  itself
 	// Done before marked parses, so spaces/special chars in the query don't
 	// break markdown link parsing.
 	_renderMarkdown(text, linkIndex) {
@@ -354,6 +359,11 @@ LLMChatPane = {
 					return `<a class="llm-find-link" data-query="${escaped}" title="${escaped}">${label}</a>`;
 				}
 				let [refType, refNum] = payload.split(":");
+				if (refType === "page") {
+					let pageNum = parseInt(refNum, 10);
+					if (!pageNum) return label;
+					return `<a class="llm-find-link" data-page-num="${pageNum}" title="Page ${pageNum}">${label}</a>`;
+				}
 				let entry = linkIndex?.[refType]?.get(parseInt(refNum, 10));
 				if (!entry) return label;
 				// The rendered link text always stays short -- for a
@@ -1458,6 +1468,10 @@ LLMChatPane = {
 										e.preventDefault();
 										if (anchor.dataset.annotationKey) {
 											LLMCitation.navigateToAnnotation(anchor.dataset.annotationKey);
+											return;
+										}
+										if (anchor.dataset.pageNum) {
+											LLMCitation.navigateToPage(parseInt(anchor.dataset.pageNum, 10));
 											return;
 										}
 										if (anchor.dataset.position) {

@@ -596,36 +596,26 @@ LLMChatPane = {
 					discardImagesButton: imagePaste.discardButton,
 				});
 
+				// Stashed on input focus as a fallback for LLMRequest.send's
+				// takeCapturedSelection() -- focusing the prompt textarea can
+				// itself clear the reader's live text selection, so by the time
+				// a request actually runs, getReaderSelection() may come back
+				// empty even though the user had text selected moments ago.
 				let capturedSelection = null;
 				input.addEventListener("focus", () => {
 					let { text } = this.getReaderSelection();
 					if (text) capturedSelection = text;
 				});
 
-				// `cancelStream` is the narrow, existing mechanism for interrupting
-				// an in-progress model response (a real reader.cancel() handle,
-				// wired up once actual token streaming begins -- see the
-				// onReady() callback below). `cancelled`/`rejectCancel` are the
-				// general mechanism layered on top: the ENTIRE submit handler
-				// body runs inside a single closure (`work`, below) that gets
-				// raced against a promise Stop can reject at any time, so
-				// clicking Stop works during EVERY phase of a request --
-				// download-reference lookups, prompt/context building, table/
-				// figure selection -- not just once the model is already
-				// streaming a reply. Whatever step `work` was in when cancelled
-				// keeps running to completion in the background (there's no way
-				// to hard-abort a Zotero.Translate call or HiddenBrowser page
-				// load partway through), but the race settles immediately, so
-				// the UI stops waiting/updating right away, and every checkpoint
-				// inside `work` checks `cancelled` before doing anything more so
-				// a stray message can't land after "Cancelled." is shown.
-				let cancelStream = null;
-				let cancelled = false;
-				let rejectCancel = null;
+				// Holds the in-flight LLMRequest.send() handle (or null between
+				// requests), so Stop can cancel whatever's currently running --
+				// see submitButton's click listener below, which assigns this,
+				// and LLMRequest.send's own doc comment for what cancel() does
+				// (works during EVERY phase of a request, not just once the
+				// model is already streaming a reply).
+				let currentRequest = null;
 				stopButton.addEventListener("click", () => {
-					cancelled = true;
-					cancelStream?.();
-					rejectCancel?.(new Error("Cancelled"));
+					currentRequest?.cancel();
 				});
 
 				// History of messages previously submitted from THIS input,
@@ -758,489 +748,30 @@ LLMChatPane = {
 					// the last one. See the cancellation-mechanism comment
 					// above stopButton's click listener.
 					stopButton.disabled = false;
-					cancelled = false;
-					let cancelPromise = new Promise((_, reject) => { rejectCancel = reject; });
-					let providerLabels = { ollama: "Ollama", lmstudio: "LM Studio", litellm: "LiteLLM", openai: "OpenAI", anthropic: "Anthropic" };
-					let providerLabel = providerLabels[LLMInterfaces._provider] || "Ollama";
 
-					// The entire request -- download-reference lookup or normal
-					// chat -- runs inside this one closure so it can be raced
-					// against cancelPromise as a whole (see the outer
-					// try/finally below), rather than needing every internal
-					// step to separately understand cancellation.
-					let work = (async () => {
-						// Checked FIRST, before building the (comparatively expensive)
-						// full PDF-context prompt -- a "download reference N" request
-						// short-circuits the normal chat flow entirely, since the main
-						// model has nothing useful to add to a request this specific.
-						try {
-							let intent = await LLMReferenceRetrieval.detectDownloadIntent(prompt);
-							if (cancelled) return;
-							if (intent !== null) {
-								appendMessage("You", prompt);
-								let pdfItem = this.getActiveReaderAttachment();
-								let downloadRefNum = intent.index ?? null;
-								if (downloadRefNum === null && intent.description) {
-									if (!pdfItem) {
-										appendMessage("System", "No active PDF to look up references from.");
-										return;
-									}
-									let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
-									if (cancelled) return;
-									downloadRefNum = await LLMReferenceRetrieval.resolveReferenceByDescription(referenceIndex, intent.description);
-									if (cancelled) return;
-									if (downloadRefNum === null) {
-										appendMessage("System", `Could not find a reference matching "${intent.description}" in this paper's bibliography.`);
-										return;
-									}
-								}
-								appendMessage("System", `Looking up reference ${downloadRefNum} and searching for it online...`);
-								let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(downloadRefNum, pdfItem);
-								if (cancelled) return;
-								if (result.alreadyInLibrary) {
-									appendRichMessage([
-										{ text: "The paper is already included in your Zotero library: " },
-										{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => this._openLibraryItem(result.item) },
-										{ text: "." },
-									]);
-								}
-								else if (result.success) {
-									let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
-									let parts = [
-										{ text: `Added "` },
-										{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => this._openLibraryItem(result.item) },
-										{ text: `"${statusText}` },
-									];
-									if (result.sourceURL) {
-										parts.push(
-											{ text: " [source: " },
-											{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
-											{ text: "]" }
-										);
-									}
-									parts.push({ text: "." });
-									appendRichMessage(parts);
-								}
-								else {
-									appendMessage("System", result.message);
-								}
-								return;
-							}
-						}
-						catch (e) {
-							if (cancelled) return;
-							this.log(`LLMReferenceRetrieval.detectDownloadIntent/downloadReferenceToLibrary failed: ${e.message}`);
-							appendMessage("System", `Reference download failed: ${e.message}`);
-							return;
-						}
-
-						try {
-							let { text: liveText, info: selectionInfo } = this.getReaderSelection();
-							let selectedText = liveText || capturedSelection;
+					// See request.js for the actual request flow (download-
+					// reference lookup or normal chat, through to the rendered
+					// reply) -- everything below is just: kick it off, wait for
+					// it, report how it ended, and reset button state.
+					currentRequest = LLMRequest.send(this, prompt, {
+						doc,
+						appendMessage,
+						appendRichMessage,
+						makeMessageClickable,
+						chat,
+						imagePaste,
+						takeCapturedSelection: () => {
+							let text = capturedSelection;
 							capturedSelection = null;
-							let { text: pageText, pageNum, info: pageInfo } = await this.getReaderPageText();
-							if (cancelled) return;
-							// Shared reader-context signal for every selectXWithLLM call
-							// below (tables/equations/figures/notes) -- if the user has an
-							// annotation actively selected/highlighted in the reader right
-							// now (clicked on the page or in the sidebar), that's about as
-							// strong a relevance hint as it gets for a query like "explain
-							// this".
-							let { item: selectedAnnotationItem } = this.getSelectedAnnotation();
-							let selectedAnnotationNote = selectedAnnotationItem
-								? LLMNotes.formatAnnotation(selectedAnnotationItem)
-								: null;
-							let readerContext = { pageNum, selectedText, selectedAnnotationNote };
-							let { prompt: modelPrompt, contextInfo, item: pdfItem, citationIndex } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
-							if (cancelled) return;
-							let tableIndexPromise = pdfItem
-								? LLMTables.getTableIndex(pdfItem).catch((e) => {
-									this.log(`getTableIndex failed: ${e.message}`);
-									return { error: e.message };
-								})
-								: Promise.resolve(null);
-							let figureIndexPromise = pdfItem
-								? LLMFigures.getFigureIndex(pdfItem).catch((e) => {
-									this.log(`getFigureIndex failed: ${e.message}`);
-									return null;
-								})
-								: Promise.resolve(null);
-							let referenceIndexPromise = pdfItem
-								? LLMReferences.getReferenceIndex(pdfItem).catch((e) => {
-									this.log(`getReferenceIndex failed: ${e.message}`);
-									return null;
-								})
-								: Promise.resolve(null);
-							let equationIndexPromise = pdfItem
-								? LLMEquations.getEquationIndex(pdfItem).catch((e) => {
-									this.log(`getEquationIndex failed: ${e.message}`);
-									return { error: e.message };
-								})
-								: Promise.resolve(null);
-							let notesPromise = pdfItem
-								? LLMNotes.getNotes(pdfItem).catch((e) => {
-									this.log(`getNotes failed: ${e.message}`);
-									return [];
-								})
-								: Promise.resolve([]);
-							// Debug/status metadata about the request, not part of the actual
-							// message -- logged rather than shown inline in the "You" bubble
-							// (which now shows just the raw prompt), same reasoning as every
-							// other appendMessage("System", ...) call routing to the Logs
-							// panel.
-							appendMessage("System", selectedText
-								? `Selected Text: "${selectedText.slice(0, 120)}${selectedText.length > 120 ? "…" : ""}"`
-								: `Selected Text: (none — ${selectionInfo})`);
-							appendMessage("System", pageText
-								? `Page Context: page ${pageNum}`
-								: `Page Context: (none — ${pageInfo})`);
-							appendMessage("System", contextInfo ? `PDF: ${contextInfo.title}` : "PDF: (none)");
-							let userReply = appendMessage("You", prompt);
-							// A visual record of what was actually attached to this
-							// specific message -- imagePaste's own list keeps accumulating
-							// across turns (see ui/image-paste.js), so this snapshot is what
-							// distinguishes "attached to THIS message" from "currently
-							// sitting in the attach tray for the next one".
-							let pastedImageDataUris = imagePaste.getDataUris();
-							if (pastedImageDataUris.length) {
-								chat.appendImages(userReply, pastedImageDataUris);
-							}
-
-							if (contextInfo?.missingText) {
-								appendMessage("System", `No extracted text was available for "${contextInfo.title}". Asking without PDF context.`);
-							}
-							else if (contextInfo) {
-								appendMessage(
-									"System",
-									contextInfo.retrieved
-										? `Using PDF context from "${contextInfo.title}" (full PDF too large — showing top ${contextInfo.chunkCount} relevant paragraphs).`
-										: `Using PDF context from "${contextInfo.title}" (${contextInfo.charCount} characters${contextInfo.truncated ? ", truncated" : ""}).`
-								);
-							}
-							else {
-								appendMessage("System", "No active PDF reader tab found. Asking without PDF context.");
-							}
-
-							let tableIndex = await tableIndexPromise;
-							if (cancelled) return;
-							if (tableIndex === null) {
-								appendMessage("System", "Table extraction: no PDF attached.");
-							}
-							else if (tableIndex.error) {
-								appendMessage("System", `Table extraction failed: ${tableIndex.error}`);
-							}
-							else if (!tableIndex.tables.length) {
-								appendMessage("System", "Table extraction: no tables found in PDF.");
-							}
-							else {
-								let selectedTables = [];
-								try {
-									selectedTables = await LLMPrompt.selectTablesWithLLM(tableIndex, prompt, readerContext);
-								}
-								catch (e) {
-									this.log(`selectTablesWithLLM failed: ${e.message}`);
-								}
-								if (cancelled) return;
-								if (selectedTables.length) {
-									let tableBlock = selectedTables.map(t => LLMPrompt._formatTableMarkdown(t)).join("\n\n");
-									modelPrompt += `\n\n<TABLE_CONTEXT>\n${tableBlock}\n</TABLE_CONTEXT>`;
-									let labels = selectedTables.map(t => t.label).join(", ");
-									let msg = appendMessage("System", `Including ${selectedTables.length} table${selectedTables.length === 1 ? "" : "s"} as context (out of ${tableIndex.tables.length} extracted): ${labels}. Click to jump to the first one.`);
-									makeMessageClickable(msg, selectedTables[0]);
-								}
-								else {
-									appendMessage("System", `Extracted ${tableIndex.tables.length} table${tableIndex.tables.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
-								}
-							}
-
-							// Unlike tables (present in most papers), the large majority of
-							// PDFs have zero *numbered* equations at all -- so, unlike the
-							// table block above, this stays silent for the "none found" and
-							// "none matched" cases rather than announcing an absence that's
-							// the overwhelmingly common case and not something the user asked
-							// about.
-							let equationIndex = await equationIndexPromise;
-							if (cancelled) return;
-							if (equationIndex?.error) {
-								appendMessage("System", `Equation extraction failed: ${equationIndex.error}`);
-							}
-							else if (equationIndex?.equations?.length) {
-								let selectedEquations = [];
-								try {
-									selectedEquations = await LLMPrompt.selectEquationsWithLLM(equationIndex, prompt, readerContext);
-								}
-								catch (e) {
-									this.log(`selectEquationsWithLLM failed: ${e.message}`);
-								}
-								if (cancelled) return;
-								if (selectedEquations.length) {
-									let eqBlock = selectedEquations.map(eq => LLMPrompt._formatEquationText(eq)).join("\n\n");
-									modelPrompt += `\n\n<EQUATION_CONTEXT>\n${eqBlock}\n</EQUATION_CONTEXT>`;
-									let labels = selectedEquations.map(eq => eq.label).join(", ");
-									let msg = appendMessage("System", `Including ${selectedEquations.length} equation${selectedEquations.length === 1 ? "" : "s"} as equation context (out of ${equationIndex.equations.length} extracted): ${labels}. Click to jump to the first one.`);
-									// caption fallback mirrors linkIndex's equation entries below --
-									// selectedEquations entries have no `caption` field, only `text`.
-									makeMessageClickable(msg, {
-										position: selectedEquations[0].position,
-										caption: selectedEquations[0].text.split(/\s+/).slice(0, 8).join(" "),
-									});
-								}
-							}
-
-							// Always announced, even on the "found none"/"none matched"
-							// paths -- unlike the equation block above, this stays
-							// visible (matching the table block's style) since it's
-							// useful for debugging whether annotations are being picked
-							// up as expected.
-							let notes = await notesPromise;
-							if (cancelled) return;
-							// Hoisted above the if/else so it's still in scope down at
-							// linkIndex construction below, for ref:note:N resolution.
-							let selectedNotes = [];
-							if (!notes.length) {
-								appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
-							}
-							else {
-								try {
-									selectedNotes = await LLMPrompt.selectNotesWithLLM(notes, prompt, readerContext);
-								}
-								catch (e) {
-									this.log(`selectNotesWithLLM failed: ${e.message}`);
-								}
-								if (cancelled) return;
-								if (selectedNotes.length) {
-									let noteBlock = selectedNotes.map((n, i) => LLMPrompt._formatNoteContext(n, i + 1)).join("\n\n");
-									modelPrompt += `\n\n<NOTE_CONTEXT>\n${noteBlock}\n</NOTE_CONTEXT>`;
-									let titles = selectedNotes.map(n => n.title).join(", ");
-									let msg = appendMessage("System", `Including ${selectedNotes.length} note${selectedNotes.length === 1 ? "" : "s"} as context (out of ${notes.length} extracted): ${titles}. Click to jump to the first one.`);
-									// Whole-message click only jumps to the first selected note --
-									// makeMessageClickable is a single click target, not one per
-									// note -- good enough as a quick way in, the rest are visible in
-									// the model's own answer either way (each individually
-									// clickable via its own [Note N](<ref:note:N>) link, if the
-									// model includes one).
-									makeMessageClickable(msg, selectedNotes[0]);
-								}
-								else {
-									appendMessage("System", `Extracted ${notes.length} note${notes.length === 1 ? "" : "s"}/highlight${notes.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
-								}
-							}
-
-							let images = [];
-							let figureIndex = await figureIndexPromise;
-							if (cancelled) return;
-							try {
-								let currentModel = await LLMInterfaces.getCurrentModel();
-								let supportsImages = await LLMInterfaces.modelSupportsImages(currentModel);
-								// pastedImageDataUris was already snapshotted above (before this
-								// request's async work began), so a mid-request removal via the
-								// thumbnail's "x" doesn't retroactively change what's sent for a
-								// request already in flight.
-								if (pastedImageDataUris.length) {
-									if (supportsImages) {
-										images.push(...pastedImageDataUris);
-									}
-									else {
-										appendMessage("System", `${currentModel} doesn't support image input -- the ${pastedImageDataUris.length} attached image${pastedImageDataUris.length === 1 ? "" : "s"} won't be sent.`);
-									}
-								}
-								// Skipped when the user already attached image(s) themselves --
-								// no need to spend an extra LLM call hunting for a figure to use
-								// as image context when image context has already been provided.
-								// figureIndex itself is still fetched above regardless (used below
-								// for citation-link resolution on figures the model's text mentions).
-								if (figureIndex?.figures?.length && supportsImages && !pastedImageDataUris.length) {
-									let bestFigures = await LLMPrompt.selectFiguresWithLLM(figureIndex, prompt, readerContext);
-									if (cancelled) return;
-									let figuresWithImages = bestFigures.filter(f => f.image_data);
-									if (figuresWithImages.length) {
-										images.push(...figuresWithImages.map(f => f.image_data));
-										let labels = figuresWithImages.map(f => f.label || `figure ${f.figure_num}`).join(", ");
-										let msg = appendMessage("System", `Including ${figuresWithImages.length} figure${figuresWithImages.length === 1 ? "" : "s"} as image context (best match for your question, ${currentModel} supports vision): ${labels}. Click to jump to the first one.`);
-										makeMessageClickable(msg, figuresWithImages[0]);
-									}
-								}
-							}
-							catch (e) {
-								if (cancelled) return;
-								this.log(`Image context setup failed: ${e.message}`);
-							}
-
-							let referenceIndex = await referenceIndexPromise;
-							if (cancelled) return;
-							if (referenceIndex?.references?.length) {
-								let includeReferences = false;
-								try {
-									includeReferences = await LLMPrompt.shouldIncludeReferencesWithLLM(referenceIndex, prompt, readerContext);
-								}
-								catch (e) {
-									this.log(`shouldIncludeReferencesWithLLM failed: ${e.message}`);
-								}
-								if (cancelled) return;
-								if (includeReferences) {
-									modelPrompt += `\n\n<REFERENCE_CONTEXT>\n${LLMPrompt._formatReferenceContext(referenceIndex.references)}\n</REFERENCE_CONTEXT>`;
-									appendMessage("System", `Including bibliography (${referenceIndex.references.length} references) as context.`);
-								}
-								else {
-									appendMessage("System", `Extracted ${referenceIndex.references.length} reference${referenceIndex.references.length === 1 ? "" : "s"} from bibliography; not relevant enough to include.`);
-								}
-							}
-
-							// Lets the model's own text mentions of any extracted table/figure/
-							// reference/equation/note (not just the one injected as full context)
-							// become clickable links -- see _renderMarkdown's `ref:table:N` /
-							// `ref:figure:N` / `ref:reference:N` / `ref:equation:N` /
-							// `ref:formula:N` / `ref:note:N` handling.
-							// References have no stored position, so they fall back to a text search using the
-							// first few words of the citation (a full-length quote is too
-							// brittle a phrase-search target). The model only emits the bare
-							// number, e.g. [12](<ref:reference:12>), and the rendered link
-							// KEEPS that bare "[12]" as its visible text -- `label` here is
-							// only used to enrich the hover tooltip with the full citation,
-							// not to replace the inline text (a full bibliography entry
-							// inline would clutter the response).
-							let linkIndex = {
-								table: new Map((tableIndex?.tables || []).map(t => [t.table_num, { position: t.position, caption: t.caption }])),
-								figure: new Map((figureIndex?.figures || []).map(f => [f.figure_num, { position: f.position, caption: f.caption }])),
-								reference: new Map((referenceIndex?.references || []).map(r => [r.index, {
-									label: `[${r.index}] ${r.text}`,
-									caption: r.text.split(/\s+/).slice(0, 8).join(" "),
-								}])),
-								// Real numbered equations key on equation_num (matching the
-								// paper's own printed number, cited via ref:equation:N); Formulas
-								// key on formula_num under a separate map instead (cited via
-								// ref:formula:N) -- they share the same numeric range, so merging
-								// them into one map would let a formula_num collide with an
-								// unrelated equation_num.
-								equation: new Map((equationIndex?.equations || [])
-									.filter(eq => eq.equation_num !== null)
-									.map(eq => [eq.equation_num, {
-										position: eq.position,
-										caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
-									}])),
-								formula: new Map((equationIndex?.equations || [])
-									.filter(eq => eq.formula_num !== null)
-									.map(eq => [eq.formula_num, {
-										position: eq.position,
-										caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
-									}])),
-								// Keyed 1..K over just this message's selectedNotes (see
-								// _formatNoteContext's "Note N" numbering) -- not a stable
-								// paper-wide number, but linkIndex itself is rebuilt fresh per
-								// message anyway, so that's fine.
-								note: new Map(selectedNotes.map((n, i) => [i + 1, {
-									annotationKey: n.annotationKey,
-									position: n.position,
-									caption: n.caption,
-								}])),
-							};
-
-							// Resolved up front (rather than waiting for result.model after
-							// the response streams in) so the reply bubble's title shows
-							// which model is being queried immediately, not just once it
-							// answers. Falls back to the bare provider label if this fails
-							// for any reason -- the streamModel call right below will
-							// surface the same underlying error properly either way.
-							let currentModel = null;
-							try {
-								currentModel = await LLMInterfaces.getCurrentModel();
-							}
-							catch (e) {
-								this.log(`getCurrentModel failed before creating reply message: ${e.message}`);
-							}
-							let replyLabel = currentModel ? `${providerLabel} - ${currentModel}` : providerLabel;
-							let reply = appendMessage(replyLabel, `Waiting for ${providerLabel}...`);
-							this.log(`Submitting prompt to ${providerLabel}: ${prompt}`);
-							reply.textContent = "";
-							let result = await LLMInterfaces.streamModel(modelPrompt, (token) => {
-								if (!cancelled) reply.textContent += token;
-							}, {
-								onReady(cancelFn) {
-									cancelStream = cancelFn;
-								},
-							}, images);
-							if (cancelled) return;
-							if (!result.text) {
-								reply.textContent = "(No response)";
-							}
-							else {
-								let groundedText = await LLMCitation.groundCitations(result.text, citationIndex);
-								if (cancelled) return;
-								let html = this._renderMarkdown(groundedText, linkIndex);
-								if (html) {
-									let rendered = doc.createElement("div");
-									// llm-message-content too, not just llm-markdown -- this
-									// element replaces the <pre class="llm-message-content">
-									// that held the response during streaming (see
-									// reply.replaceWith below), and without that class it'd
-									// silently lose the "body" background/padding/spacing that
-									// class provides once the response finishes streaming and
-									// gets swapped from plain text to rendered markdown.
-									rendered.className = "llm-markdown llm-message-content";
-									try {
-										rendered.innerHTML = html;
-									}
-									catch (e) {
-										// Logs the FULL generated HTML string, not just e.message --
-										// past occurrences of this exact failure ("innerHTML: An
-										// invalid or illegal string was specified") couldn't be
-										// pinned down from the error message/stack alone, since it
-										// depends on the SPECIFIC content Gecko's parser rejected
-										// (seemingly MathML/foreign-content-related, based on prior
-										// investigation, but not reproducible via plain string-level
-										// testing outside a real Gecko innerHTML parse). Falls back
-										// to the unrendered markdown as plain text -- no math/links/
-										// formatting, but the user still gets the actual response
-										// instead of losing it entirely.
-										this.log(`rendered.innerHTML assignment failed: ${e.message}\nFull generated HTML:\n${html}`);
-										rendered.textContent = groundedText;
-									}
-									rendered.addEventListener("click", (e) => {
-										let anchor = e.target.closest(".llm-find-link");
-										if (!anchor) return;
-										e.preventDefault();
-										if (anchor.dataset.annotationKey) {
-											LLMCitation.navigateToAnnotation(anchor.dataset.annotationKey);
-											return;
-										}
-										if (anchor.dataset.pageNum) {
-											LLMCitation.navigateToPage(parseInt(anchor.dataset.pageNum, 10));
-											return;
-										}
-										if (anchor.dataset.position) {
-											try {
-												LLMCitation.navigateToPosition(JSON.parse(anchor.dataset.position));
-											}
-											catch (err) {
-												this.log(`Failed to parse position for link: ${err.message}`);
-											}
-											return;
-										}
-										LLMCitation.navigateToText(anchor.dataset.query);
-									});
-									reply.replaceWith(rendered);
-								}
-							}
-							this.log(`Received response from ${providerLabel} model ${result.model}`);
-						}
-						catch (e) {
-							if (cancelled) return;
-							appendMessage(providerLabel, `${providerLabel} request failed: ${e.message}`);
-							// Only e.message was logged before -- this whole try wraps
-							// everything from PDF-context building through table/figure/
-							// equation/note extraction, streamModel, citation grounding,
-							// and markdown+KaTeX rendering, so without e.stack there was no
-							// way to tell WHERE in that chain a given error actually came
-							// from.
-							this.log(`${providerLabel} request failed: ${e.message}\n${e.stack || "(no stack)"}`);
-						}
-					})();
+							return text;
+						},
+					});
 
 					try {
-						await Promise.race([work, cancelPromise]);
+						await currentRequest.promise;
 					}
 					catch (e) {
-						if (cancelled) {
+						if (currentRequest.cancelled) {
 							appendMessage("System", "Cancelled.");
 						}
 						else {
@@ -1251,8 +782,7 @@ LLMChatPane = {
 					finally {
 						submitButton.disabled = false;
 						stopButton.disabled = true;
-						cancelStream = null;
-						rejectCancel = null;
+						currentRequest = null;
 					}
 				});
 

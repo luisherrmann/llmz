@@ -7,6 +7,7 @@ var LLMUIApiKeys;
 var LLMUIKeyboardShortcuts;
 var LLMUIAdvanced;
 var LLMUIButtonRow;
+var LLMRequest;
 var LLMCitation;
 var LLMFigures;
 var LLMTables;
@@ -47,6 +48,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "ui/keyboard_shortcuts.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/advanced.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/button-row.js");
+	Services.scriptloader.loadSubScript(rootURI + "request.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-chat-pane.js");
 	await LLMReferences.init(rootURI);
 	LLMChatPane.init({ id, version, rootURI });

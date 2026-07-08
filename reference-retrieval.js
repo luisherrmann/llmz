@@ -482,6 +482,40 @@ LLMReferenceRetrieval = {
 	// without this distinction, a caller validating title could wrongly
 	// "confirm" a mismatched direct-PDF result just because its title
 	// happens to equal whatever fallback was passed in.
+	// Hard cap on how long a single candidate's HiddenBrowser check (see
+	// _findPDFAtURL) may take. HiddenBrowser.load() has its OWN internal 5s
+	// timeout, but only for the "page never starts navigating at all" case
+	// -- a page that DOES start loading but then hangs on slow remote
+	// resources (loaded here with blockRemoteResources: false) or a
+	// getDocument()/getFileFromDocument() call that never settles isn't
+	// covered by that, and was confirmed in practice to occasionally hang a
+	// whole reference's web-search stage indefinitely on one bad candidate,
+	// even with _rankConfirmedRace's concurrency -- a stuck EARLIER-ranked
+	// candidate blocks confirmation of any later one, no matter how many
+	// later candidates have already succeeded, since rank-confirmation
+	// requires every earlier rank to have settled (see _rankConfirmedRace).
+	_CANDIDATE_TIMEOUT_MS: 10000,
+
+	// Races `promise` against a plain timer. Doesn't (can't) cancel the
+	// underlying HiddenBrowser load itself -- there's no API for that --
+	// just stops WAITING on it, so the caller can move on. The abandoned
+	// promise is still swallowed here (rather than left to reject
+	// unhandled later) since nothing above this point cares about its
+	// result anymore once it's timed out.
+	async _withTimeout(promise, ms, message) {
+		promise.catch(() => {});
+		let timeoutId;
+		let timeout = new Promise((resolve, reject) => {
+			timeoutId = setTimeout(() => reject(new Error(message)), ms);
+		});
+		try {
+			return await Promise.race([promise, timeout]);
+		}
+		finally {
+			clearTimeout(timeoutId);
+		}
+	},
+
 	async _findPDFAtURL(url, fallbackTitle) {
 		if (await this._isDirectPDF(url)) {
 			return { url, title: fallbackTitle || url, mimeType: "application/pdf", titleIsReal: false };
@@ -490,9 +524,15 @@ LLMReferenceRetrieval = {
 		let browser;
 		try {
 			browser = new HiddenBrowser({ blockRemoteResources: false });
-			await browser.load(url, { requireSuccessfulStatus: true });
-			let doc = await browser.getDocument();
-			let fileInfo = await Zotero.Utilities.Internal.getFileFromDocument(doc);
+			let fileInfo = await this._withTimeout(
+				(async () => {
+					await browser.load(url, { requireSuccessfulStatus: true });
+					let doc = await browser.getDocument();
+					return Zotero.Utilities.Internal.getFileFromDocument(doc);
+				})(),
+				this._CANDIDATE_TIMEOUT_MS,
+				`_findPDFAtURL: ${url} timed out after ${this._CANDIDATE_TIMEOUT_MS}ms`
+			);
 			if (fileInfo && /pdf/i.test(fileInfo.mimeType || "")) {
 				// The translator can claim a PDF attachment exists purely
 				// from the page's own markup (e.g. a "download PDF" link)

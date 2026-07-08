@@ -61,6 +61,22 @@ LLMRequest = {
 		// cancelPromise as a whole, rather than needing every internal step
 		// to separately understand cancellation.
 		let work = (async () => {
+			// Resolved up front (rather than only once the reply bubble is
+			// about to stream) so it's available immediately both for the
+			// reply bubble's title AND for the download-reference flow's
+			// result messages below, which used to hardcode role "Zotero"
+			// instead of showing the actually-active provider/model -- there's
+			// no real "Zotero" agent, just this plugin acting on the user's
+			// behalf, so it should read the same as any other reply.
+			let currentModel = null;
+			try {
+				currentModel = await LLMInterfaces.getCurrentModel();
+			}
+			catch (e) {
+				this.log(`getCurrentModel failed before creating reply message: ${e.message}`);
+			}
+			let replyLabel = currentModel ? `${providerLabel} - ${currentModel}` : providerLabel;
+
 			// Checked FIRST, before building the (comparatively expensive)
 			// full PDF-context prompt -- a "download reference N" request
 			// short-circuits the normal chat flow entirely, since the main
@@ -71,55 +87,131 @@ LLMRequest = {
 				if (intent !== null) {
 					appendMessage("You", prompt);
 					let pdfItem = chatPane.getActiveReaderAttachment();
-					let downloadRefNum = intent.index ?? null;
-					if (downloadRefNum === null && intent.description) {
-						if (!pdfItem) {
-							appendMessage("System", "No active PDF to look up references from.");
-							return;
-						}
+					if (!pdfItem) {
+						appendMessage("System", "No active PDF to look up references from.");
+						return;
+					}
+
+					// Resolves `intent` (see LLMReferenceRetrieval.detectDownloadIntent)
+					// down to a concrete list of reference numbers to download.
+					// "single"/"describe" resolve to at most one entry each;
+					// "list"/"range"/"all" are pure arithmetic against the paper's
+					// own reference list (resolveExplicitIndices, no model call);
+					// "select" (a criterion like "all papers by Kaiming He") needs a
+					// further model call to actually read the bibliography and pick
+					// matches, same as "describe" already does for a single paper --
+					// just capped at several results instead of one (see
+					// resolveReferenceSelection).
+					let indices;
+					if (intent.type === "single") {
+						indices = [intent.index];
+					}
+					else if (intent.type === "describe") {
 						let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
 						if (cancelled) return;
-						downloadRefNum = await LLMReferenceRetrieval.resolveReferenceByDescription(referenceIndex, intent.description);
+						let resolved = await LLMReferenceRetrieval.resolveReferenceByDescription(referenceIndex, intent.description);
 						if (cancelled) return;
-						if (downloadRefNum === null) {
-							appendMessage("System", `Could not find a reference matching "${intent.description}" in this paper's bibliography.`);
-							return;
-						}
+						indices = resolved === null ? [] : [resolved];
 					}
-					appendMessage("System", `Looking up reference ${downloadRefNum} and searching for it online...`);
-					let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(downloadRefNum, pdfItem);
-					if (cancelled) return;
-					// The outcome of the fetch -- as opposed to the "Looking
-					// up..." progress notice above -- is what the user actually
-					// asked for, so it goes in the visible conversation (role
-					// "Zotero", rendered like any other reply) rather than the
-					// Logs panel.
-					if (result.alreadyInLibrary) {
-						appendRichMessage("Zotero", [
-							{ text: "The paper is already included in your Zotero library: " },
-							{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-							{ text: "." },
-						]);
-					}
-					else if (result.success) {
-						let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
-						let parts = [
-							{ text: `Added "` },
-							{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-							{ text: `"${statusText}` },
-						];
-						if (result.sourceURL) {
-							parts.push(
-								{ text: " [source: " },
-								{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
-								{ text: "]" }
-							);
-						}
-						parts.push({ text: "." });
-						appendRichMessage("Zotero", parts);
+					else if (intent.type === "select") {
+						let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
+						if (cancelled) return;
+						indices = await LLMReferenceRetrieval.resolveReferenceSelection(referenceIndex, intent.description);
+						if (cancelled) return;
 					}
 					else {
-						appendMessage("Zotero", result.message);
+						// list / range / all
+						let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
+						if (cancelled) return;
+						indices = LLMReferenceRetrieval.resolveExplicitIndices(intent, referenceIndex);
+					}
+
+					if (!indices || !indices.length) {
+						appendMessage("System", intent.description
+							? `Could not find any references matching "${intent.description}" in this paper's bibliography.`
+							: "Could not find any matching references in this paper's bibliography.");
+						return;
+					}
+
+					if (indices.length > 1) {
+						appendMessage("System", `Found ${indices.length} matching references: ${indices.join(", ")}. Downloading each in turn...`);
+					}
+
+					// One reply bubble per reference, even for a multi-reference
+					// request -- so each result (and its own clickable library/
+					// source links) reads as its own distinct outcome instead of
+					// being squashed into a single giant summary message.
+					// Visible placeholder, shown immediately (rather than only
+					// once the whole, potentially slow, multi-stage lookup
+					// finishes) and updated live as it proceeds -- via onStage
+					// below, kept separate from onProgress (full step-by-step
+					// detail, Logs panel only) since the bubble only wants a
+					// few coarse, general status lines, not every query/
+					// candidate onProgress reports.
+					let downloadOneReference = async (downloadRefNum) => {
+						let reply = appendMessage(replyLabel, `Looking up reference ${downloadRefNum}...`);
+						let onProgress = (msg) => {
+							if (cancelled) return;
+							appendMessage("System", msg);
+						};
+						let onStage = (msg) => {
+							if (cancelled) return;
+							chat.updateMessageText(reply, msg);
+						};
+						let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(downloadRefNum, pdfItem, onProgress, onStage);
+						if (cancelled) return;
+						// The outcome of the fetch -- as opposed to the interim
+						// progress notices above -- is what the user actually asked
+						// for, so it replaces the placeholder in the visible
+						// conversation rather than just logging it.
+						if (result.alreadyInLibrary) {
+							chat.finalizeRichMessage(reply, [
+								{ text: "The paper is already included in your Zotero library: " },
+								{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+								{ text: "." },
+							]);
+						}
+						else if (result.success) {
+							let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
+							let parts = [
+								{ text: `Added "` },
+								{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+								{ text: `"${statusText}` },
+							];
+							if (result.sourceURL) {
+								parts.push(
+									{ text: " (source: " },
+									{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
+									{ text: ")" }
+								);
+							}
+							parts.push({ text: "." });
+							chat.finalizeRichMessage(reply, parts);
+						}
+						else {
+							chat.updateMessageText(reply, result.message);
+						}
+					};
+
+					// Sequential, not parallel -- each reference's own web-search
+					// stage (see reference-retrieval.js's _findPDFViaWebSearch)
+					// already checks several candidates concurrently, so running
+					// multiple references at once on top of that would multiply
+					// how many simultaneous HiddenBrowser page loads/network
+					// requests are in flight for no real caller-side benefit. A
+					// single reference throwing (e.g. a network error) is caught
+					// per-iteration so it doesn't abort the rest of a multi-
+					// reference batch.
+					for (let downloadRefNum of indices) {
+						if (cancelled) return;
+						try {
+							await downloadOneReference(downloadRefNum);
+						}
+						catch (e) {
+							if (cancelled) return;
+							this.log(`downloadOneReference(${downloadRefNum}) failed: ${e.message}`);
+							appendMessage("System", `Reference ${downloadRefNum} download failed: ${e.message}`);
+						}
 					}
 					return;
 				}
@@ -201,6 +293,14 @@ LLMRequest = {
 				if (pastedImageDataUris.length) {
 					chat.appendImages(userReply, pastedImageDataUris);
 				}
+
+				// Visible placeholder, shown immediately rather than only once
+				// context-building (table/figure/equation/note/reference
+				// extraction+selection below, which can itself take a while)
+				// finishes -- updated to "Waiting for ..." right before the
+				// actual model call starts (see below), then filled with
+				// streamed tokens once the reply actually begins.
+				let reply = appendMessage(replyLabel, "Building context...");
 
 				if (contextInfo?.missingText) {
 					appendMessage("System", `No extracted text was available for "${contextInfo.title}". Asking without PDF context.`);
@@ -394,21 +494,11 @@ LLMRequest = {
 				// see buildLinkIndex's own comment for how.
 				let linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes: selectedNotes });
 
-				// Resolved up front (rather than waiting for result.model after
-				// the response streams in) so the reply bubble's title shows
-				// which model is being queried immediately, not just once it
-				// answers. Falls back to the bare provider label if this fails
-				// for any reason -- the streamModel call right below will
-				// surface the same underlying error properly either way.
-				let currentModel = null;
-				try {
-					currentModel = await LLMInterfaces.getCurrentModel();
-				}
-				catch (e) {
-					this.log(`getCurrentModel failed before creating reply message: ${e.message}`);
-				}
-				let replyLabel = currentModel ? `${providerLabel} - ${currentModel}` : providerLabel;
-				let reply = appendMessage(replyLabel, `Waiting for ${providerLabel}...`);
+				// `reply` was already created (as "Building context...") right
+				// after the "You" bubble above -- just update it now that
+				// context-building is done and the actual model call is about
+				// to start.
+				chat.updateMessageText(reply, `Waiting for ${providerLabel}...`);
 				this.log(`Submitting prompt to ${providerLabel}: ${prompt}`);
 				reply.textContent = "";
 				let result = await LLMInterfaces.streamModel(modelPrompt, (token) => {

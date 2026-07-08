@@ -65,6 +65,33 @@ LLMUIChat = {
 	//                                         grounded markdown) rather than
 	//                                         an initial "Waiting for..."
 	//                                         placeholder.
+	//   updateMessageText(contentEl, text) -- setMessageText's DOM-updating
+	//                                         counterpart: overwrites BOTH
+	//                                         the visible plain text and the
+	//                                         transcript entry in one call --
+	//                                         for interim status text shown
+	//                                         before any real content is
+	//                                         ready (e.g. "Building
+	//                                         context...", "Searching for
+	//                                         reference N online..."), as
+	//                                         opposed to streamed tokens
+	//                                         (appended directly by the
+	//                                         caller) or a final result
+	//                                         (setMessageText/
+	//                                         finalizeRichMessage).
+	//   finalizeRichMessage(contentEl,
+	//     parts)                          -- appendRichMessage's content-
+	//                                         filling logic, but applied to
+	//                                         an EXISTING message (as
+	//                                         returned by appendMessage) in
+	//                                         place, rather than creating a
+	//                                         new one -- for finalizing a
+	//                                         status-updated placeholder
+	//                                         (see updateMessageText) with
+	//                                         rich mixed text/link content
+	//                                         once it's ready (e.g. the
+	//                                         download-reference flow's
+	//                                         result).
 	//   exportTranscript()                -- returns a snapshot
 	//                                         ([{ role, time, text }]) of
 	//                                         every message appended so far,
@@ -165,12 +192,17 @@ LLMUIChat = {
 			return content;
 		};
 
-		let appendRichMessage = (role, parts, time = formatTimestamp()) => {
-			let content = appendShell(role, "div", time);
+		// Shared by appendRichMessage/finalizeRichMessage below: fills
+		// `contentEl` with `parts` (mixed text/link content) and returns the
+		// plain-text equivalent, for the caller to record in the transcript.
+		// Does NOT clear `contentEl` first -- callers that need to replace
+		// existing content (finalizeRichMessage) clear it themselves, since
+		// appendRichMessage's contentEl is always freshly empty already.
+		let fillRichParts = (contentEl, parts) => {
 			let text = "";
 			for (let part of parts) {
 				if (part.text !== undefined) {
-					content.append(doc.createTextNode(part.text));
+					contentEl.append(doc.createTextNode(part.text));
 					text += part.text;
 					continue;
 				}
@@ -182,10 +214,15 @@ LLMUIChat = {
 					e.preventDefault();
 					part.onClick();
 				});
-				content.append(link);
+				contentEl.append(link);
 				text += part.label;
 			}
-			transcriptByContent.get(content).text = text;
+			return text;
+		};
+
+		let appendRichMessage = (role, parts, time = formatTimestamp()) => {
+			let content = appendShell(role, "div", time);
+			transcriptByContent.get(content).text = fillRichParts(content, parts);
 			return content;
 		};
 
@@ -204,6 +241,17 @@ LLMUIChat = {
 		let setMessageText = (contentEl, text) => {
 			let entry = transcriptByContent.get(contentEl);
 			if (entry) entry.text = text;
+		};
+
+		let updateMessageText = (contentEl, text) => {
+			contentEl.textContent = text;
+			setMessageText(contentEl, text);
+		};
+
+		let finalizeRichMessage = (contentEl, parts) => {
+			contentEl.textContent = "";
+			setMessageText(contentEl, fillRichParts(contentEl, parts));
+			return contentEl;
 		};
 
 		let exportTranscript = () => transcript.map(entry => ({ ...entry }));
@@ -256,6 +304,6 @@ LLMUIChat = {
 			return rendered;
 		};
 
-		return { label, list, appendMessage, appendRichMessage, appendImages, setMessageText, exportTranscript, clear, renderMarkdownMessage };
+		return { label, list, appendMessage, appendRichMessage, appendImages, setMessageText, updateMessageText, finalizeRichMessage, exportTranscript, clear, renderMarkdownMessage };
 	},
 };

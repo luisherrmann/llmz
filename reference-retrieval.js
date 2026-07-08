@@ -25,45 +25,137 @@ LLMReferenceRetrieval = {
 		return (result.text || "").trim();
 	},
 
-	// Detects a "download reference N" request before the message is sent to
-	// the main chat model, in whatever phrasing the user happens to use --
-	// either NUMBERED ("download reference 15", "save ref 3 to my library",
-	// "grab citation 7 for me") or identified by TITLE/AUTHOR/description
-	// instead ("download the Jumper AlphaFold paper", "save the paper by He
-	// et al. about masked autoencoders") -- the latter is resolved against
-	// the paper's own reference list afterward, in resolveReferenceByDescription,
-	// since matching free text against 50+ citation strings needs the actual
-	// list in front of the model, which this first, cheap classification
-	// pass deliberately skips. Checked via an LLM call rather than a fixed
-	// regex so reasonable rephrasings are still recognized, at the cost of
-	// one extra (fast, single-token) model call per message.
-	// Returns { index } for a numbered request, { description } for a
-	// name/title-based one, or null if this isn't a download request at all.
+	// Detects a "download reference(s)" request before the message is sent
+	// to the main chat model, in whatever phrasing the user happens to
+	// use, and classifies it into one of six shapes -- a single explicit
+	// number, a single paper identified by title/author/description instead
+	// (no number given), an enumerated list of numbers, a numeric range, the
+	// paper's entire bibliography, or a criterion-based selection that isn't
+	// reducible to arithmetic on numbers alone (author, year, topic, etc.).
+	// Checked via an LLM call rather than a fixed regex so reasonable
+	// rephrasings are still recognized, at the cost of one extra (fast,
+	// single-token-ish) model call per message.
+	// DESCRIBE/SELECT are deliberately left unresolved here (just the raw
+	// text) -- matching free text against 50+ citation strings needs the
+	// paper's actual reference list in front of the model, which this first,
+	// cheap classification pass skips; see resolveReferenceByDescription/
+	// resolveReferenceSelection, called afterward once the reference list has
+	// actually been fetched. LIST/RANGE/ALL, by contrast, are already fully
+	// resolved to concrete numbers by the classifier itself -- turning THOSE
+	// into a final index list is pure arithmetic (dedup/range-expand/enumerate-
+	// all, clamped to whichever numbers actually exist), so it's handled
+	// locally by resolveExplicitIndices instead of costing another model call.
+	// Returns one of:
+	//   { type: "single", index }
+	//   { type: "describe", description }
+	//   { type: "list", indices: [...] }
+	//   { type: "range", from, to }
+	//   { type: "all" }
+	//   { type: "select", description }
+	//   null -- not a download request at all
 	async detectDownloadIntent(prompt) {
 		let classifyPrompt = [
-			"You are detecting whether the user's message is a request to download",
-			"a bibliography/reference-list entry from the current PDF into their Zotero",
-			'library. This can be phrased by NUMBER ("download reference 15", "save ref 3',
-			'to my library", "grab citation 7 for me") OR by naming the paper itself',
-			'("download the Jumper AlphaFold paper", "save the paper by He et al. about',
-			'masked autoencoders", "add the transformer paper to my library").',
+			"You are detecting whether the user's message is a request to download one",
+			"or more bibliography/reference-list entries from the current PDF into",
+			"their Zotero library. Determine which of the following forms the request",
+			"takes, and respond with EXACTLY ONE line in the corresponding format. Do",
+			"not explain.",
 			"",
-			"If it IS such a request AND a reference number is explicitly given, respond",
-			'with ONLY that number (e.g. "15").',
-			"If it IS such a request but NO number is given (the paper is identified by",
-			"title, author, or description instead), respond with exactly:",
-			'DESCRIBE: <the identifying text from the user\'s message>',
-			'If it is NOT such a request (e.g. a normal question about the PDF\'s content),',
-			'respond with exactly "none". Do not explain.',
+			'1. A SINGLE reference by explicit number ("download reference 15", "save',
+			'   ref 3 to my library", "grab citation 7 for me"):',
+			"   SINGLE: <number>",
+			"",
+			"2. A SINGLE reference identified by title/author/description, with NO",
+			'   number given ("download the Jumper AlphaFold paper", "save the paper by',
+			'   He et al. about masked autoencoders"):',
+			"   DESCRIBE: <the identifying text from the user's message>",
+			"",
+			'3. An ENUMERATED list of specific reference numbers ("download references',
+			'   1, 2, 45 and 46", "grab refs 3, 7, 9"):',
+			"   LIST: <comma-separated numbers>",
+			"",
+			'4. A RANGE of reference numbers ("download references 8-20", "get me',
+			'   references 10 through 15"):',
+			"   RANGE: <start>-<end>",
+			"",
+			'5. ALL references in the bibliography ("download all references", "get',
+			'   every paper from this bibliography\'s reference list"):',
+			"   ALL",
+			"",
+			"6. A SELECTION described by some CRITERION other than an explicit",
+			"   number/range/list, which requires actually reading the reference list",
+			'   to resolve ("download all papers by Kaiming He", "get every reference',
+			'   from before 2016", "grab the papers about diffusion models cited',
+			'   here"):',
+			"   SELECT: <the selection criterion, in the user's own words>",
+			"",
+			'If the message is NOT a reference-download request at all (e.g. a normal',
+			'question about the PDF\'s content), respond with exactly "none".',
 			"",
 			`User's message: "${prompt}"`,
 		].join("\n");
 		let text = await this._callModel(classifyPrompt);
-		if (!text || /^none$/i.test(text)) return null;
+		if (!text) return null;
+		text = text.trim();
+		if (/^none$/i.test(text)) return null;
+
+		let singleMatch = text.match(/^SINGLE:\s*(\d+)/i);
+		if (singleMatch) return { type: "single", index: parseInt(singleMatch[1], 10) };
+
 		let describeMatch = text.match(/^DESCRIBE:\s*(.+)$/is);
-		if (describeMatch) return { description: describeMatch[1].trim() };
-		let match = text.match(/\d+/);
-		return match ? { index: parseInt(match[0], 10) } : null;
+		if (describeMatch) return { type: "describe", description: describeMatch[1].trim() };
+
+		let listMatch = text.match(/^LIST:\s*(.+)$/is);
+		if (listMatch) {
+			let indices = (listMatch[1].match(/\d+/g) || []).map(n => parseInt(n, 10));
+			return { type: "list", indices };
+		}
+
+		let rangeMatch = text.match(/^RANGE:\s*(\d+)\s*-\s*(\d+)/i);
+		if (rangeMatch) return { type: "range", from: parseInt(rangeMatch[1], 10), to: parseInt(rangeMatch[2], 10) };
+
+		if (/^ALL\b/i.test(text)) return { type: "all" };
+
+		let selectMatch = text.match(/^SELECT:\s*(.+)$/is);
+		if (selectMatch) return { type: "select", description: selectMatch[1].trim() };
+
+		// Unrecognized format -- a bare number is treated as a single
+		// reference rather than failing closed, since that's the most
+		// common way a model deviates from the requested format.
+		let bareNumber = text.match(/^\d+$/);
+		if (bareNumber) return { type: "single", index: parseInt(bareNumber[0], 10) };
+
+		return null;
+	},
+
+	// Expands a LIST/RANGE/ALL intent (see detectDownloadIntent) into a
+	// concrete, deduplicated, sorted list of reference numbers -- pure
+	// arithmetic against the paper's own reference list, no model call
+	// needed, since the numbers are already explicit (or trivially
+	// enumerable for ALL). Clamped to whichever numbers actually exist in
+	// the bibliography, so a typo'd/out-of-range number (or a range
+	// extending past the last reference) doesn't get treated as real.
+	// Returns null for a DESCRIBE/SELECT intent -- those need an LLM call
+	// against the reference list instead (see resolveReferenceByDescription/
+	// resolveReferenceSelection), not arithmetic.
+	resolveExplicitIndices(intent, referenceIndex) {
+		let valid = new Set((referenceIndex?.references || []).map(r => r.index));
+		if (intent.type === "list") {
+			return [...new Set(intent.indices)].filter(i => valid.has(i)).sort((a, b) => a - b);
+		}
+		if (intent.type === "range") {
+			let from = Math.min(intent.from, intent.to);
+			let to = Math.max(intent.from, intent.to);
+			let result = [];
+			for (let i = from; i <= to; i++) {
+				if (valid.has(i)) result.push(i);
+			}
+			return result;
+		}
+		if (intent.type === "all") {
+			return [...valid].sort((a, b) => a - b);
+		}
+		return null;
 	},
 
 	// Resolves a "download <title/author description>" request (no explicit
@@ -91,6 +183,44 @@ LLMReferenceRetrieval = {
 		if (!text || /none/i.test(text)) return null;
 		let match = text.match(/\d+/);
 		return match ? parseInt(match[0], 10) : null;
+	},
+
+	// How many entries resolveReferenceSelection will return at most for a
+	// criterion-based request ("all papers by Kaiming He", "everything from
+	// before 2016") -- an intentionally broad criterion (or the model simply
+	// being overzealous) could otherwise match a large fraction of a long
+	// bibliography, turning one chat message into dozens of sequential
+	// downloads. A literal "download ALL references" request doesn't go
+	// through this path at all (see detectDownloadIntent's dedicated "all"
+	// intent, resolved by resolveExplicitIndices with no cap and no model
+	// call), so this limit only ever affects the fuzzier criterion case.
+	_MAX_SELECTION_RESULTS: 10,
+
+	// Resolves a "download <criterion>" request (e.g. "all papers by Kaiming
+	// He", "everything from before 2016") against the paper's own reference
+	// list -- like resolveReferenceByDescription, but can match MULTIPLE
+	// entries, capped at _MAX_SELECTION_RESULTS.
+	async resolveReferenceSelection(referenceIndex, description) {
+		let refs = referenceIndex?.references || [];
+		if (!refs.length) return [];
+		let listing = refs.map(r => `[${r.index}] ${r.text}`).join("\n");
+		let prompt = [
+			"Below is a paper's numbered bibliography. Identify every entry that",
+			"matches the following selection criterion, up to a maximum of",
+			`${this._MAX_SELECTION_RESULTS} entries (if more than ${this._MAX_SELECTION_RESULTS} match, pick`,
+			"the best/most confident matches). Respond with ONLY a comma-separated",
+			'list of reference numbers (e.g. "3, 7, 12"). If nothing matches, respond',
+			'with exactly "none". Do not explain.',
+			"",
+			`Criterion: "${description}"`,
+			"",
+			"Bibliography:",
+			listing,
+		].join("\n");
+		let text = await this._callModel(prompt);
+		if (!text || /^none$/i.test(text.trim())) return [];
+		let indices = [...new Set((text.match(/\d+/g) || []).map(n => parseInt(n, 10)))];
+		return indices.slice(0, this._MAX_SELECTION_RESULTS);
 	},
 
 	// Asks the model to pull structured metadata (title, authors, year,
@@ -182,6 +312,37 @@ LLMReferenceRetrieval = {
 	// score 0.77 (Faculty Opinions) and 0.63-0.90 (unrelated papers sharing
 	// several keywords) -- 0.8 sits cleanly between the two clusters.
 	_TITLE_MATCH_THRESHOLD: 0.8,
+
+	// DuckDuckGo's HTML result page truncates long displayed titles with a
+	// trailing "..." -- confirmed concretely with a real paper ("Straightening
+	// Out the Straight-Through Estimator: Overcoming optimization challenges
+	// in vector quantized networks"): EVERY result (including the correct,
+	// directly-downloadable arxiv.org/pdf/2305.08842) came back from
+	// DuckDuckGo as "Straightening Out the Straight-Through Estimator:
+	// Overcoming ..." -- comparing that truncated snippet against the full
+	// (much longer) citation title via plain _titleSimilarity scores only
+	// ~0.69, clearing the loose prefilter but always failing the stricter
+	// _TITLE_MATCH_THRESHOLD used to accept an unverifiable raw-PDF
+	// candidate, for every sufficiently long real title, regardless of
+	// whether the candidate is actually correct. Detects that truncation and
+	// truncates the real title down to the same length before scoring, so
+	// the comparison covers the same span of text on both sides instead of
+	// penalizing the snippet just for being shorter. Still goes through the
+	// normal case/punctuation-insensitive _titleSimilarity/threshold, rather
+	// than a brittle exact startsWith() check -- DuckDuckGo's own truncation
+	// could in principle land mid-word or introduce minor spacing quirks,
+	// and a bigram score tolerates that the same way it already tolerates
+	// OCR-like noise elsewhere, while a wrong paper that merely shares the
+	// same opening words still scores well below threshold (confirmed: an
+	// unrelated title reusing "Straightening out the ..." scores ~0.53).
+	_snippetTitleScore(snippetTitle, fullTitle) {
+		let ellipsis = /\s*(?:\.{3}|…)\s*$/;
+		if (ellipsis.test(snippetTitle)) {
+			let truncatedSnippet = snippetTitle.replace(ellipsis, "");
+			return this._titleSimilarity(truncatedSnippet, fullTitle.slice(0, truncatedSnippet.length));
+		}
+		return this._titleSimilarity(snippetTitle, fullTitle);
+	},
 
 	_titlesRoughlyMatch(a, b) {
 		return this._titleSimilarity(a, b) >= this._TITLE_MATCH_THRESHOLD;
@@ -413,17 +574,6 @@ LLMReferenceRetrieval = {
 		return match ? [match] : [];
 	},
 
-	// Tries a sequence of increasingly loose search queries, each with more
-	// candidate results, until one yields a working PDF -- a single quoted
-	// "<title>" pdf query often returns very few (or zero) hits. Confirmed
-	// concretely with a real paper (ProSST): the exact-quoted query returned
-	// only 2 results, NEITHER a real PDF (a paywalled ACM DL page and a
-	// conference-proceedings listing page), while the unquoted variant
-	// immediately surfaced both a direct NeurIPS PDF and the bioRxiv preprint
-	// landing page (which itself resolves to a PDF via its own web
-	// translator) -- exact title-string matching is too strict since a
-	// preprint host commonly differs from the final citation in
-	// capitalization or minor wording.
 	// Used ONLY to decide whether a candidate is worth fetching at all --
 	// search-engine result titles routinely carry extra site-name/ID noise
 	// (e.g. "[1512.03385] Deep Residual Learning for Image Recognition",
@@ -435,52 +585,128 @@ LLMReferenceRetrieval = {
 	// against at all once fetched.
 	_PDF_SNIPPET_PREFILTER_THRESHOLD: 0.6,
 
-	async _findPDFViaWebSearch(title, fallbackTitle) {
-		let queries = [`"${title}" pdf`, title];
-		for (let query of queries) {
-			let candidates = await this._searchWeb(query, 8);
-			for (let candidate of candidates) {
-				let snippetScore = candidate.title ? this._titleSimilarity(candidate.title, title) : null;
-				// Cheap pre-filter using the search engine's own displayed
-				// result title, before spending a fetch on it at all.
-				if (snippetScore !== null && snippetScore < this._PDF_SNIPPET_PREFILTER_THRESHOLD) {
-					continue;
-				}
-				let fileInfo = await this._findPDFAtURL(candidate.url, fallbackTitle);
-				if (!fileInfo) continue;
-				if (fileInfo.titleIsReal) {
-					// A translator-detected page exposes a REAL title --
-					// confirmed concretely that blindly trusting "some PDF
-					// was found" here is exactly how a wrong PDF gets
-					// attached to an otherwise-correctly-identified item, so
-					// hold this to the same strict bar used everywhere else
-					// rather than accepting it just because it's a PDF.
-					if (this._titleSimilarity(fileInfo.title, title) < this._TITLE_MATCH_THRESHOLD) {
-						this.log(`_findPDFViaWebSearch: rejecting mismatched PDF page title "${fileInfo.title}" for "${title}"`);
-						continue;
-					}
-				}
-				else {
-					// A raw PDF byte stream carries NO metadata of its own
-					// to check after fetching -- confirmed concretely that
-					// this matters: a Universidad Nacional de Colombia
-					// thesis (totally unrelated to the target paper) was
-					// served as a genuine, real, downloadable PDF from a
-					// repository "download" endpoint. Nothing about the
-					// HTTP response itself was wrong -- only the search
-					// engine's OWN displayed title for that result could
-					// have caught it, so require it to clear the FULL
-					// strict bar (not just the loose pre-filter above)
-					// before trusting an unverifiable direct-PDF result.
-					if (snippetScore === null || snippetScore < this._TITLE_MATCH_THRESHOLD) {
-						this.log(`_findPDFViaWebSearch: rejecting unverifiable direct-PDF candidate ${candidate.url} (snippet score ${snippetScore})`);
-						continue;
-					}
-				}
-				return fileInfo;
+	// How many candidates to fetch/validate at once in _findPDFViaWebSearch.
+	// Each check can spin up a full HiddenBrowser page load (see
+	// _findPDFAtURL), so checking all ~8 candidates at once would be needless
+	// network/resource pressure, but checking one at a time (the previous
+	// behavior) made a paper with several dead/paywalled candidates before a
+	// working one noticeably slow. 4 is a middle ground -- enough to hide a
+	// single slow/paywalled candidate's latency behind the others, without
+	// firing off a browser instance per candidate all at once.
+	_CANDIDATE_CONCURRENCY: 4,
+
+	// Up to this many authors' last names are prepended to the search query
+	// (see _buildSearchQuery) -- enough to disambiguate a generic-sounding
+	// title from unrelated papers that happen to share several words with
+	// it, without dragging in the whole author list (which, for some fields/
+	// venues, can run to a dozen+ names) as mostly-noise query terms.
+	_MAX_QUERY_AUTHORS: 3,
+
+	// Search query for _findPDFViaWebSearch: title alone is ambiguous for a
+	// short/generic title shared by several unrelated papers, so this
+	// prepends up to _MAX_QUERY_AUTHORS authors' last names (from the same
+	// _extractCitationMetadata call the title itself came from) to narrow
+	// the search -- same idea as typing "<author> <title>" into a search
+	// engine by hand. Deliberately NOT used for scoring anywhere (see
+	// _snippetTitleScore/_titleSimilarity, both title-only) -- verifying
+	// authors would mean parsing author names back out of search-result
+	// titles/snippets, an unreliable extra signal that would slow down and
+	// complicate the fast path this whole stage exists for; the query is
+	// just there to bias which results come back in the first place.
+	_buildSearchQuery(title, authors) {
+		let lastNames = (authors || [])
+			.slice(0, this._MAX_QUERY_AUTHORS)
+			.map(a => a.lastName)
+			.filter(Boolean);
+		return lastNames.length ? `${lastNames.join(" ")} ${title}` : title;
+	},
+
+	// Runs a single web search (see _buildSearchQuery) and checks its
+	// candidates, several at a time (see _CANDIDATE_CONCURRENCY), until one
+	// yields a working PDF. Used to try a quoted `"<title>" pdf` query
+	// FIRST, falling back to the plain title only if that narrower query's
+	// candidates all failed -- removed after confirming empirically (this
+	// exact paper: "Straightening Out the Straight-Through Estimator") that
+	// the quoted query routinely returns only a couple of results,
+	// disproportionately paywalled/proceedings-listing pages rather than an
+	// actual open-access copy, so it was adding a slow, mostly-wasted extra
+	// round-trip rather than actually helping -- the plain title alone
+	// reliably surfaces the same real candidates (e.g. a direct arXiv PDF)
+	// that the quoted query was meant to find faster.
+	// Concurrency is batched, not a free-for-all Promise.all over every
+	// candidate: candidates are checked in DuckDuckGo's own returned order
+	// (its ranking is a real, useful signal -- confirmed concretely that the
+	// correct/canonical copy is usually near the top), _CANDIDATE_CONCURRENCY
+	// at a time, and the first-ranked success WITHIN a completed batch wins
+	// -- only moving on to the next batch if nothing in the current one
+	// panned out. This keeps that ranking preference intact despite running
+	// several checks in parallel, rather than just returning whichever
+	// candidate's fetch happens to resolve first.
+	// `onProgress(msg)`, if given, is called once for the query and once per
+	// candidate actually fetched -- surfaced by the caller to both the Logs
+	// panel and the reply bubble, so a request that's stuck here shows
+	// exactly which URL(s) it's stuck on, not just "still working".
+	async _findPDFViaWebSearch(title, fallbackTitle, onProgress, authors) {
+		let query = this._buildSearchQuery(title, authors);
+		onProgress?.(`Searching the web for: ${query}`);
+		let candidates = await this._searchWeb(query, 8);
+		this.log(`_findPDFViaWebSearch: query "${query}" returned ${candidates.length} candidate(s)`);
+
+		// Cheap pre-filter using the search engine's own displayed result
+		// title, before spending a fetch on any of them.
+		let scored = candidates
+			.map(candidate => ({ candidate, snippetScore: candidate.title ? this._snippetTitleScore(candidate.title, title) : null }))
+			.filter(({ snippetScore }) => snippetScore === null || snippetScore >= this._PDF_SNIPPET_PREFILTER_THRESHOLD);
+
+		for (let i = 0; i < scored.length; i += this._CANDIDATE_CONCURRENCY) {
+			let batch = scored.slice(i, i + this._CANDIDATE_CONCURRENCY);
+			for (let { candidate } of batch) {
+				onProgress?.(`Checking candidate: ${candidate.url}`);
 			}
+			let results = await Promise.all(
+				batch.map(({ candidate, snippetScore }) => this._checkCandidate(candidate, snippetScore, title, fallbackTitle))
+			);
+			let hit = results.find(fileInfo => fileInfo !== null);
+			if (hit) return hit;
 		}
 		return null;
+	},
+
+	// One candidate's worth of _findPDFViaWebSearch's validation logic,
+	// split out so it can be run concurrently across a batch via Promise.all.
+	async _checkCandidate(candidate, snippetScore, title, fallbackTitle) {
+		let fileInfo = await this._findPDFAtURL(candidate.url, fallbackTitle);
+		if (!fileInfo) {
+			this.log(`_findPDFViaWebSearch: no downloadable PDF found at ${candidate.url} (not a direct PDF, and no translator produced one)`);
+			return null;
+		}
+		if (fileInfo.titleIsReal) {
+			// A translator-detected page exposes a REAL title -- confirmed
+			// concretely that blindly trusting "some PDF was found" here is
+			// exactly how a wrong PDF gets attached to an otherwise-
+			// correctly-identified item, so hold this to the same strict bar
+			// used everywhere else rather than accepting it just because
+			// it's a PDF.
+			if (this._titleSimilarity(fileInfo.title, title) < this._TITLE_MATCH_THRESHOLD) {
+				this.log(`_findPDFViaWebSearch: rejecting mismatched PDF page title "${fileInfo.title}" for "${title}"`);
+				return null;
+			}
+		}
+		else if (snippetScore === null || snippetScore < this._TITLE_MATCH_THRESHOLD) {
+			// A raw PDF byte stream carries NO metadata of its own to check
+			// after fetching -- confirmed concretely that this matters: a
+			// Universidad Nacional de Colombia thesis (totally unrelated to
+			// the target paper) was served as a genuine, real, downloadable
+			// PDF from a repository "download" endpoint. Nothing about the
+			// HTTP response itself was wrong -- only the search engine's OWN
+			// displayed title for that result could have caught it, so
+			// require it to clear the FULL strict bar (not just the loose
+			// pre-filter above) before trusting an unverifiable direct-PDF
+			// result.
+			this.log(`_findPDFViaWebSearch: rejecting unverifiable direct-PDF candidate ${candidate.url} (snippet score ${snippetScore})`);
+			return null;
+		}
+		return fileInfo;
 	},
 
 	// Resolves a bibliography entry (by the paper's own reference number) to
@@ -536,11 +762,24 @@ LLMReferenceRetrieval = {
 	// item, so this stage deliberately does the narrower "detect only, then
 	// download+attach the one PDF URL found" version of that flow, rather
 	// than a second full translate+save that might duplicate the item.
-	async downloadReferenceToLibrary(index, pdfItem) {
+	// `onProgress(msg)`, if given, is called at the start of every stage
+	// below (and, within stage 2/4's web search, once per query/candidate --
+	// see _findPDFViaWebSearch) -- surfaced by the caller (request.js) to
+	// both the Logs panel and the reply bubble, so a slow lookup shows WHICH
+	// stage it's actually stuck in, rather than a single opaque "searching"
+	// message for the whole multi-stage pipeline.
+	// onProgress(msg)  -- fine-grained, one call per stage/query/candidate,
+	//                     for the Logs panel only (see request.js).
+	// onStage(msg)     -- coarse, one call per major stage transition, using
+	//                     short generic phrasing -- for the visible reply
+	//                     bubble (see request.js), which shouldn't churn
+	//                     through every query/candidate onProgress reports.
+	async downloadReferenceToLibrary(index, pdfItem, onProgress, onStage) {
 		if (!pdfItem) {
 			return { success: false, message: "No active PDF to look up references from." };
 		}
 
+		onProgress?.(`Looking up reference ${index} in the bibliography...`);
 		let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
 		let ref = referenceIndex?.references?.find(r => r.index === index);
 		if (!ref) {
@@ -550,6 +789,7 @@ LLMReferenceRetrieval = {
 		let citationText = ref.text;
 		this.log(`downloadReferenceToLibrary: resolving reference ${index}: ${citationText.slice(0, 100)}`);
 
+		onProgress?.(`Extracting title/authors from reference ${index}...`);
 		let title = null;
 		let metadata = { title: null, authors: [], year: null, venue: null };
 		try {
@@ -564,6 +804,7 @@ LLMReferenceRetrieval = {
 		// already has doesn't get re-downloaded (or worse, saved as a
 		// duplicate item).
 		if (title) {
+			onProgress?.(`Checking if "${title}" is already in your library...`);
 			try {
 				let existing = await this._findExistingItem(title);
 				if (existing) {
@@ -586,6 +827,10 @@ LLMReferenceRetrieval = {
 		// records, so this can return multiple candidates just like the
 		// free-text and web-search stages below.
 		let identifiers = Zotero.Utilities.extractIdentifiers(citationText);
+		if (identifiers.length) {
+			onProgress?.(`Searching for reference ${index} online -- trying ${identifiers.length} identifier${identifiers.length === 1 ? "" : "s"} found in the citation...`);
+			onStage?.("Checking identifiers...");
+		}
 		for (let identifier of identifiers) {
 			try {
 				let items = await this._saveViaIdentifier(identifier);
@@ -608,16 +853,22 @@ LLMReferenceRetrieval = {
 		// already pulled out by the same _extractCitationMetadata call as
 		// the title, at no extra LLM or network cost.
 		if (!savedItems.length && title) {
+			onProgress?.(`Searching for reference ${index} online -- looking for a direct PDF...`);
+			onStage?.("Browser search...");
 			try {
-				let fileInfo = await this._findPDFViaWebSearch(title, title);
+				let fileInfo = await this._findPDFViaWebSearch(title, title, onProgress, metadata.authors);
 				if (fileInfo) {
 					let item = await this._saveMinimalItem(fileInfo.url, metadata);
 					await this._attachPDF(fileInfo, item);
 					savedItems = [item];
 				}
+				else {
+					onStage?.("Browser search failed.");
+				}
 			}
 			catch (e) {
 				this.log(`downloadReferenceToLibrary: fast PDF-first web search failed: ${e.message}`);
+				onStage?.("Browser search failed.");
 			}
 		}
 
@@ -640,6 +891,8 @@ LLMReferenceRetrieval = {
 		// ~20 candidate items and erases all but the best match -- see
 		// _validateAndCleanup), so it isn't worth trying any earlier.
 		if (!savedItems.length && title) {
+			onProgress?.(`Searching for reference ${index} online -- trying a Crossref bibliographic search (this can take a bit longer)...`);
+			onStage?.("Trying a Crossref bibliographic search (may take longer)...");
 			try {
 				let translator = Zotero.Translators.get("0a61e167-de9a-4f93-a68a-628b48855909");
 				if (translator) {
@@ -684,8 +937,10 @@ LLMReferenceRetrieval = {
 		// IEEE Xplore and a Curran/proceedings.com reprint DOI. This stage
 		// finds the same open-access copies (arXiv, etc.) without that cost.)
 		if (!hasPDF && title) {
+			onProgress?.(`Found "${title}" -- now searching the web for a downloadable PDF...`);
+			onStage?.("Browser search...");
 			try {
-				let fileInfo = await this._findPDFViaWebSearch(title, saved.getField("title"));
+				let fileInfo = await this._findPDFViaWebSearch(title, saved.getField("title"), onProgress, metadata.authors);
 				if (fileInfo) {
 					await this._attachPDF(fileInfo, saved);
 					hasPDF = true;

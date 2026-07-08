@@ -685,13 +685,16 @@ LLMChatPane = {
 
 				// Dispatches to whichever UI module actually owns rendering for
 				// this role -- "System" goes to the Logs panel (ui/logs.js),
-				// everything else ("You" or the model's provider label) goes to
-				// the conversation message list (ui/chat.js).
+				// everything else ("You" or a provider/feature label like
+				// "Zotero") goes to the conversation message list (ui/chat.js).
 				let appendMessage = (role, text) => {
 					if (role === "System") return logs.appendMessage(text);
 					return chat.appendMessage(role, text);
 				};
-				let appendRichMessage = (parts) => logs.appendRichMessage(parts);
+				let appendRichMessage = (role, parts) => {
+					if (role === "System") return logs.appendRichMessage(parts);
+					return chat.appendRichMessage(role, parts);
+				};
 
 				// Makes a system message clickable to jump to the figure/table it
 				// refers to: precise region navigation via its stored `position`

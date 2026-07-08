@@ -89,8 +89,13 @@ LLMRequest = {
 					appendMessage("System", `Looking up reference ${downloadRefNum} and searching for it online...`);
 					let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(downloadRefNum, pdfItem);
 					if (cancelled) return;
+					// The outcome of the fetch -- as opposed to the "Looking
+					// up..." progress notice above -- is what the user actually
+					// asked for, so it goes in the visible conversation (role
+					// "Zotero", rendered like any other reply) rather than the
+					// Logs panel.
 					if (result.alreadyInLibrary) {
-						appendRichMessage([
+						appendRichMessage("Zotero", [
 							{ text: "The paper is already included in your Zotero library: " },
 							{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
 							{ text: "." },
@@ -111,10 +116,10 @@ LLMRequest = {
 							);
 						}
 						parts.push({ text: "." });
-						appendRichMessage(parts);
+						appendRichMessage("Zotero", parts);
 					}
 					else {
-						appendMessage("System", result.message);
+						appendMessage("Zotero", result.message);
 					}
 					return;
 				}

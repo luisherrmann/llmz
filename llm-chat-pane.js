@@ -358,12 +358,17 @@ LLMChatPane = {
 	//   [label](<ref:table:N>) /
 	//   [label](<ref:figure:N>) /
 	//   [label](<ref:equation:N>) /
-	//   [label](<ref:note:N>)      -- table/figure/equation/note mention: looked
+	//   [label](<ref:note:KEY>)    -- table/figure/equation/note mention: looked
 	//                                  up in linkIndex for precise navigation --
 	//                                  by annotation key (select + scroll, notes
 	//                                  only) if present, else by position,
 	//                                  else falling back to a caption
-	//                                  text-search (e.g. rotated tables)
+	//                                  text-search (e.g. rotated tables).
+	//                                  Every ref: kind uses a numeric N
+	//                                  EXCEPT note, which uses the
+	//                                  annotation's actual (string) Zotero
+	//                                  item key -- see LLMPrompt.buildLinkIndex
+	//                                  for why.
 	//   [label](<ref:page:N>)      -- bare page-number mention: scrolls directly
 	//                                  to page N, no linkIndex lookup needed --
 	//                                  unlike the others, this isn't tied to a
@@ -400,7 +405,12 @@ LLMChatPane = {
 					if (!pageNum) return label;
 					return `<a class="llm-find-link" data-page-num="${pageNum}" title="Page ${pageNum}">${label}</a>`;
 				}
-				let entry = linkIndex?.[refType]?.get(parseInt(refNum, 10));
+				// Every other ref: kind keys its linkIndex map by a numeric
+				// paper-native number EXCEPT note, which keys by the
+				// annotation's actual (string) Zotero item key -- see
+				// LLMPrompt.buildLinkIndex.
+				let key = refType === "note" ? refNum : parseInt(refNum, 10);
+				let entry = linkIndex?.[refType]?.get(key);
 				if (!entry) return label;
 				// The rendered link text always stays short -- for a
 				// reference mention specifically, just "[12]" (the model
@@ -597,14 +607,17 @@ LLMChatPane = {
 				// re-rendered as markdown (not just dumped as plain text) using
 				// the SAME link-resolution data a live request would build --
 				// table/figure/reference/equation links key off each item's own
-				// stable paper-native number, so as long as the active PDF's
-				// cached extraction indexes are the same ones the export came
-				// from, those links work identically to a live reply. Only
-				// ref:note:N links can't be reconstructed (a note's number is
-				// assigned fresh per live message and isn't persisted anywhere
-				// -- see LLMPrompt.buildLinkIndex), so they silently fall back
-				// to plain unlinked text via _renderMarkdown's own handling of
-				// an unresolvable linkIndex entry.
+				// stable paper-native number, and note links key off the
+				// annotation's own stable Zotero item key (see
+				// LLMPrompt.buildLinkIndex/_formatNoteContext), so as long as
+				// the active PDF's cached extraction indexes (and, for notes,
+				// its still-existing annotations) are the same ones the export
+				// came from, ALL of these resolve identically to a live reply
+				// -- there's no historical/live distinction left. A note link
+				// only fails to resolve if that specific annotation has since
+				// been deleted, in which case it falls back to plain unlinked
+				// text via _renderMarkdown's own handling of an unresolvable
+				// linkIndex entry.
 				let onImport = async () => {
 					let transcript = await LLMImport.importConversation();
 					if (transcript === null) return; // cancelled
@@ -618,13 +631,21 @@ LLMChatPane = {
 					let linkIndex = {};
 					if (pdfItem) {
 						try {
-							let [tableIndex, figureIndex, referenceIndex, equationIndex] = await Promise.all([
+							let [tableIndex, figureIndex, referenceIndex, equationIndex, notes] = await Promise.all([
 								LLMTables.getTableIndex(pdfItem).catch(() => null),
 								LLMFigures.getFigureIndex(pdfItem).catch(() => null),
 								LLMReferences.getReferenceIndex(pdfItem).catch(() => null),
 								LLMEquations.getEquationIndex(pdfItem).catch(() => null),
+								// ALL current annotations, not just some
+								// message's selected subset -- there's no way
+								// to know which ones the original (historical)
+								// request actually selected, but since note
+								// links now key off the annotation's own
+								// stable key rather than a per-message ordinal,
+								// any of them can resolve a match.
+								LLMNotes.getNotes(pdfItem).catch(() => []),
 							]);
-							linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex });
+							linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes });
 						}
 						catch (e) {
 							this.log(`Failed to build link index for import: ${e.message}`);
@@ -766,7 +787,7 @@ LLMChatPane = {
 					logs.makeClickable(messageEl, () => {
 						// annotationKey (notes only) beats position -- selects+scrolls to
 						// the annotation itself, matching a manual click in the reader,
-						// same reasoning as _renderMarkdown's ref:note:N handling.
+						// same reasoning as _renderMarkdown's ref:note:KEY handling.
 						if (item.annotationKey) {
 							LLMCitation.navigateToAnnotation(item.annotationKey);
 						}

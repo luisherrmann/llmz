@@ -291,7 +291,7 @@ LLMRequest = {
 				let notes = await notesPromise;
 				if (cancelled) return;
 				// Hoisted above the if/else so it's still in scope down at
-				// linkIndex construction below, for ref:note:N resolution.
+				// linkIndex construction below, for ref:note:KEY resolution.
 				let selectedNotes = [];
 				if (!notes.length) {
 					appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
@@ -313,7 +313,7 @@ LLMRequest = {
 						// makeMessageClickable is a single click target, not one per
 						// note -- good enough as a quick way in, the rest are visible in
 						// the model's own answer either way (each individually
-						// clickable via its own [Note N](<ref:note:N>) link, if the
+						// clickable via its own [Note N](<ref:note:KEY>) link, if the
 						// model includes one).
 						makeMessageClickable(msg, selectedNotes[0]);
 					}
@@ -386,13 +386,12 @@ LLMRequest = {
 				// reference/equation/note (not just the one injected as full context)
 				// become clickable links -- see _renderMarkdown's `ref:table:N` /
 				// `ref:figure:N` / `ref:reference:N` / `ref:equation:N` /
-				// `ref:formula:N` / `ref:note:N` handling. Built via
+				// `ref:formula:N` / `ref:note:KEY` handling. Built via
 				// LLMPrompt.buildLinkIndex so import (see import.js and
-				// llm-chat-pane.js's onImport) can reconstruct the identical
-				// table/figure/reference/equation links for a historical
-				// message, from the same PDF's cached indexes -- only note
-				// links can't be reconstructed after the fact (see
-				// buildLinkIndex's own comment for why).
+				// llm-chat-pane.js's onImport) can reconstruct identical links
+				// for a historical message too, from the same PDF's cached
+				// indexes (and, for notes, its still-existing annotations) --
+				// see buildLinkIndex's own comment for how.
 				let linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes: selectedNotes });
 
 				// Resolved up front (rather than waiting for result.model after

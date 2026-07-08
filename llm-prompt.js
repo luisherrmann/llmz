@@ -42,8 +42,8 @@ LLMPrompt = {
 		"Format any such citation as [N](<ref:reference:N>), where N is the bibliography number, e.g. '[3]' — matching how the paper itself cites its own references.",
 		"Example: 'This approach was first proposed by [12](<ref:reference:12>).'",
 		"A <NOTE_CONTEXT> block, if present, contains one or more of the user's own annotations on this PDF -- each either a sticky note they wrote, or a passage they highlighted/underlined (quoted verbatim from the PDF) together with any comment they added on it. Any 'Note:' text in it is the user's own authoritative commentary, distinct from the paper's own claims -- don't confuse the two.",
-		"Each entry in <NOTE_CONTEXT> starts with 'Note N (...):' -- when you mention one, wrap it in a link so the reader can jump to it: [Note N](<ref:note:N>), using the exact N shown for that entry (this N is unrelated to any other numbering in this conversation, e.g. reference numbers).",
-		"Example: 'Your highlight on this point [Note 1](<ref:note:1>) is directly relevant here.'",
+		"Each entry in <NOTE_CONTEXT> starts with 'Note N (...) [key: XXXXXXXX]:' -- when you mention it, wrap it in a link so the reader can jump to it: [Note N](<ref:note:XXXXXXXX>). Use 'Note N' (that entry's display number) as the visible label, but the link target itself must be the exact key shown in brackets, not N -- copy the key exactly, character for character; never use N or invent a key.",
+		"Example: for an entry 'Note 1 (Highlight, p. 4) [key: AB12CD34]: ...', write 'Your highlight on this point [Note 1](<ref:note:AB12CD34>) is directly relevant here.' -- 'Note 1' is the label, 'AB12CD34' (that note's own key) is the link target.",
 		"Whenever you mention a specific page of the PDF by number (e.g. 'on page 5', 'see page 12'), wrap the page number in a link so the reader can jump straight there: [page N](<ref:page:N>), where N is the page number -- this works for any page, not just ones with a table/figure/equation/note on them, and is separate from those ref: formats above.",
 		"Example: 'The methodology is described in more detail on [page 7](<ref:page:7>).'",
 	].join(" "),
@@ -271,13 +271,17 @@ LLMPrompt = {
 
 	// `refNum` is a per-request index (1..K over just the notes actually
 	// selected for THIS message, not a stable paper-wide number like
-	// table/figure/equation numbers) -- notes have no natural number of their
-	// own, so this is purely a label the model can echo back in
-	// [Note N](<ref:note:N>) to make its own mention of it clickable. Not
-	// persisted or stable across turns -- linkIndex is rebuilt fresh per
-	// message anyway (see llm-chat-pane.js), so that's fine.
+	// table/figure/equation numbers) -- notes have no natural number of
+	// their own, so this is purely a DISPLAY label ("Note N"), shown to the
+	// model for readability and echoed back as the model's visible link
+	// text. The actual link TARGET the model is instructed to use is
+	// note.annotationKey (embedded here as "[key: ...]"), a real, stable
+	// Zotero item key -- unlike refNum, that one IS still meaningful after
+	// this message: it resolves correctly via buildLinkIndex's `note` map
+	// (keyed by annotationKey) even for a re-rendered historical/imported
+	// message, since the same annotation always has the same key.
 	_formatNoteContext(note, refNum) {
-		return `**Note ${refNum} (${note.title}):** ${note.text}`;
+		return `**Note ${refNum} (${note.title}) [key: ${note.annotationKey}]:** ${note.text}`;
 	},
 
 	// Asks the LLM which of the user's own notes on this paper are relevant,
@@ -330,18 +334,22 @@ LLMPrompt = {
 
 	// Builds the lookup _renderMarkdown uses to resolve `ref:table:N` /
 	// `ref:figure:N` / `ref:reference:N` / `ref:equation:N` / `ref:formula:N`
-	// / `ref:note:N` links -- shared by request.js (a live request, with a
-	// real `notes` selection for this specific message) and export.js's
-	// import flow (a historical message, with no `notes` -- see there for
-	// why: a note's ref:note:N number is assigned fresh per message from
-	// that message's own selectedNotes list, which isn't persisted anywhere
-	// once the request finishes, so it can't be reconstructed after the
-	// fact; ref:note:N links in an imported message simply won't resolve,
-	// falling back to plain unlinked label text). table/figure/reference/
-	// equation links, by contrast, key off each item's own stable
-	// paper-native number, so as long as the SAME PDF's cached extraction
-	// indexes are passed in, those links work identically whether the
-	// message is live or imported.
+	// / `ref:note:KEY` links -- shared by request.js (a live request, with
+	// `selectedNotes`, this message's own LLM-picked subset) and
+	// llm-chat-pane.js's onImport (a historical message, which instead
+	// passes EVERY current annotation on the PDF via LLMNotes.getNotes(),
+	// since there's no way to know which ones were actually shown to the
+	// model that produced the original text). Both work because notes are
+	// keyed by annotationKey below -- a real, stable Zotero item key the
+	// model is instructed to copy verbatim into the ref:note: token (see
+	// _formatNoteContext/the system prompt), not a per-message ordinal --
+	// so a note link resolves as long as that annotation still exists on
+	// the PDF, regardless of whether `notes` here happens to be "just what
+	// was selected for this message" or "everything on the PDF right now".
+	// table/figure/reference/equation links key off each item's own stable
+	// paper-native number instead, for the same reason: they resolve
+	// identically whether the message is live or imported, as long as the
+	// same PDF's cached extraction indexes are passed in.
 	buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes = [] }) {
 		return {
 			table: new Map((tableIndex?.tables || []).map(t => [t.table_num, { position: t.position, caption: t.caption }])),
@@ -368,11 +376,9 @@ LLMPrompt = {
 					position: eq.position,
 					caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
 				}])),
-			// Keyed 1..K over just this message's `notes` (see
-			// _formatNoteContext's "Note N" numbering) -- not a stable
-			// paper-wide number, but linkIndex itself is rebuilt fresh per
-			// message anyway, so that's fine.
-			note: new Map(notes.map((n, i) => [i + 1, {
+			// Keyed by annotationKey (a real, stable Zotero item key), not a
+			// per-message ordinal -- see this method's own doc comment above.
+			note: new Map(notes.map(n => [n.annotationKey, {
 				annotationKey: n.annotationKey,
 				position: n.position,
 				caption: n.caption,

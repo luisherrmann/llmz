@@ -2,8 +2,8 @@
 // to an online source, and saves it into the user's Zotero library (with a
 // PDF attached directly, when one can be found). Split out from
 // llm-chat-pane.js since this whole pipeline is self-contained -- distinct
-// from llm-references.js, which only extracts/parses the bibliography list
-// itself -- and needs only a single narrow hook back into the chat pane: a
+// from document/references.js, which only extracts/parses the bibliography
+// list itself -- and needs only a single narrow hook back into the chat pane: a
 // way to call the currently active LLM (see init()).
 LLMReferenceRetrieval = {
 	_streamModel: null,

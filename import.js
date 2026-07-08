@@ -13,14 +13,13 @@ LLMImport = {
 	},
 
 	async _defaultDir() {
-		let homeDir = Services.dirsvc.get("Home", Ci.nsIFile).path;
-		let dir = PathUtils.join(homeDir, "zllm", "chats");
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "chats");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},
 
 	// An nsIFilePicker in the given mode, filtered to *.md, defaulting to
-	// $HOME/zllm/chats/ (see _defaultDir) as its initial directory. Mirrors
+	// $HOME/Zotero/zllm/chats/ (see _defaultDir) as its initial directory. Mirrors
 	// export.js's LLMExport._createFilePicker -- kept as each module's own
 	// copy rather than shared, same rationale as e.g. document/tables.js and
 	// document/figures.js each having their own log()/cacheDir().
@@ -85,7 +84,7 @@ LLMImport = {
 		return transcript;
 	},
 
-	// Shows a native open dialog (defaulting to $HOME/zllm/chats/, filtered
+	// Shows a native open dialog (defaulting to $HOME/Zotero/zllm/chats/, filtered
 	// to *.md) and parses the selected file's conversation back out (see
 	// parseConversation). Returns null if the user cancels, otherwise
 	// [{ role, time, text }] (possibly empty, if the file's Conversation

@@ -66,7 +66,7 @@ LLMUIButtonRow = {
 		// Exports the visible conversation (see ui/chat.js's
 		// exportTranscript()) as a Markdown file -- prompts for a save
 		// location via LLMExport.exportConversation's own file picker
-		// (defaulting to $HOME/zllm/chats/<item key>_<ddmmyy>.md), so
+		// (defaulting to $HOME/Zotero/zllm/chats/<item key>_<ddmmyy>.md), so
 		// nothing more is needed here than gathering the inputs and
 		// reporting how it went.
 		let exportButton = doc.createElement("button");

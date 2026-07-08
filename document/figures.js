@@ -10,11 +10,11 @@ LLMFigures = {
 	},
 
 	_pythonPath() {
-		return PathUtils.join(Zotero.DataDirectory.dir, "llm-venv", "bin", "python3");
+		return PathUtils.join(Zotero.DataDirectory.dir, "zllm", "venv", "bin", "python3");
 	},
 
 	_scriptPath(name) {
-		return PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts", name);
+		return PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts", name);
 	},
 
 	async init(rootURI) {
@@ -23,8 +23,8 @@ LLMFigures = {
 			this._venvMissing = true;
 			this.log(`init: venv not found at ${pythonPath}`);
 			this.log("init: set it up with:");
-			this.log("  /opt/homebrew/bin/python3 -m venv ~/Zotero/llm-venv");
-			this.log("  ~/Zotero/llm-venv/bin/pip install pymupdf transformers torch Pillow einops");
+			this.log("  /opt/homebrew/bin/python3 -m venv ~/Zotero/zllm/venv");
+			this.log("  ~/Zotero/zllm/venv/bin/pip install pymupdf transformers torch Pillow einops");
 		}
 		else {
 			this._venvMissing = false;
@@ -32,8 +32,8 @@ LLMFigures = {
 		}
 
 		try {
-			let dir = PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts");
-			await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+			let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts");
+			await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 			for (let name of [this._scriptName, this._embedScriptName]) {
 				let src = await Zotero.File.getContentsFromURL(rootURI + "scripts/" + name);
 				let destPath = this._scriptPath(name);
@@ -86,8 +86,8 @@ LLMFigures = {
 	},
 
 	async _cacheDir() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "llm-figure-cache");
-		await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "cache", "figure");
+		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},
 
@@ -138,7 +138,7 @@ LLMFigures = {
 	async _extractRaw(item) {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
-		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts", `figures_${item.id}.json`);
+		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts", `figures_${item.id}.json`);
 		await this._runPython(this._scriptName, pdfPath, outputPath);
 		let figures = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
@@ -149,7 +149,7 @@ LLMFigures = {
 	// Embed figures using nomic-embed-vision-v1.5.
 	// Returns entries with embedding vector, image_data stripped.
 	async _embedRaw(item, figures) {
-		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "llm-scripts");
+		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts");
 		let inputPath = PathUtils.join(scriptsDir, `embed_in_${item.id}.json`);
 		let outputPath = PathUtils.join(scriptsDir, `embed_out_${item.id}.json`);
 		await IOUtils.writeUTF8(inputPath, JSON.stringify(figures));
@@ -171,8 +171,8 @@ LLMFigures = {
 		if (this._venvMissing) {
 			throw new Error(
 				"Python venv not found. Set it up with:\n"
-				+ "  /opt/homebrew/bin/python3 -m venv ~/Zotero/llm-venv\n"
-				+ "  ~/Zotero/llm-venv/bin/pip install pymupdf transformers torch Pillow einops"
+				+ "  /opt/homebrew/bin/python3 -m venv ~/Zotero/zllm/venv\n"
+				+ "  ~/Zotero/zllm/venv/bin/pip install pymupdf transformers torch Pillow einops"
 			);
 		}
 

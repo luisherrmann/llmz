@@ -87,14 +87,13 @@ LLMExport = {
 	},
 
 	async _defaultDir() {
-		let homeDir = Services.dirsvc.get("Home", Ci.nsIFile).path;
-		let dir = PathUtils.join(homeDir, "zllm", "chats");
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "chats");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},
 
 	// An nsIFilePicker in the given mode, filtered to *.md, defaulting to
-	// $HOME/zllm/chats/ (see _defaultDir) as its initial directory.
+	// $HOME/Zotero/zllm/chats/ (see _defaultDir) as its initial directory.
 	async _createFilePicker(title, mode) {
 		let win = Zotero.getMainWindow();
 		let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
@@ -115,7 +114,7 @@ LLMExport = {
 		return fp;
 	},
 
-	// Shows a native save dialog (defaulting to $HOME/zllm/chats/<item
+	// Shows a native save dialog (defaulting to $HOME/Zotero/zllm/chats/<item
 	// key>_<ddmmyy>.md, editable by the user) and writes the exported
 	// markdown there. Returns { cancelled: true } if the user dismisses the
 	// dialog without saving, or { cancelled: false, path } once written.

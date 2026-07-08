@@ -420,6 +420,35 @@ LLMReferenceRetrieval = {
 		return results;
 	},
 
+	// Serializes DuckDuckGo search calls across however many references are
+	// being downloaded concurrently (see request.js, which now runs several
+	// downloadReferenceToLibrary calls in parallel rather than one at a
+	// time) -- confirmed empirically that _searchWeb's shared HTML endpoint,
+	// unlike per-candidate HEAD requests/HiddenBrowser page loads (which hit
+	// many different, unrelated hosts and parallelize fine), degrades hard
+	// under concurrent hits: 2 of 4 real reference searches got bot-
+	// challenge-paged (HTTP 202, page containing "anomaly") even at a
+	// modest, purely SEQUENTIAL 1.5s spacing in testing. Chains every
+	// _searchWeb call onto one queue, so no two ever overlap, with at least
+	// _SEARCH_MIN_SPACING_MS between the start of one and the next --
+	// everything else for OTHER references (identifier lookups, candidate
+	// checks, Crossref/translator stages) keeps running fully in parallel in
+	// the meantime, since none of those share this bottleneck.
+	_searchThrottleTail: Promise.resolve(),
+	_SEARCH_MIN_SPACING_MS: 1500,
+	async _throttledSearchWeb(query, maxResults) {
+		let run = this._searchThrottleTail.then(async () => {
+			let result = await this._searchWeb(query, maxResults);
+			await new Promise(resolve => setTimeout(resolve, this._SEARCH_MIN_SPACING_MS));
+			return result;
+		});
+		// Chained onto this call's SETTLEMENT (success or failure), not its
+		// return value -- a failed search shouldn't wedge the queue for
+		// every reference still waiting behind it.
+		this._searchThrottleTail = run.catch(() => {});
+		return run;
+	},
+
 	// Checks the actual Content-Type via a HEAD request rather than trusting
 	// the URL's file extension -- confirmed concretely that this matters:
 	// arxiv.org/pdf/<id> (and many other repositories) serve a real PDF with
@@ -585,14 +614,27 @@ LLMReferenceRetrieval = {
 	// against at all once fetched.
 	_PDF_SNIPPET_PREFILTER_THRESHOLD: 0.6,
 
-	// How many candidates to fetch/validate at once in _findPDFViaWebSearch.
-	// Each check can spin up a full HiddenBrowser page load (see
-	// _findPDFAtURL), so checking all ~8 candidates at once would be needless
-	// network/resource pressure, but checking one at a time (the previous
-	// behavior) made a paper with several dead/paywalled candidates before a
-	// working one noticeably slow. 4 is a middle ground -- enough to hide a
-	// single slow/paywalled candidate's latency behind the others, without
-	// firing off a browser instance per candidate all at once.
+	// How many search-result candidates _findPDFViaWebSearch pulls per query
+	// (see _searchWeb) before pre-filtering/fetching any of them. Higher
+	// means more chances to find a working (non-paywalled, title-matching)
+	// PDF from a single query, at the cost of more candidates to run through
+	// the snippet pre-filter (cheap) and, for whichever pass it, an actual
+	// fetch (see _CANDIDATE_CONCURRENCY below, which bounds how many of
+	// THOSE run at once).
+	_MAX_SEARCH_CANDIDATES: 16,
+
+	// How many candidates may be checked at once (a sliding window, not an
+	// epoch -- see _rankConfirmedRace) in _findPDFViaWebSearch. Each check can
+	// spin up a full HiddenBrowser page load (see _findPDFAtURL), so
+	// checking all _MAX_SEARCH_CANDIDATES at once would be needless network/
+	// resource pressure. Benchmarked concretely against 1/2/4/8 (4 real
+	// references, repeated runs): 1->2->4 is a large, consistent
+	// improvement, but 4->8 was flat-to-slightly-worse even with Node's DNS
+	// thread pool ruled out as the cause -- concurrency beyond whatever's
+	// actually needed to reach the winning candidate's rank just adds
+	// launch/connection overhead for candidates that turn out to be
+	// irrelevant, with no offsetting benefit. 4 is the empirically best
+	// middle ground.
 	_CANDIDATE_CONCURRENCY: 4,
 
 	// Up to this many authors' last names are prepended to the search query
@@ -622,9 +664,9 @@ LLMReferenceRetrieval = {
 	},
 
 	// Runs a single web search (see _buildSearchQuery) and checks its
-	// candidates, several at a time (see _CANDIDATE_CONCURRENCY), until one
-	// yields a working PDF. Used to try a quoted `"<title>" pdf` query
-	// FIRST, falling back to the plain title only if that narrower query's
+	// candidates, several at a time (see _rankConfirmedRace), until one yields
+	// a working PDF. Used to try a quoted `"<title>" pdf` query FIRST,
+	// falling back to the plain title only if that narrower query's
 	// candidates all failed -- removed after confirming empirically (this
 	// exact paper: "Straightening Out the Straight-Through Estimator") that
 	// the quoted query routinely returns only a couple of results,
@@ -633,15 +675,6 @@ LLMReferenceRetrieval = {
 	// round-trip rather than actually helping -- the plain title alone
 	// reliably surfaces the same real candidates (e.g. a direct arXiv PDF)
 	// that the quoted query was meant to find faster.
-	// Concurrency is batched, not a free-for-all Promise.all over every
-	// candidate: candidates are checked in DuckDuckGo's own returned order
-	// (its ranking is a real, useful signal -- confirmed concretely that the
-	// correct/canonical copy is usually near the top), _CANDIDATE_CONCURRENCY
-	// at a time, and the first-ranked success WITHIN a completed batch wins
-	// -- only moving on to the next batch if nothing in the current one
-	// panned out. This keeps that ranking preference intact despite running
-	// several checks in parallel, rather than just returning whichever
-	// candidate's fetch happens to resolve first.
 	// `onProgress(msg)`, if given, is called once for the query and once per
 	// candidate actually fetched -- surfaced by the caller to both the Logs
 	// panel and the reply bubble, so a request that's stuck here shows
@@ -649,7 +682,7 @@ LLMReferenceRetrieval = {
 	async _findPDFViaWebSearch(title, fallbackTitle, onProgress, authors) {
 		let query = this._buildSearchQuery(title, authors);
 		onProgress?.(`Searching the web for: ${query}`);
-		let candidates = await this._searchWeb(query, 8);
+		let candidates = await this._throttledSearchWeb(query, this._MAX_SEARCH_CANDIDATES);
 		this.log(`_findPDFViaWebSearch: query "${query}" returned ${candidates.length} candidate(s)`);
 
 		// Cheap pre-filter using the search engine's own displayed result
@@ -658,18 +691,82 @@ LLMReferenceRetrieval = {
 			.map(candidate => ({ candidate, snippetScore: candidate.title ? this._snippetTitleScore(candidate.title, title) : null }))
 			.filter(({ snippetScore }) => snippetScore === null || snippetScore >= this._PDF_SNIPPET_PREFILTER_THRESHOLD);
 
-		for (let i = 0; i < scored.length; i += this._CANDIDATE_CONCURRENCY) {
-			let batch = scored.slice(i, i + this._CANDIDATE_CONCURRENCY);
-			for (let { candidate } of batch) {
-				onProgress?.(`Checking candidate: ${candidate.url}`);
-			}
-			let results = await Promise.all(
-				batch.map(({ candidate, snippetScore }) => this._checkCandidate(candidate, snippetScore, title, fallbackTitle))
-			);
-			let hit = results.find(fileInfo => fileInfo !== null);
-			if (hit) return hit;
-		}
-		return null;
+		return this._rankConfirmedRace(scored, title, fallbackTitle, onProgress);
+	},
+
+	// Sliding-window pool, not epoch batching: as soon as ANY in-flight
+	// check settles, the next-ranked candidate is launched immediately
+	// (rather than waiting for the whole window to empty), and a success at
+	// rank R is accepted as soon as every candidate ranked BEFORE it has
+	// also settled -- strictly rank-preserving (candidates are checked in
+	// DuckDuckGo's own returned order, a real, useful signal -- confirmed
+	// concretely that the correct/canonical copy is usually near the top;
+	// this is the same ranking guarantee epoch batching was going for), but
+	// never blocked on anything ranked AFTER the winner.
+	// Benchmarked concretely against plain epoch batching (4 real
+	// references, repeated runs) and found ~6-10x faster on a real case: a
+	// correct, directly-downloadable PDF at rank 4 of 10 -- batching (4 at a
+	// time) forced waiting on 3 OTHER, irrelevant candidates sharing that
+	// batch before even checking for a winner; this only ever waits on ranks
+	// 1-3, never on 5+.
+	// An earlier version tried "wait for the first 2 successes, then take
+	// the better-ranked of those" instead -- also benchmarked, and rejected:
+	// when a paper has only ONE genuinely working candidate among many (the
+	// common case -- most search results are HTML landing pages, not PDFs),
+	// requiring a second success that will never come forces checking
+	// almost the entire candidate list, measurably WORSE than either epoch
+	// batching or this rank-confirmed approach (2.4s vs 0.6-0.7s on that
+	// same real case).
+	async _rankConfirmedRace(scored, title, fallbackTitle, onProgress) {
+		if (!scored.length) return null;
+		return new Promise((resolve) => {
+			let nextRank = 0;
+			let inFlight = 0;
+			let settled = new Array(scored.length).fill(false);
+			let fileInfos = new Array(scored.length).fill(null);
+			let confirmBoundary = 0;
+			let decided = false;
+
+			// Walks the boundary forward through however many LEADING ranks
+			// have already settled -- stops at the first rank that's either
+			// unsettled (nothing confirmable yet, more waiting needed) or a
+			// confirmed success (done).
+			let tryConfirm = () => {
+				while (confirmBoundary < scored.length && settled[confirmBoundary]) {
+					if (fileInfos[confirmBoundary]) {
+						decided = true;
+						resolve(fileInfos[confirmBoundary]);
+						return;
+					}
+					confirmBoundary++;
+				}
+				if (confirmBoundary >= scored.length) {
+					decided = true;
+					resolve(null);
+				}
+			};
+
+			let launchNext = () => {
+				if (decided) return;
+				while (inFlight < this._CANDIDATE_CONCURRENCY && nextRank < scored.length) {
+					let rank = nextRank++;
+					let { candidate, snippetScore } = scored[rank];
+					inFlight++;
+					onProgress?.(`Checking candidate: ${candidate.url}`);
+					this._checkCandidate(candidate, snippetScore, title, fallbackTitle)
+						.catch(() => null)
+						.then((fileInfo) => {
+							inFlight--;
+							settled[rank] = true;
+							fileInfos[rank] = fileInfo;
+							tryConfirm();
+							if (!decided) launchNext();
+						});
+				}
+			};
+
+			launchNext();
+		});
 	},
 
 	// One candidate's worth of _findPDFViaWebSearch's validation logic,

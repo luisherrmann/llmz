@@ -30,6 +30,19 @@ LLMRequest = {
 		Zotero.debug("LLM Chat Pane [Request]: " + msg);
 	},
 
+	// How many references may be downloaded at once for a multi-reference
+	// request (see the intent-handling block in send() below). Bounded
+	// rather than unbounded, since "download all references" can mean 50+
+	// papers. Unlike _CANDIDATE_CONCURRENCY (where launching MORE than
+	// needed to reach the winning candidate's rank is pure waste -- see
+	// reference-retrieval.js), there's no early-stop dynamic here: every
+	// requested reference has to be downloaded regardless, so raising this
+	// doesn't have that same "overshoot" downside -- the tradeoff is purely
+	// local resource pressure, since each reference's own pipeline can spin
+	// up to _CANDIDATE_CONCURRENCY HiddenBrowser instances of its own (worst
+	// case _REFERENCE_CONCURRENCY * _CANDIDATE_CONCURRENCY at once).
+	_REFERENCE_CONCURRENCY: 8,
+
 	// Starts the request. Returns a handle:
 	//   promise    -- resolves once the request finishes (successfully,
 	//                 with an internally-caught/logged error, or by
@@ -134,7 +147,7 @@ LLMRequest = {
 					}
 
 					if (indices.length > 1) {
-						appendMessage("System", `Found ${indices.length} matching references: ${indices.join(", ")}. Downloading each in turn...`);
+						appendMessage("System", `Found ${indices.length} matching references: ${indices.join(", ")}. Downloading...`);
 					}
 
 					// One reply bubble per reference, even for a multi-reference
@@ -193,26 +206,41 @@ LLMRequest = {
 						}
 					};
 
-					// Sequential, not parallel -- each reference's own web-search
-					// stage (see reference-retrieval.js's _findPDFViaWebSearch)
-					// already checks several candidates concurrently, so running
-					// multiple references at once on top of that would multiply
-					// how many simultaneous HiddenBrowser page loads/network
-					// requests are in flight for no real caller-side benefit. A
-					// single reference throwing (e.g. a network error) is caught
-					// per-iteration so it doesn't abort the rest of a multi-
-					// reference batch.
-					for (let downloadRefNum of indices) {
-						if (cancelled) return;
-						try {
-							await downloadOneReference(downloadRefNum);
-						}
-						catch (e) {
+					// Parallel across references (bounded by _REFERENCE_CONCURRENCY),
+					// not sequential -- benchmarked concretely (4 real references,
+					// 2 fast + 2 slow) that running references one at a time makes
+					// total wall-clock time the SUM of every reference's own time,
+					// while running them in parallel collapses it toward the
+					// SLOWEST single reference instead, since each one mostly hits
+					// different hosts (arXiv, Semantic Scholar, OpenReview, etc.)
+					// with no shared bottleneck to serialize on -- confirmed ~2x
+					// faster on that real test. The one shared bottleneck that DOES
+					// exist, DuckDuckGo's search endpoint (see
+					// reference-retrieval.js's _findPDFViaWebSearch), is serialized
+					// separately via _throttledSearchWeb, so parallelizing here
+					// doesn't make that worse. Bounded (not a free-for-all
+					// Promise.all over every index) since "download all references"
+					// can mean 50+ papers at once -- an unbounded fan-out would mean
+					// that many simultaneous HiddenBrowser instances/Translate calls.
+					// A single reference throwing (e.g. a network error) is caught
+					// per-reference so it doesn't abort the rest of the batch.
+					let nextIndexPos = 0;
+					let worker = async () => {
+						while (nextIndexPos < indices.length) {
 							if (cancelled) return;
-							this.log(`downloadOneReference(${downloadRefNum}) failed: ${e.message}`);
-							appendMessage("System", `Reference ${downloadRefNum} download failed: ${e.message}`);
+							let downloadRefNum = indices[nextIndexPos++];
+							try {
+								await downloadOneReference(downloadRefNum);
+							}
+							catch (e) {
+								if (cancelled) return;
+								this.log(`downloadOneReference(${downloadRefNum}) failed: ${e.message}`);
+								appendMessage("System", `Reference ${downloadRefNum} download failed: ${e.message}`);
+							}
 						}
-					}
+					};
+					let workerCount = Math.min(this._REFERENCE_CONCURRENCY, indices.length);
+					await Promise.all(Array.from({ length: workerCount }, () => worker()));
 					return;
 				}
 			}

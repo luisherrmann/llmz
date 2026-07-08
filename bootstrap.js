@@ -8,6 +8,8 @@ var LLMUIKeyboardShortcuts;
 var LLMUIAdvanced;
 var LLMUIButtonRow;
 var LLMRequest;
+var LLMExport;
+var LLMImport;
 var LLMCitation;
 var LLMFigures;
 var LLMTables;
@@ -47,6 +49,8 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "ui/api_keys.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/keyboard_shortcuts.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/advanced.js");
+	Services.scriptloader.loadSubScript(rootURI + "export.js");
+	Services.scriptloader.loadSubScript(rootURI + "import.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/button-row.js");
 	Services.scriptloader.loadSubScript(rootURI + "request.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-chat-pane.js");

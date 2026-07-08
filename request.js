@@ -386,50 +386,14 @@ LLMRequest = {
 				// reference/equation/note (not just the one injected as full context)
 				// become clickable links -- see _renderMarkdown's `ref:table:N` /
 				// `ref:figure:N` / `ref:reference:N` / `ref:equation:N` /
-				// `ref:formula:N` / `ref:note:N` handling.
-				// References have no stored position, so they fall back to a text search using the
-				// first few words of the citation (a full-length quote is too
-				// brittle a phrase-search target). The model only emits the bare
-				// number, e.g. [12](<ref:reference:12>), and the rendered link
-				// KEEPS that bare "[12]" as its visible text -- `label` here is
-				// only used to enrich the hover tooltip with the full citation,
-				// not to replace the inline text (a full bibliography entry
-				// inline would clutter the response).
-				let linkIndex = {
-					table: new Map((tableIndex?.tables || []).map(t => [t.table_num, { position: t.position, caption: t.caption }])),
-					figure: new Map((figureIndex?.figures || []).map(f => [f.figure_num, { position: f.position, caption: f.caption }])),
-					reference: new Map((referenceIndex?.references || []).map(r => [r.index, {
-						label: `[${r.index}] ${r.text}`,
-						caption: r.text.split(/\s+/).slice(0, 8).join(" "),
-					}])),
-					// Real numbered equations key on equation_num (matching the
-					// paper's own printed number, cited via ref:equation:N); Formulas
-					// key on formula_num under a separate map instead (cited via
-					// ref:formula:N) -- they share the same numeric range, so merging
-					// them into one map would let a formula_num collide with an
-					// unrelated equation_num.
-					equation: new Map((equationIndex?.equations || [])
-						.filter(eq => eq.equation_num !== null)
-						.map(eq => [eq.equation_num, {
-							position: eq.position,
-							caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
-						}])),
-					formula: new Map((equationIndex?.equations || [])
-						.filter(eq => eq.formula_num !== null)
-						.map(eq => [eq.formula_num, {
-							position: eq.position,
-							caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
-						}])),
-					// Keyed 1..K over just this message's selectedNotes (see
-					// _formatNoteContext's "Note N" numbering) -- not a stable
-					// paper-wide number, but linkIndex itself is rebuilt fresh per
-					// message anyway, so that's fine.
-					note: new Map(selectedNotes.map((n, i) => [i + 1, {
-						annotationKey: n.annotationKey,
-						position: n.position,
-						caption: n.caption,
-					}])),
-				};
+				// `ref:formula:N` / `ref:note:N` handling. Built via
+				// LLMPrompt.buildLinkIndex so import (see import.js and
+				// llm-chat-pane.js's onImport) can reconstruct the identical
+				// table/figure/reference/equation links for a historical
+				// message, from the same PDF's cached indexes -- only note
+				// links can't be reconstructed after the fact (see
+				// buildLinkIndex's own comment for why).
+				let linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes: selectedNotes });
 
 				// Resolved up front (rather than waiting for result.model after
 				// the response streams in) so the reply bubble's title shows
@@ -458,10 +422,16 @@ LLMRequest = {
 				if (cancelled) return;
 				if (!result.text) {
 					reply.textContent = "(No response)";
+					chat.setMessageText(reply, "(No response)");
 				}
 				else {
 					let groundedText = await LLMCitation.groundCitations(result.text, citationIndex);
 					if (cancelled) return;
+					// Keeps chat's own exportTranscript() (see export.js) in sync
+					// with the final grounded markdown -- reply's DOM content
+					// below ends up as rendered HTML, not something export.js
+					// could read back out directly.
+					chat.setMessageText(reply, groundedText);
 					let html = chatPane._renderMarkdown(groundedText, linkIndex);
 					if (html) {
 						let rendered = doc.createElement("div");

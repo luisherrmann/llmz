@@ -58,6 +58,13 @@
 	flex: 0 0 auto;
 }
 
+.llm-message-label-row {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	margin-bottom: 4px;
+}
+
 .llm-message-user .llm-message-label {
 	color: #4caf50;
 }
@@ -68,8 +75,11 @@
 
 .llm-message-label {
 	font-weight: 600;
-	margin-bottom: 4px;
 }
+
+/* .llm-message-time intentionally has no rule here -- it inherits the
+   default text color rather than the role label's green/red (see
+   .llm-message-user/.llm-message-assistant .llm-message-label above). */
 
 .llm-message-content {
 	margin: 0;
@@ -194,7 +204,7 @@
 	opacity: 1;
 }
 
-.llm-submit, .llm-stop, .llm-discard-images, .llm-clear-cache {
+.llm-submit, .llm-stop, .llm-discard-images, .llm-clear-cache, .llm-export, .llm-import {
 	align-self: flex-start;
 }
 

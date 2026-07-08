@@ -590,10 +590,67 @@ LLMChatPane = {
 				// applicable) for debugging.
 				let logs = LLMUILogs.create(doc);
 
+				let chat = LLMUIChat.create(doc);
+
+				// Imports a conversation previously written by Export,
+				// replacing whatever's currently shown. Non-"You" messages are
+				// re-rendered as markdown (not just dumped as plain text) using
+				// the SAME link-resolution data a live request would build --
+				// table/figure/reference/equation links key off each item's own
+				// stable paper-native number, so as long as the active PDF's
+				// cached extraction indexes are the same ones the export came
+				// from, those links work identically to a live reply. Only
+				// ref:note:N links can't be reconstructed (a note's number is
+				// assigned fresh per live message and isn't persisted anywhere
+				// -- see LLMPrompt.buildLinkIndex), so they silently fall back
+				// to plain unlinked text via _renderMarkdown's own handling of
+				// an unresolvable linkIndex entry.
+				let onImport = async () => {
+					let transcript = await LLMImport.importConversation();
+					if (transcript === null) return; // cancelled
+					if (!transcript.length) {
+						appendMessage("System", "Import: no messages found in that file.");
+						return;
+					}
+					chat.clear();
+
+					let pdfItem = this.getActiveReaderAttachment();
+					let linkIndex = {};
+					if (pdfItem) {
+						try {
+							let [tableIndex, figureIndex, referenceIndex, equationIndex] = await Promise.all([
+								LLMTables.getTableIndex(pdfItem).catch(() => null),
+								LLMFigures.getFigureIndex(pdfItem).catch(() => null),
+								LLMReferences.getReferenceIndex(pdfItem).catch(() => null),
+								LLMEquations.getEquationIndex(pdfItem).catch(() => null),
+							]);
+							linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex });
+						}
+						catch (e) {
+							this.log(`Failed to build link index for import: ${e.message}`);
+						}
+					}
+
+					for (let { role, time, text } of transcript) {
+						// Preserves the original timestamp from the file --
+						// `time` comes back "" for files exported before
+						// timestamps were added (see LLMImport.parseConversation),
+						// in which case chat.appendMessage's own default
+						// (the current time) kicks in instead.
+						let content = chat.appendMessage(role, text, time || undefined);
+						if (role === "You") continue;
+						let html = this._renderMarkdown(text, linkIndex);
+						if (html) chat.renderMarkdownMessage(content, html, text);
+					}
+					appendMessage("System", `Imported ${transcript.length} message${transcript.length === 1 ? "" : "s"}.`);
+				};
+
 				let { element: buttonRow, submitButton, stopButton } = LLMUIButtonRow.create(doc, {
 					getActiveItem: () => this.getActiveReaderAttachment(),
 					onMessage: (text) => appendMessage("System", text),
 					discardImagesButton: imagePaste.discardButton,
+					getTranscript: () => chat.exportTranscript(),
+					onImport: () => onImport().catch(e => appendMessage("System", `Import failed: ${e.message}`)),
 				});
 
 				// Stashed on input focus as a fallback for LLMRequest.send's
@@ -677,8 +734,6 @@ LLMChatPane = {
 						input.value = historyIndex === history.length ? historyDraft : history[historyIndex];
 					}
 				});
-
-				let chat = LLMUIChat.create(doc);
 
 				let controls = doc.createElement("div");
 				controls.className = "llm-controls";

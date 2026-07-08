@@ -328,6 +328,58 @@ LLMPrompt = {
 		return selected;
 	},
 
+	// Builds the lookup _renderMarkdown uses to resolve `ref:table:N` /
+	// `ref:figure:N` / `ref:reference:N` / `ref:equation:N` / `ref:formula:N`
+	// / `ref:note:N` links -- shared by request.js (a live request, with a
+	// real `notes` selection for this specific message) and export.js's
+	// import flow (a historical message, with no `notes` -- see there for
+	// why: a note's ref:note:N number is assigned fresh per message from
+	// that message's own selectedNotes list, which isn't persisted anywhere
+	// once the request finishes, so it can't be reconstructed after the
+	// fact; ref:note:N links in an imported message simply won't resolve,
+	// falling back to plain unlinked label text). table/figure/reference/
+	// equation links, by contrast, key off each item's own stable
+	// paper-native number, so as long as the SAME PDF's cached extraction
+	// indexes are passed in, those links work identically whether the
+	// message is live or imported.
+	buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes = [] }) {
+		return {
+			table: new Map((tableIndex?.tables || []).map(t => [t.table_num, { position: t.position, caption: t.caption }])),
+			figure: new Map((figureIndex?.figures || []).map(f => [f.figure_num, { position: f.position, caption: f.caption }])),
+			reference: new Map((referenceIndex?.references || []).map(r => [r.index, {
+				label: `[${r.index}] ${r.text}`,
+				caption: r.text.split(/\s+/).slice(0, 8).join(" "),
+			}])),
+			// Real numbered equations key on equation_num (matching the
+			// paper's own printed number, cited via ref:equation:N); Formulas
+			// key on formula_num under a separate map instead (cited via
+			// ref:formula:N) -- they share the same numeric range, so merging
+			// them into one map would let a formula_num collide with an
+			// unrelated equation_num.
+			equation: new Map((equationIndex?.equations || [])
+				.filter(eq => eq.equation_num !== null)
+				.map(eq => [eq.equation_num, {
+					position: eq.position,
+					caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
+				}])),
+			formula: new Map((equationIndex?.equations || [])
+				.filter(eq => eq.formula_num !== null)
+				.map(eq => [eq.formula_num, {
+					position: eq.position,
+					caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
+				}])),
+			// Keyed 1..K over just this message's `notes` (see
+			// _formatNoteContext's "Note N" numbering) -- not a stable
+			// paper-wide number, but linkIndex itself is rebuilt fresh per
+			// message anyway, so that's fine.
+			note: new Map(notes.map((n, i) => [i + 1, {
+				annotationKey: n.annotationKey,
+				position: n.position,
+				caption: n.caption,
+			}])),
+		};
+	},
+
 	async getAttachmentFullText(item) {
 		let cacheFile = Zotero.Fulltext.getItemCacheFile(item).path;
 		if (await IOUtils.exists(cacheFile)) {

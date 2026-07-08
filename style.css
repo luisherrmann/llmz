@@ -373,3 +373,14 @@
 .llm-find-link { color: -moz-nativehyperlinktext; cursor: pointer; text-decoration: underline; }
 .llm-markdown em { font-style: italic; }
 .llm-markdown hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 0.8em 0; }
+/* Tables (the model now formats its own tables as Markdown, not a KaTeX
+   $$\begin{array}...\end{array}$$ block -- see llm-prompt.js's system
+   prompt -- so unlike the rest of .llm-markdown's rules, this styles a real
+   <table>, not KaTeX-rendered output). */
+.llm-markdown table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+.llm-markdown th, .llm-markdown td {
+	border: 1px solid rgba(128,128,128,0.3);
+	padding: 4px 8px;
+	text-align: left;
+}
+.llm-markdown th { font-weight: 700; background: rgba(128,128,128,0.1); }

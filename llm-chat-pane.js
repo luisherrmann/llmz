@@ -379,22 +379,54 @@ LLMChatPane = {
 	_renderMarkdown(text, linkIndex) {
 		if (typeof marked === "undefined") return null;
 		let processed = text.replace(
-			// Lazy match up to the literal ">)" close, not just any bare ">"
-			// -- a "find" payload can be a citation phrase grounded to a
-			// verbatim PDF sentence (see llm-citation.js's groundCitations),
-			// which can itself contain a literal ">" (e.g. "values >20").
-			// With a bare-">" terminator, that truncates the match early and
-			// the whole token fails to match at all (regex backtracking
-			// can't recover -- [^>]+ can never include the very ">" it
-			// needs to stop before), leaving raw "[label](<find:...>)" text
-			// in the output. marked's own inline-HTML tokenizer then treats
-			// the leftover "<find:...>" as an attempted (invalid,
+			// Alternation, tried in order at each position:
+			//  1. $$...$$ (block math) / $...$ (inline math, same pattern as
+			//     the blockMath/inlineMath marked extensions in
+			//     _configureMarkdown -- kept in sync with those so this
+			//     agrees with marked about what actually IS a math span) --
+			//     matched here ONLY so the callback below can return it
+			//     untouched, not to do anything to it.
+			//  2. [label](<find|ref:...>) -- the link token to substitute.
+			// Math spans are found first and left alone because substituting
+			// a link token into raw <a class="..." data-position="...">
+			// HTML -- as the ref:/find: branch below does -- and then
+			// feeding THAT to KaTeX as literal LaTeX source (which is what
+			// happens to any text inside $...$/$$...$$) breaks
+			// katex.renderToString: _escapeAttr HTML-entity-escapes the
+			// position JSON's quotes to "&quot;", and "&" is itself
+			// LaTeX-reserved (e.g. a column separator inside an
+			// array/tabular environment), so a link substituted into a
+			// formula corrupts it -- this is exactly what happened before
+			// the system prompt was changed to have the model format tables
+			// as plain Markdown (which supports links in cells natively,
+			// see .llm-markdown table in style.css) rather than a KaTeX
+			// $$\begin{array}...\end{array}$$ block; this stays in place as
+			// a defensive fallback for any standalone $...$/$$...$$ formula
+			// that still ends up with a link token inside it (e.g. if a
+			// model ignores that instruction). Leaving the raw
+			// "[label](<ref:...>)" token unsubstituted inside math is
+			// harmless: none of those characters are LaTeX-reserved, so
+			// KaTeX just renders them as literal (if ugly) text -- exactly
+			// what happens when the same markdown is pasted into Obsidian,
+			// which never performs this substitution in the first place.
+			//
+			// The find: lazy match, up to the literal ">)" close rather than
+			// any bare ">" -- a "find" payload can be a citation phrase
+			// grounded to a verbatim PDF sentence (see llm-citation.js's
+			// groundCitations), which can itself contain a literal ">" (e.g.
+			// "values >20"). With a bare-">" terminator, that truncates the
+			// match early and the whole token fails to match at all (regex
+			// backtracking can't recover -- [^>]+ can never include the very
+			// ">" it needs to stop before), leaving raw "[label](<find:...>)"
+			// text in the output. marked's own inline-HTML tokenizer then
+			// treats the leftover "<find:...>" as an attempted (invalid,
 			// colon-containing) tag, which is what actually threw
 			// "innerHTML: An invalid or illegal string was specified" on
 			// longer replies (more grounded citations = more chances of
 			// grounding to a PDF sentence with a stray ">" in it).
-			/\[([^\]]+)\]\(<(find|ref):([\s\S]+?)>\)/g,
-			(_, label, kind, payload) => {
+			/\$\$[\s\S]+?\$\$|\$(?!\s)[^$\n]*?[^\s$]\$(?!\d)|\[([^\]]+)\]\(<(find|ref):([\s\S]+?)>\)/g,
+			(whole, label, kind, payload) => {
+				if (label === undefined) return whole; // matched a math span -- leave untouched
 				if (kind === "find") {
 					let escaped = this._escapeAttr(payload);
 					return `<a class="llm-find-link" data-query="${escaped}" title="${escaped}">${label}</a>`;

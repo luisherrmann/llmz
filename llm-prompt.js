@@ -21,8 +21,8 @@ LLMPrompt = {
 		"Always express mathematical formulas and equations using LaTeX notation.",
 		"Wrap every mathematical formula in latex notation as $<formula>$.",
 		"For display math, you MUST wrap the formula in double dollar signs: $$<formula>$$. The opening $$ and closing $$ are mandatory.",
-		"Always format tables as display math: $$\\begin{array}{|c|c|}\\hline ... \\\\\\hline\\end{array}$$.",
-		"The opening $$ and closing $$ around \\begin{array} are mandatory. Never use \\begin{tabular}.",
+		"Format tables using standard Markdown table syntax: a header row, a separator row of dashes, and one or more data rows, each with columns separated by '|' -- e.g. '| Header 1 | Header 2 |' on one line, '| --- | --- |' on the next, then '| Cell 1 | Cell 2 |' for each row. Never use a LaTeX table environment (\\begin{array}, \\begin{tabular}) for a table -- those are for standalone formulas only, not tables.",
+		"A formula INSIDE a table cell still uses inline math ($<formula>$) exactly as it would in regular text -- only the table's own row/column structure must be Markdown, not LaTeX.",
 		"When you state facts or findings from the PDF, add a citation link immediately after the claim.",
 		"Citation format: [CITE](<find:exact phrase>). Always use the literal token [CITE] — numbering is assigned automatically.",
 		"The exact phrase is 4–8 consecutive words copied verbatim from the <PDF_CONTEXT> — no paraphrasing.",
@@ -46,6 +46,8 @@ LLMPrompt = {
 		"Example: for an entry 'Note 1 (Highlight, p. 4) [key: AB12CD34]: ...', write 'Your highlight on this point [Note 1](<ref:note:AB12CD34>) is directly relevant here.' -- 'Note 1' is the label, 'AB12CD34' (that note's own key) is the link target.",
 		"Whenever you mention a specific page of the PDF by number (e.g. 'on page 5', 'see page 12'), wrap the page number in a link so the reader can jump straight there: [page N](<ref:page:N>), where N is the page number -- this works for any page, not just ones with a table/figure/equation/note on them, and is separate from those ref: formats above.",
 		"Example: 'The methodology is described in more detail on [page 7](<ref:page:7>).'",
+		"NEVER put any of the link formats above -- [CITE](<find:...>), [Table N](<ref:table:N>), [Figure N](<ref:figure:N>), [Equation N](<ref:equation:N>), [Formula N](<ref:formula:N>), [N](<ref:reference:N>), [Note N](<ref:note:...>), or [page N](<ref:page:N>) -- inside a math environment ($<formula>$ or $$<formula>$$). Links only work in plain text; a $...$/$$...$$ formula must contain ONLY the formula itself, never a link. This does not apply to Markdown table cells (which are plain text, not math) -- links work normally there.",
+		"If a $...$/$$...$$ formula needs to reference a table/figure/equation/note, write its plain label as ordinary text immediately next to the formula instead, not inside it -- e.g. 'the result in Equation 1: $x = \\phi_s(s)$' with the link on 'Equation 1', not inside the $...$.",
 	].join(" "),
 
 	log(msg) {

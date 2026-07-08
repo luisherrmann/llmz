@@ -1,6 +1,6 @@
 // The collapsible "Keyboard Shortcuts" reference panel -- purely
 // informational (no hover/focus/click affordances), same disclosure pattern
-// as ui/advanced.js/ui/api_keys.js. Split out of llm-chat-pane.js's onRender
+// as ui/advanced.js/ui/providers.js. Split out of llm-chat-pane.js's onRender
 // for the same reason as the other ui/ modules.
 LLMUIKeyboardShortcuts = {
 	_shortcuts: [
@@ -20,6 +20,14 @@ LLMUIKeyboardShortcuts = {
 		summary.textContent = "Keyboard Shortcuts";
 		let body = doc.createElement("div");
 		body.className = "llm-shortcuts-body";
+
+		// A real <table>, same as ui/providers.js/ui/advanced.js -- so the
+		// description column lines up at the same position for every row
+		// regardless of how wide a given key-combo badge is.
+		let table = doc.createElement("table");
+		table.className = "llm-shortcuts-table";
+		let tbody = doc.createElement("tbody");
+
 		// Sorted by (keys.length, keys) -- shorter combos first, then
 		// ascending lexicographically (by the shortcut itself, not the
 		// description) within each length. Plain `<`/`>` rather than
@@ -28,17 +36,25 @@ LLMUIKeyboardShortcuts = {
 		// order.
 		let sorted = [...this._shortcuts].sort((a, b) => a.keys.length - b.keys.length || (a.keys < b.keys ? -1 : a.keys > b.keys ? 1 : 0));
 		for (let { keys, desc } of sorted) {
-			let row = doc.createElement("div");
-			row.className = "llm-shortcut-row";
+			let tr = doc.createElement("tr");
+			let descTd = doc.createElement("td");
+			descTd.className = "llm-shortcut-desc";
+			descTd.textContent = desc;
+			let badgeTd = doc.createElement("td");
+			badgeTd.className = "llm-shortcut-badge-cell";
 			let badge = doc.createElement("span");
 			badge.className = "llm-shortcut-badge";
 			badge.textContent = keys;
-			let label = doc.createElement("span");
-			label.className = "llm-shortcut-desc";
-			label.textContent = desc;
-			row.append(badge, label);
-			body.appendChild(row);
+			badgeTd.appendChild(badge);
+			// Description first (left column), key-combo badge second (right
+			// column) -- matches the reading order of "what it does, then
+			// how to trigger it".
+			tr.append(descTd, badgeTd);
+			tbody.appendChild(tr);
 		}
+		table.appendChild(tbody);
+		body.appendChild(table);
+
 		details.append(summary, body);
 		return { element: details };
 	},

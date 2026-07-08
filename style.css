@@ -112,6 +112,7 @@
 	min-height: 10em;
 	width: 100%;
 	resize: vertical;
+	padding: 1em;
 }
 
 /* Keyboard shortcuts dropdown, same disclosure pattern as .llm-advanced-details
@@ -131,28 +132,50 @@
 	flex-direction: column;
 	gap: 6px;
 	margin-top: 6px;
+	padding: 1em;
+	box-sizing: border-box;
 }
 
-.llm-shortcut-row {
-	display: flex;
-	align-items: center;
-	gap: 10px;
+/* A real <table> (same technique as ui/providers.js) so the description
+   column lines up at the same position for every row regardless of badge
+   width -- width: auto + align-self: flex-start keep the table from being
+   stretched to the full width of .llm-shortcuts-body's flex column, and
+   width: 1px on both cells pins each column to its content's minimum size
+   rather than letting it absorb any leftover width. */
+.llm-shortcuts-table {
+	border-collapse: collapse;
+	width: auto;
+	align-self: flex-start;
+}
+
+/* Right column now (badge) -- no extra right-gap needed, same as
+   .llm-provider-field-input/.llm-advanced-field-input. */
+.llm-shortcut-badge-cell {
+	padding: 2px 0;
+	width: 1px;
 }
 
 .llm-shortcut-badge {
-	flex: 0 0 auto;
+	display: inline-block;
 	background: #1a5f7a;
 	color: #fff;
 	font-weight: 700;
-	font-size: 0.85em;
 	line-height: 1.2;
 	padding: 4px 10px;
 	border-radius: 14px;
 	white-space: nowrap;
 }
 
+/* Left column now (description) -- carries the gap before the badge column,
+   same as .llm-provider-field-label/.llm-advanced-field-label. No font-size
+   override (unlike before), so this text matches the other collapsible
+   menus' fields, which all just inherit the 0.9em from their own
+   *-details wrapper rather than shrinking further. */
 .llm-shortcut-desc {
-	font-size: 0.85em;
+	padding: 2px 10px 2px 0;
+	text-align: left;
+	width: 1px;
+	white-space: nowrap;
 }
 
 .llm-button-row {
@@ -228,34 +251,64 @@
 	flex: 0 0 auto;
 }
 
-.llm-api-keys-details {
+.llm-providers-details {
 	font-size: 0.9em;
 }
 
-.llm-api-keys-details summary {
+.llm-providers-details summary {
 	cursor: pointer;
 	color: -moz-nativehyperlinktext;
 }
 
-.llm-api-keys-body {
+.llm-providers-body {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	margin-top: 6px;
+	padding: 1em;
+	box-sizing: border-box;
+}
+
+.llm-provider-group {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-	margin-top: 6px;
 }
 
-.llm-api-key-row {
-	display: flex;
-	flex-direction: row;
-	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
+.llm-provider-group-label {
+	font-weight: 600;
 }
 
-.llm-api-key-input {
+/* Indented under the provider's own name label above, and a real <table> so
+   every field's input lines up in the same column regardless of how long
+   its own label is ("API Key" vs. "Port"). width: auto + align-self:
+   flex-start override .llm-provider-group's flex-column default of
+   stretching every child to the full container width -- without them, the
+   table (and so its columns) would be forced wide, pushing the input column
+   far to the right of the label instead of sitting right next to it. */
+.llm-provider-table {
+	margin-left: 1em;
+	border-collapse: collapse;
+	width: auto;
+	align-self: flex-start;
+}
+
+.llm-provider-field-label {
+	padding: 2px 8px 2px 0;
+	white-space: nowrap;
+	text-align: left;
+	width: 1px; /* shrink-to-fit: only "width: auto" columns absorb extra table width, so pinning this one to its content keeps the input column from being pushed away from it */
+}
+
+.llm-provider-field-input {
+	padding: 2px 0;
+	width: 1px;
+}
+
+.llm-provider-input {
 	box-sizing: border-box;
-	flex: 1;
-	min-width: 0;
+	width: 12em;
+	text-align: left;
 }
 
 .llm-advanced-details {
@@ -272,19 +325,34 @@
 	flex-direction: column;
 	gap: 6px;
 	margin-top: 6px;
+	padding: 1em;
+	box-sizing: border-box;
 }
 
-.llm-advanced-row {
-	display: flex;
-	flex-direction: row;
-	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
+/* A real <table> (same technique as ui/providers.js) so the input column
+   lines up at the same position for every row regardless of label length. */
+.llm-advanced-table {
+	border-collapse: collapse;
+	width: auto;
+	align-self: flex-start;
 }
 
-.llm-advanced-row input {
+.llm-advanced-field-label {
+	padding: 2px 8px 2px 0;
+	white-space: nowrap;
+	text-align: left;
+	width: 1px;
+}
+
+.llm-advanced-field-input {
+	padding: 2px 0;
+	width: 1px;
+}
+
+.llm-advanced-input {
 	width: 90px;
 	box-sizing: border-box;
+	text-align: left;
 }
 
 .llm-logs-details {
@@ -310,11 +378,15 @@
 	height: 15em;
 	overflow-y: auto;
 	box-sizing: border-box;
-	padding: 6px 8px;
+	padding: 1em;
 	border-radius: 4px;
 	background: -moz-Field;
 	font-family: monospace;
 	font-size: 0.85em;
+	/* Without this, log text isn't selectable at all -- same reasoning as
+	   .llm-message/.llm-markdown above (this chrome/XUL context defaults
+	   interactive UI text to non-selectable unless explicitly opted in). */
+	user-select: text;
 }
 
 .llm-log-entry {

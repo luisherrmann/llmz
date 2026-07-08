@@ -10,8 +10,6 @@
 // key fields) reads and writes these directly, the same way it already does
 // for its own settings like maxPDFContextChars.
 LLMInterfaces = {
-	lmStudioBaseURL: "http://127.0.0.1:1234/v1",
-	liteLLMBaseURL: "http://127.0.0.1:4000/v1",
 	openaiBaseURL: "https://api.openai.com/v1",
 	anthropicBaseURL: "https://api.anthropic.com/v1",
 	_provider: "ollama",
@@ -19,6 +17,79 @@ LLMInterfaces = {
 
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Interfaces]: " + msg);
+	},
+
+	// User-configurable host/port for the three backends that run as a local
+	// (or at least self-hosted, for LiteLLM) server rather than a fixed
+	// cloud endpoint -- OpenAI/Anthropic have no equivalent, since
+	// openaiBaseURL/anthropicBaseURL above are always the real hosted API.
+	// Not a secret (unlike the API keys below), so this is a plain
+	// Zotero.Prefs entry -- see loadServerSettings/saveServerSetting --
+	// rather than going through OSKeyStore/Services.logins.
+	_serverDefaults: {
+		ollama: { host: "127.0.0.1", port: 11434 },
+		lmstudio: { host: "127.0.0.1", port: 1234 },
+		litellm: { host: "127.0.0.1", port: 4000 },
+	},
+	_serverSettings: null,
+	_serverSettingsPref: "extensions.llm-chat-pane.serverSettings",
+
+	// Populates _serverSettings from _serverDefaults, overlaid with anything
+	// previously saved -- called once at startup (see bootstrap.js), same as
+	// loadSelection(). Must run before the Providers panel (ui/providers.js)
+	// renders, since it reads _serverSettings directly to pre-fill the
+	// host/port fields with the current settings.
+	loadServerSettings() {
+		this._serverSettings = {
+			ollama: { ...this._serverDefaults.ollama },
+			lmstudio: { ...this._serverDefaults.lmstudio },
+			litellm: { ...this._serverDefaults.litellm },
+		};
+		try {
+			let json = Zotero.Prefs.get(this._serverSettingsPref, true);
+			if (!json) return;
+			let saved = JSON.parse(json);
+			for (let key of Object.keys(this._serverSettings)) {
+				if (saved[key]) Object.assign(this._serverSettings[key], saved[key]);
+			}
+		}
+		catch (e) {
+			this.log(`loadServerSettings: failed to read pref: ${e.message}`);
+		}
+	},
+
+	saveServerSetting(providerKey, field, value) {
+		if (!this._serverSettings[providerKey]) return;
+		this._serverSettings[providerKey][field] = value;
+		try {
+			Zotero.Prefs.set(this._serverSettingsPref, JSON.stringify(this._serverSettings), true);
+		}
+		catch (e) {
+			this.log(`saveServerSetting: failed to persist ${providerKey}.${field}: ${e.message}`);
+		}
+	},
+
+	// Ollama's native API (as opposed to the OpenAI-compatible /v1/chat/completions
+	// shape LM Studio/LiteLLM/OpenAI share) has no /v1 prefix -- endpoints are
+	// appended directly, e.g. `${this.ollamaBaseURL}/api/generate`.
+	get ollamaBaseURL() {
+		let { host, port } = this._serverSettings.ollama;
+		return `http://${host}:${port}`;
+	},
+
+	// Getters (not plain properties, like openaiBaseURL/anthropicBaseURL
+	// above) so every existing `this.lmStudioBaseURL`/`this.liteLLMBaseURL`
+	// read stays correct without needing to change any call site, even
+	// though the underlying host/port can now change at any time via the
+	// Providers panel.
+	get lmStudioBaseURL() {
+		let { host, port } = this._serverSettings.lmstudio;
+		return `http://${host}:${port}/v1`;
+	},
+
+	get liteLLMBaseURL() {
+		let { host, port } = this._serverSettings.litellm;
+		return `http://${host}:${port}/v1`;
 	},
 
 	_withTimeout(promise, ms, label) {
@@ -194,7 +265,7 @@ LLMInterfaces = {
 	},
 
 	async listOllamaModels() {
-		let response = await Zotero.HTTP.request("GET", "http://127.0.0.1:11434/api/tags", {
+		let response = await Zotero.HTTP.request("GET", `${this.ollamaBaseURL}/api/tags`, {
 			timeout: 10000,
 		});
 		let data = JSON.parse(response.responseText);
@@ -213,7 +284,7 @@ LLMInterfaces = {
 
 	async getOllamaModelCapabilities(model) {
 		try {
-			let response = await Zotero.HTTP.request("POST", "http://127.0.0.1:11434/api/show", {
+			let response = await Zotero.HTTP.request("POST", `${this.ollamaBaseURL}/api/show`, {
 				body: JSON.stringify({ name: model }),
 				headers: { "Content-Type": "application/json" },
 				timeout: 10000,
@@ -234,7 +305,7 @@ LLMInterfaces = {
 			// Ollama wants raw base64, not a data: URI
 			body.images = images.map(dataUri => dataUri.split(",")[1] || dataUri);
 		}
-		let response = await fetch("http://127.0.0.1:11434/api/generate", {
+		let response = await fetch(`${this.ollamaBaseURL}/api/generate`, {
 			method: "POST",
 			body: JSON.stringify(body),
 			headers: {

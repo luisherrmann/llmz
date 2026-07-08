@@ -3,7 +3,7 @@ var LLMUILogs;
 var LLMUIChat;
 var LLMUIProviderModelSelect;
 var LLMUIImagePaste;
-var LLMUIApiKeys;
+var LLMUIProviders;
 var LLMUIKeyboardShortcuts;
 var LLMUIAdvanced;
 var LLMUIButtonRow;
@@ -46,7 +46,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "ui/chat.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/provider_model_select.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/image-paste.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/api_keys.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/providers.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/keyboard_shortcuts.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/advanced.js");
 	Services.scriptloader.loadSubScript(rootURI + "export.js");
@@ -65,6 +65,10 @@ async function startup({ id, version, rootURI }) {
 	// still run before main() renders the provider/model dropdowns, which
 	// read _provider/_selectedModel directly.
 	LLMInterfaces.loadSelection();
+	// Also synchronous/plain-Prefs -- must run before main() renders the
+	// Providers panel (ui/providers.js), which reads _serverSettings
+	// directly to pre-fill the Server IP/Port fields.
+	LLMInterfaces.loadServerSettings();
 	LLMChatPane.addToAllWindows();
 	await LLMChatPane.main();
 }

@@ -35,7 +35,7 @@ LLMCitation = {
 	},
 
 	async getEmbeddingModel() {
-		let response = await Zotero.HTTP.request("GET", "http://127.0.0.1:11434/api/tags", {
+		let response = await Zotero.HTTP.request("GET", `${LLMInterfaces.ollamaBaseURL}/api/tags`, {
 			timeout: 10000,
 		});
 		let data = JSON.parse(response.responseText);
@@ -48,7 +48,7 @@ LLMCitation = {
 
 	async getEmbedding(text, model) {
 		this.log(`getEmbedding: model=${model} textLen=${text.length}`);
-		let response = await fetch("http://127.0.0.1:11434/api/embed", {
+		let response = await fetch(`${LLMInterfaces.ollamaBaseURL}/api/embed`, {
 			method: "POST",
 			body: JSON.stringify({ model, input: text }),
 			headers: { "Content-Type": "application/json" },

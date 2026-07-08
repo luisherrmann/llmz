@@ -500,6 +500,24 @@ LLMChatPane = {
 	// Zotero main window has its own document/keydown stream.
 	addToWindow(win) {
 		if (this._keydownHandlers.has(win)) return;
+
+		// Zotero's plugin loader (xpcom/plugins.js's registerLocales)
+		// automatically discovers and registers this plugin's
+		// locale/en-US/llm-chat-pane.ftl as an AVAILABLE Fluent source (under
+		// the "zotero-plugins" L10nRegistry source) as soon as the plugin
+		// starts -- but that alone doesn't make its messages resolvable.
+		// Each *document* that wants to use data-l10n-id="llm-chat-pane-..."
+		// (here, the section header set via registerItemPane's header.l10nID,
+		// which Zotero applies to a <collapsible-section> in the main
+		// window's own document) needs to separately opt in via
+		// addResourceIds(), the same way Zotero.ftl -- a *plain*
+		// Localization, not tied to any one document -- lists its own
+		// built-in files in xpcom/intl.js. Without this, the header's
+		// data-l10n-id never resolves to anything, so the section renders
+		// with no title at all (blank, not an error) -- this was the actual
+		// cause, not the .ftl file's own message syntax.
+		win.document.l10n?.addResourceIds(["llm-chat-pane.ftl"]);
+
 		let handler = (event) => {
 			let accel = Zotero.isMac ? event.metaKey : event.ctrlKey;
 			if (accel && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "i") {
@@ -613,7 +631,7 @@ LLMChatPane = {
 
 				let providerModelSelect = LLMUIProviderModelSelect.create(doc);
 
-				let apiKeys = LLMUIApiKeys.create(doc, (label, message) => {
+				let providers = LLMUIProviders.create(doc, (label, message) => {
 					appendMessage("System", `Failed to save ${label} API key: ${message}`);
 				});
 
@@ -897,7 +915,7 @@ LLMChatPane = {
 					}
 				});
 
-				controls.append(providerModelSelect.element, apiKeys.element, keyboardShortcuts.element, advanced.element, logs.element, inputLabel, input, imagePaste.row, buttonRow);
+				controls.append(providerModelSelect.element, providers.element, keyboardShortcuts.element, advanced.element, logs.element, inputLabel, input, imagePaste.row, buttonRow);
 				container.append(controls, chat.label, chat.list);
 				body.appendChild(container);
 

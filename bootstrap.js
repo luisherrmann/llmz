@@ -1,4 +1,5 @@
 var LLMChatPane;
+var LLMUIIcon;
 var LLMUILogs;
 var LLMUIChat;
 var LLMUIProviderModelSelect;
@@ -44,6 +45,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "reference-retrieval.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-interfaces.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-prompt.js");
+	Services.scriptloader.loadSubScript(rootURI + "ui/icon.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/logs.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/chat.js");
 	Services.scriptloader.loadSubScript(rootURI + "ui/provider_model_select.js");

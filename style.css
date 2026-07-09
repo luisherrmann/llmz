@@ -4,11 +4,74 @@
 	flex: 1;
 }
 
+/* More breathing room than the native default padding on every button in
+   the pane -- specific button rules below (icon-centering, flex-basis,
+   etc.) layer on top of this rather than overriding it. Custom padding on a
+   native <button> makes Gecko drop its native widget theming (background/
+   border/rounded corners), falling back to a flat, square, colorless box --
+   so background-color/border/border-radius below are restored explicitly
+   rather than relying on native appearance. background-color is a fixed
+   solid gray (rather than the -moz-Field system color used before) matching
+   the model-select dropdown's actual rendered shade -- the system color
+   didn't resolve to that same shade reliably in this chrome context, so a
+   fixed value is used instead. color is a fixed light gray to match (rather
+   than -moz-FieldText, which assumes a light background and would be
+   unreadable against this dark one) -- same #e3e3e3 shade the icons
+   themselves are exported in, so icon and label text read consistently.
+   filter: brightness on :hover still works fine against a fixed color, same
+   as it did against the system one. */
+.llm-body button {
+	padding: 7px 3.5px;
+	background-color: #4d4d4d;
+	color: #e3e3e3;
+	border: 0px solid;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.llm-body button:hover {
+	filter: brightness(1.25);
+}
+
+/* Several shades darker than the active button's #4d4d4d/#e3e3e3 (e.g. Stop
+   before a request is in flight, Discard All before any image is pasted --
+   see llm-chat-pane.js's submit handler and ui/image-paste.js's render())
+   -- reads as visually inactive. cursor/hover explicitly neutralized so a
+   disabled button doesn't still invite clicking or brighten on hover. */
+.llm-body button:disabled {
+	background-color: #262626;
+	color: #6e6e6e;
+	cursor: default;
+}
+
+.llm-body button:disabled:hover {
+	filter: none;
+}
+
+/* Shared base for every collapsible <details>'s body (Providers, Keyboard
+   Shortcuts, Advanced, Logs) -- the same inset (1em padding) and top gap
+   (6px margin) for all four, so they read as one consistent family of
+   dropdowns rather than each having its own slightly-different spacing.
+   Each one's own class (.llm-providers-body etc., applied ALONGSIDE this
+   one, not instead of it) layers on top for whatever's specific to it --
+   gap (varies per panel), or Logs' fixed height/scroll/background/font. */
+.llm-collapsible-body {
+	display: flex;
+	flex-direction: column;
+	margin-top: 6px;
+	padding: 1em;
+	box-sizing: border-box;
+}
+
 /* Layout */
+/* gap here is specifically the spacing between .llm-controls (everything
+   above the message list -- Settings/Prompt/History/Messages button row)
+   and chat.list (.llm-message-list) below it -- .llm-container only ever
+   has these two children. */
 .llm-container {
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: 16px;
 	box-sizing: border-box;
 	flex: 1;
 	padding: 8px 0 16px;
@@ -27,6 +90,29 @@
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
+}
+
+/* Prompt section wrapper (see llm-chat-pane.js's onRender) -- same gap as
+   .llm-controls itself, so wrapping these elements up doesn't change the
+   spacing between them. */
+.llm-prompt-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* Separator between History/Prompt/Messages -- margin on top of
+   .llm-controls' own gap widens the spacing between these sections beyond
+   what the other (ungrouped) elements in .llm-controls get, and the line
+   itself gives that extra space a visible boundary rather than just being
+   blank. Muted/translucent so it reads as a subtle divider rather than a
+   hard rule, and (like .llm-message-content's background) tracks light/dark
+   themes automatically instead of relying on a fixed hex. */
+.llm-section-divider {
+	border: none;
+	border-top: 1px solid rgba(128, 128, 128, 0.3);
+	margin: 4px 0;
+	width: 100%;
 }
 
 /* Messages */
@@ -139,12 +225,7 @@
 }
 
 .llm-shortcuts-body {
-	display: flex;
-	flex-direction: column;
 	gap: 6px;
-	margin-top: 6px;
-	padding: 1em;
-	box-sizing: border-box;
 }
 
 /* A real <table> (same technique as ui/providers.js) so the description
@@ -242,6 +323,14 @@
 	align-self: flex-start;
 }
 
+/* Same inline-flex + align-items: center technique as .llm-model-refresh --
+   these all now carry an icon + text label. */
+.llm-submit, .llm-stop, .llm-discard-images, .llm-export, .llm-import, .llm-clear-conversation, .llm-clear-cache {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
 .llm-model-row {
 	display: flex;
 	flex-direction: row;
@@ -258,8 +347,18 @@
 	min-width: 0;
 }
 
+/* inline-flex + align-items: center on the BUTTON itself (not just
+   vertical-align: middle on the icon, which is imprecise for aligning an
+   icon against text -- confirmed concretely that it left the two visibly
+   off-center) is what actually centers the icon and "Refresh" text against
+   each other, same technique as .llm-history-load/.llm-history-delete's
+   buttons. gap provides the space between them instead of a margin on the
+   icon itself. */
 .llm-model-refresh {
 	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 }
 
 .llm-providers-details {
@@ -272,12 +371,7 @@
 }
 
 .llm-providers-body {
-	display: flex;
-	flex-direction: column;
 	gap: 12px;
-	margin-top: 6px;
-	padding: 1em;
-	box-sizing: border-box;
 }
 
 .llm-provider-group {
@@ -331,11 +425,25 @@
 	color: -moz-nativehyperlinktext;
 }
 
+/* Subsection headers/settings get a further indent on top of
+   .llm-collapsible-body's own padding, via .llm-advanced-section-body's
+   own padding below. */
 .llm-advanced-body {
+	gap: 4px;
+}
+
+.llm-advanced-section-label {
+	font-weight: 600;
+}
+
+/* Same 1em padding convention as .llm-providers-body/.llm-shortcuts-body --
+   applied per-subsection on top of .llm-advanced-body's own padding above,
+   so each subsection's settings read as indented under its own (flush-left
+   within the body) label. */
+.llm-advanced-section-body {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-	margin-top: 6px;
 	padding: 1em;
 	box-sizing: border-box;
 }
@@ -370,6 +478,29 @@
 	cursor: pointer;
 }
 
+/* The Clear Cache checkbox list (see ui/advanced.js) -- one row per cache
+   type, all checked by default. */
+.llm-clear-cache-options {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	align-self: flex-start;
+}
+
+.llm-clear-cache-option {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+}
+
+/* Mid-red text -- and, via currentColor, the icon mask too (see .llm-icon's
+   background-color: currentColor) -- flags Clear Cache as the destructive
+   action it is, distinct from every other (neutral-colored) button. */
+.llm-body button.llm-clear-cache {
+	color: #e74c3c;
+}
+
 .llm-logs-details {
 	font-size: 0.9em;
 }
@@ -383,17 +514,12 @@
    exactly, light or dark, since .llm-input relies on that same native
    rendering rather than an explicit background-color of its own. */
 .llm-logs-body {
-	display: flex;
-	flex-direction: column;
 	gap: 2px;
-	margin-top: 6px;
 	/* Fixed (not min-) height, in em so it scales with this element's own
 	   font-size below -- 15 lines' worth, always; content scrolls within it
 	   rather than growing the box. */
 	height: 15em;
 	overflow-y: auto;
-	box-sizing: border-box;
-	padding: 1em;
 	border-radius: 4px;
 	background: -moz-Field;
 	font-family: monospace;
@@ -596,46 +722,25 @@
 	word-break: break-all;
 }
 
-/* The pencil/done_outline toggle button (see ui/conversation_history.js's
-   enterEditMode/saveTitle) -- transparent/borderless so it reads as an
-   icon-only affordance next to the title, not a normal button, until
-   hovered. color: inherit so currentColor (used by the svg path rule
-   below) resolves to the surrounding text's actual color, not some
-   button-element UA default. */
-.llm-history-edit-title {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	padding: 2px;
-	border: none;
-	background: transparent;
-	cursor: pointer;
-	border-radius: 3px;
-	flex: none;
-	color: inherit;
-}
-
-.llm-history-edit-title:hover {
-	background: rgba(255, 255, 255, 0.12);
-}
-
-/* The pencil/done_outline icon itself -- a plain <span> with NO image
-   content of its own; mask-image (set via inline style in
-   ui/conversation_history.js, toggled between editIconURL/doneIconURL)
-   uses the SVG file purely as a SHAPE (its alpha channel), and
-   background-color supplies the actual visible color. This sidesteps
-   BOTH problems the previous inline-SVG-via-innerHTML approach had:
-   the icon not rendering at all in this chrome context, and the SVG's own
-   hardcoded fill="#e3e3e3" (baked directly into the file) not being
-   overridable via a `path { fill: ... }` rule reliably. background-color:
-   currentColor means the icon always exactly matches the surrounding
-   text's color, regardless of the source file's own colors.
-   Sized in em (not a fixed px value) so it scales with the surrounding
-   title text's actual font-size instead of a guessed constant. */
-.llm-history-edit-icon {
+/* Shared base for every icon rendered via CSS mask-image + background-color:
+   currentColor (see ui/conversation_history.js's edit/done_outline toggle,
+   ui/provider_model_select.js's refresh button) -- a plain <span> with NO
+   image content of its own; mask-image (set via inline style at the call
+   site, pointed at whichever icons/*.svg file) uses the SVG file purely as
+   a SHAPE (its alpha channel), and background-color supplies the actual
+   visible color. This sidesteps BOTH problems a previous inline-SVG-via-
+   innerHTML approach had: the icon not rendering at all in this chrome
+   context, and a source SVG's own hardcoded fill="#e3e3e3" (baked directly
+   into the file) not being overridable via a `path { fill: ... }` rule
+   reliably. background-color: currentColor means the icon always exactly
+   matches the surrounding text's color, regardless of the source file's
+   own colors. Sized in em (not a fixed px value) so it scales with the
+   surrounding text's actual font-size instead of a guessed constant. */
+.llm-icon {
 	display: inline-block;
 	width: 1.1em;
 	height: 1.1em;
+	vertical-align: middle;
 	background-color: currentColor;
 	mask-repeat: no-repeat;
 	mask-position: center;
@@ -670,8 +775,19 @@
 
 .llm-history-actions {
 	display: flex;
-	gap: 6px;
+	gap: 12px;
 	margin-top: 4px;
+}
+
+/* inline-flex + align-items: center on the buttons THEMSELVES (not just
+   relying on the icon's own vertical-align) is what actually centers each
+   icon against its label text -- same fix as .llm-model-refresh. */
+.llm-history-edit,
+.llm-history-load,
+.llm-history-delete {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 }
 
 /* Markdown output */

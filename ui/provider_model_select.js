@@ -81,6 +81,10 @@ LLMUIProviderModelSelect = {
 	},
 
 	// Builds the provider+model dropdown row for one item-pane render.
+	// `refreshIconURL` is a plain file:/jar: URL (see llm-chat-pane.js's
+	// onRender, rootURI + "icons/refresh_*.svg"), rendered via the shared
+	// CSS mask-image .llm-icon class (see style.css) -- same technique as
+	// ui/conversation_history.js's edit/done_outline toggle icons.
 	// Returns:
 	//   element   -- the row <div> (provider select, model select, refresh
 	//                button) to place in the pane's controls
@@ -88,7 +92,7 @@ LLMUIProviderModelSelect = {
 	//                whichever provider is currently selected (also called
 	//                once internally on creation, and again on provider
 	//                change/refresh-button click)
-	create(doc) {
+	create(doc, { refreshIconURL } = {}) {
 		let providerSelect = doc.createElement("select");
 		providerSelect.className = "llm-provider-select";
 		providerSelect.title = "Model provider";
@@ -113,9 +117,9 @@ LLMUIProviderModelSelect = {
 		modelSelect.disabled = true;
 
 		let modelRefreshButton = doc.createElement("button");
-		modelRefreshButton.textContent = "⟳";
 		modelRefreshButton.className = "llm-model-refresh";
 		modelRefreshButton.title = "Refresh model list";
+		modelRefreshButton.append(LLMUIIcon.create(doc, refreshIconURL), doc.createTextNode("Refresh"));
 
 		let refreshModelOptions = async () => {
 			let provider = LLMInterfaces._provider;

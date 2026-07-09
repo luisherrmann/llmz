@@ -30,7 +30,7 @@ LLMUILogs = {
 		let summary = doc.createElement("summary");
 		summary.textContent = "Logs";
 		let body = doc.createElement("div");
-		body.className = "llm-logs-body";
+		body.className = "llm-collapsible-body llm-logs-body";
 		details.append(summary, body);
 
 		// Prepends a timestamped entry -- newest at the top, scrollTop reset

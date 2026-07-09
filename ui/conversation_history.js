@@ -1,4 +1,4 @@
-// The collapsible "History" panel: a fixed-height, independently scrolling
+// The collapsible "Past Conversations" panel: a fixed-height, independently scrolling
 // list of cards, one per conversation previously saved (via Export -- see
 // export.js/ui/conversation-history.js) for the active PDF, one .md file per
 // card under $HOME/Zotero/zllm/chats/<PDF_ID>/. Split out of
@@ -13,19 +13,20 @@ LLMUIConversationHistory = {
 	// that logic. Delete and the inline title editor, by contrast, ARE
 	// handled directly here (a file removal/rename + a small DOM update
 	// each), since neither needs any context this module doesn't already
-	// have. `editIconURL`/`doneIconURL` are plain file:/jar: URLs (see
-	// llm-chat-pane.js's onRender, rootURI + "icons/...svg") -- rendered as
-	// a CSS mask-image (see style.css's .llm-history-edit-icon) rather than
-	// fetched-and-inlined SVG markup, so the icon's actual visible color is
-	// entirely controlled by background-color: currentColor regardless of
-	// whatever fill the source SVG file itself hardcodes, and rendering
-	// doesn't depend on however this chrome context happens to parse raw
-	// SVG markup injected via innerHTML.
-	create(doc, { onLoad, editIconURL, doneIconURL } = {}) {
+	// have. `editIconURL`/`doneIconURL`/`loadIconURL`/`deleteIconURL` are
+	// plain file:/jar: URLs (see llm-chat-pane.js's onRender, rootURI +
+	// "icons/...svg") -- rendered via LLMUIIcon.create (CSS mask-image, see
+	// style.css's shared .llm-icon class) rather than fetched-and-inlined
+	// SVG markup, so each icon's actual visible color is entirely
+	// controlled by background-color: currentColor regardless of whatever
+	// fill the source SVG file itself hardcodes, and rendering doesn't
+	// depend on however this chrome context happens to parse raw SVG
+	// markup injected via innerHTML.
+	create(doc, { onLoad, editIconURL, doneIconURL, loadIconURL, deleteIconURL } = {}) {
 		let details = doc.createElement("details");
 		details.className = "llm-history-details";
 		let summary = doc.createElement("summary");
-		summary.textContent = "History";
+		summary.textContent = "Past Conversations";
 		let body = doc.createElement("div");
 		body.className = "llm-history-body";
 
@@ -89,14 +90,15 @@ LLMUIConversationHistory = {
 			header.className = "llm-history-header";
 
 			// The title + its inline rename editor. Toggles between two
-			// states: a plain <span> (title text + a pencil "edit" button)
-			// and, once clicked, a text <input> (pre-filled with the
-			// current title, focused+selected) + a "done_outline" button in
-			// the SAME spot the pencil was. Clicking done_outline (or
-			// pressing Enter) saves -- see LLMConversationHistory.
-			// renameConversation, which actually renames the file on disk
-			// -- and swaps back to the plain span/pencil pair with the new
-			// title. Escape cancels back to the plain span WITHOUT saving.
+			// states: a plain <span> (title text alone) and, once the Edit
+			// button (in `actions` below, left of Load/Delete) is clicked, a
+			// text <input> (pre-filled with the current title, focused+
+			// selected) -- with the Edit button itself swapping to a "Done"
+			// label/icon for the duration. Clicking Done (or pressing Enter)
+			// saves -- see LLMConversationHistory.renameConversation, which
+			// actually renames the file on disk -- and swaps back to the
+			// plain span and the "Edit" label/icon. Escape cancels back to
+			// the plain span WITHOUT saving.
 			let titleRow = doc.createElement("span");
 			titleRow.className = "llm-history-title-row";
 
@@ -106,13 +108,14 @@ LLMUIConversationHistory = {
 			// this folder is one) and not worth the extra visual noise.
 			titleEl.textContent = conv.filename.replace(/\.md$/i, "");
 
+			// Styled the same as Load/Delete below (icon + text label), not
+			// as a bare icon-only affordance next to the title anymore.
 			let editButton = doc.createElement("button");
-			editButton.className = "llm-history-edit-title";
+			editButton.className = "llm-history-edit";
 			editButton.title = "Rename this conversation";
-			let editIcon = doc.createElement("span");
-			editIcon.className = "llm-history-edit-icon";
-			editIcon.style.maskImage = `url("${editIconURL}")`;
-			editButton.appendChild(editIcon);
+			let editIcon = LLMUIIcon.create(doc, editIconURL);
+			let editLabel = doc.createTextNode("Edit");
+			editButton.append(editIcon, editLabel);
 
 			let titleInput = null;
 
@@ -125,6 +128,7 @@ LLMUIConversationHistory = {
 				titleInput.focus();
 				titleInput.select();
 				editIcon.style.maskImage = `url("${doneIconURL}")`;
+				editLabel.textContent = "Done";
 				editButton.title = "Save this title";
 				titleInput.addEventListener("keydown", (e) => {
 					if (e.key === "Enter") {
@@ -142,6 +146,7 @@ LLMUIConversationHistory = {
 				titleInput.replaceWith(titleEl);
 				titleInput = null;
 				editIcon.style.maskImage = `url("${editIconURL}")`;
+				editLabel.textContent = "Edit";
 				editButton.title = "Rename this conversation";
 			};
 
@@ -156,6 +161,7 @@ LLMUIConversationHistory = {
 					titleInput.replaceWith(titleEl);
 					titleInput = null;
 					editIcon.style.maskImage = `url("${editIconURL}")`;
+					editLabel.textContent = "Edit";
 					editButton.title = "Rename this conversation";
 				}
 				catch (e) {
@@ -178,7 +184,7 @@ LLMUIConversationHistory = {
 				}
 			});
 
-			titleRow.append(titleEl, editButton);
+			titleRow.append(titleEl);
 
 			let metaEl = doc.createElement("span");
 			metaEl.className = "llm-history-meta";
@@ -193,15 +199,15 @@ LLMUIConversationHistory = {
 			actions.className = "llm-history-actions";
 
 			let loadButton = doc.createElement("button");
-			loadButton.textContent = "Load";
 			loadButton.className = "llm-history-load";
 			loadButton.title = "Load this conversation, replacing the current one";
+			loadButton.append(LLMUIIcon.create(doc, loadIconURL), doc.createTextNode("Load"));
 			loadButton.addEventListener("click", () => onLoad?.(conv));
 
 			let deleteButton = doc.createElement("button");
-			deleteButton.textContent = "Delete";
 			deleteButton.className = "llm-history-delete";
 			deleteButton.title = "Permanently delete this saved conversation";
+			deleteButton.append(LLMUIIcon.create(doc, deleteIconURL), doc.createTextNode("Delete"));
 			deleteButton.addEventListener("click", async () => {
 				// Services.prompt.confirm, not the plain DOM confirm() --
 				// the Web confirm() API has no title parameter at all, so
@@ -231,7 +237,7 @@ LLMUIConversationHistory = {
 				}
 			});
 
-			actions.append(loadButton, deleteButton);
+			actions.append(editButton, loadButton, deleteButton);
 			item.append(header, previewEl, actions);
 			return item;
 		};

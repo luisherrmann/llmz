@@ -590,16 +590,25 @@ LLMChatPane = {
 
 	registerItemPane() {
 		if (this.paneID) return;
+		// icons/robot_2_pane.svg -- NOT the same file as the plain
+		// icons/robot_2_24dp_*.svg used elsewhere (buttons, via iconURL()
+		// in onRender below). Material Symbols glyphs are exported
+		// "full-bleed" (the glyph fills essentially the whole 24x24 box),
+		// which reads fine at button size but got clipped at the corners
+		// in the item-pane header/sidenav's own icon slot (native Zotero
+		// chrome, not something this plugin's CSS can reach). This file is
+		// the exact same glyph with a padded viewBox (30% larger canvas,
+		// glyph unchanged) so it renders with breathing room instead.
 		this.paneID = Zotero.ItemPaneManager.registerSection({
 			paneID: "llm-chat-pane",
 			pluginID: this.id,
 			header: {
 				l10nID: "llm-chat-pane-header",
-				icon: "chrome://zotero/skin/16/universal/note.svg",
+				icon: this.rootURI + "icons/robot_2_pane.svg",
 			},
 			sidenav: {
 				l10nID: "llm-chat-pane-sidenav",
-				icon: "chrome://zotero/skin/20/universal/note.svg",
+				icon: this.rootURI + "icons/robot_2_pane.svg",
 				orderable: true,
 			},
 			onItemChange: ({ item, setEnabled }) => {
@@ -619,14 +628,6 @@ LLMChatPane = {
 				let container = doc.createElement("div");
 				container.className = "llm-container";
 
-				// Top-level header for the whole Conversation History/Prompt/
-				// Messages grouping below -- distinct from ui/chat.js's own
-				// "Messages" label, which sits directly above just the
-				// scrollable message list itself.
-				let conversationLabel = doc.createElement("div");
-				conversationLabel.className = "llm-section-label";
-				conversationLabel.textContent = "Conversation";
-
 				let inputLabel = doc.createElement("div");
 				inputLabel.className = "llm-section-label";
 				inputLabel.textContent = "Prompt";
@@ -635,7 +636,12 @@ LLMChatPane = {
 				input.placeholder = "Type here...";
 				input.className = "llm-input";
 
-				let imagePaste = LLMUIImagePaste.create(doc, input, (text) => appendMessage("System", text));
+				// Every icons/*.svg file follows the same Material Symbols
+				// export naming pattern -- this just saves repeating that
+				// suffix at every one of the many call sites below.
+				let iconURL = (name) => this.rootURI + `icons/${name}_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg`;
+
+				let imagePaste = LLMUIImagePaste.create(doc, input, (text) => appendMessage("System", text), iconURL("remove_selection"));
 
 				// Header for the provider/model select + Providers/Keyboard
 				// Shortcuts/Advanced/Logs grouping below -- all
@@ -645,7 +651,9 @@ LLMChatPane = {
 				settingsLabel.className = "llm-section-label";
 				settingsLabel.textContent = "Settings";
 
-				let providerModelSelect = LLMUIProviderModelSelect.create(doc);
+				let providerModelSelect = LLMUIProviderModelSelect.create(doc, {
+					refreshIconURL: iconURL("refresh"),
+				});
 
 				let providers = LLMUIProviders.create(doc, (label, message) => {
 					appendMessage("System", `Failed to save ${label} API key: ${message}`);
@@ -653,7 +661,11 @@ LLMChatPane = {
 
 				let keyboardShortcuts = LLMUIKeyboardShortcuts.create(doc);
 
-				let advanced = LLMUIAdvanced.create(doc);
+				let advanced = LLMUIAdvanced.create(doc, {
+					getActiveItem: () => this.getActiveReaderAttachment(),
+					onMessage: (text) => appendMessage("System", text),
+					clearCacheIconURL: iconURL("delete_forever"),
+				});
 
 				// System messages (extraction/selection status, errors, etc.) render
 				// here instead of the main message list -- see appendMessage/
@@ -761,8 +773,10 @@ LLMChatPane = {
 
 				let conversationHistory = LLMUIConversationHistory.create(doc, {
 					onLoad: (conv) => onLoadConversation(conv).catch(e => appendMessage("System", `Load failed: ${e.message}`)),
-					editIconURL: this.rootURI + "icons/edit_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg",
-					doneIconURL: this.rootURI + "icons/done_outline_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg",
+					editIconURL: iconURL("edit"),
+					doneIconURL: iconURL("done_outline"),
+					loadIconURL: iconURL("upload"),
+					deleteIconURL: iconURL("delete"),
 				});
 
 				// Reloads the card list from whatever's actually on disk for
@@ -791,7 +805,7 @@ LLMChatPane = {
 				};
 				refreshConversationHistory();
 
-				let { element: buttonRow, submitButton, stopButton } = LLMUIButtonRow.create(doc, {
+				let { element: buttonRow, messagesRow, submitButton, stopButton } = LLMUIButtonRow.create(doc, {
 					getActiveItem: () => this.getActiveReaderAttachment(),
 					onMessage: (text) => appendMessage("System", text),
 					discardImagesButton: imagePaste.discardButton,
@@ -799,6 +813,11 @@ LLMChatPane = {
 					onImport: () => onImport().catch(e => appendMessage("System", `Import failed: ${e.message}`)),
 					onExported: () => refreshConversationHistory(),
 					onClearConversation: () => chat.clear(),
+					sendIconURL: iconURL("send"),
+					cancelIconURL: iconURL("cancel"),
+					uploadIconURL: iconURL("upload"),
+					fileExportIconURL: iconURL("file_export"),
+					clearAllIconURL: iconURL("clear_all"),
 				});
 
 				// Stashed on input focus as a fallback for LLMRequest.send's
@@ -992,28 +1011,55 @@ LLMChatPane = {
 					}
 				});
 
-				// Conversation section grouping (header, History, Prompt,
-				// Button row, Messages header) is a contiguous run within
-				// controls, in that order -- only chat.list (the actual
+				// Prompt (label, textarea, pasted-image row, Submit/Stop row)
+				// grouped into its own wrapper -- see style.css's
+				// .llm-prompt-section, which replicates controls' own gap so
+				// spacing within the group is unaffected by the wrapping.
+				// Messages' label and its Clear/Export/Import row are NOT
+				// grouped together the same way -- the label sits above
+				// History (as the header for the whole History+row+list
+				// area) while the row itself stays right above the message
+				// list, so they end up on opposite sides of
+				// conversationHistory.element below. chat.list (the actual
 				// scrollable message area) stays outside controls entirely,
-				// appended directly to container below, since its height is
-				// computed from controls.offsetHeight (see the section-height
-				// calculation right after) and needs to end up as everything
-				// EXCEPT the scrollable area itself.
+				// appended directly to container below -- its height is
+				// computed from controls.offsetHeight (see the
+				// section-height calculation right after), which needs to
+				// cover everything EXCEPT the scrollable area itself.
+				// logs.element sits below the "Prompt" header and above the
+				// textarea itself, inside promptSection -- not in the
+				// Settings group above.
+				let promptSection = doc.createElement("div");
+				promptSection.className = "llm-prompt-section";
+				promptSection.append(inputLabel, logs.element, input, imagePaste.row, buttonRow);
+
+				// Plain <hr>s (see style.css's .llm-section-divider) between
+				// Settings/Prompt/History -- a bit more visual separation
+				// than the gap alone gives between these groupings. No
+				// divider between History and Messages' row, or between
+				// that row and chat.list -- those boundaries read fine from
+				// the gap alone.
+				let settingsDivider = doc.createElement("hr");
+				settingsDivider.className = "llm-section-divider";
+				let promptDivider = doc.createElement("hr");
+				promptDivider.className = "llm-section-divider";
+
+				// Settings group, divider, Prompt section (header, Logs,
+				// textarea, pasted-image row, button row), divider,
+				// Messages label, History, Messages row -- a contiguous run
+				// within controls, in that order.
 				controls.append(
 					settingsLabel,
 					providerModelSelect.element,
 					providers.element,
 					keyboardShortcuts.element,
 					advanced.element,
-					logs.element,
-					conversationLabel,
+					settingsDivider,
+					promptSection,
+					promptDivider,
+					chat.label,
 					conversationHistory.element,
-					inputLabel,
-					input,
-					imagePaste.row,
-					buttonRow,
-					chat.label
+					messagesRow
 				);
 				container.append(controls, chat.list);
 				body.appendChild(container);

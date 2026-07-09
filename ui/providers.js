@@ -57,7 +57,7 @@ LLMUIProviders = {
 		let summary = doc.createElement("summary");
 		summary.textContent = "Providers";
 		let body = doc.createElement("div");
-		body.className = "llm-providers-body";
+		body.className = "llm-collapsible-body llm-providers-body";
 
 		for (let { key, label, apiKey, server } of this._providers) {
 			let group = doc.createElement("div");

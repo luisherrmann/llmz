@@ -27,7 +27,10 @@ LLMUIImagePaste = {
 	// `onMessage(text)` is called for user-facing status text ("That image
 	// is already attached.", the per-request limit message) -- routing this
 	// (e.g. to the Logs panel) is the caller's concern, not this module's.
-	create(doc, input, onMessage) {
+	// `discardIconURL` is a plain file:/jar: URL (see llm-chat-pane.js's
+	// onRender, rootURI + "icons/remove_selection_*.svg"), rendered via
+	// LLMUIIcon.create.
+	create(doc, input, onMessage, discardIconURL) {
 		// Each entry is { dataUri, fingerprint } -- fingerprint is a SHA-256
 		// hash of the data URI, used to silently skip re-adding an image
 		// that's already attached (e.g. pasting the same screenshot twice).
@@ -38,9 +41,9 @@ LLMUIImagePaste = {
 		row.hidden = true;
 
 		let discardButton = doc.createElement("button");
-		discardButton.textContent = "Discard All";
 		discardButton.className = "llm-discard-images";
 		discardButton.disabled = true;
+		discardButton.append(LLMUIIcon.create(doc, discardIconURL), doc.createTextNode("Discard All"));
 		discardButton.title = "Remove all attached images";
 
 		let render = () => {

@@ -140,6 +140,26 @@ LLMCitation = {
 		return this._getIndex(item, text, "paragraph", t => this.splitIntoParagraphs(t));
 	},
 
+	// Debug affordance ("Clear Cache" in Advanced) -- drops both the memory
+	// and disk cache (sentence AND paragraph indices -- see _getIndex's
+	// `kind`) for this item, so the next getCitationIndex/getParagraphIndex
+	// call re-embeds from scratch rather than reusing a possibly-stale
+	// result. Same pattern as document/tables.js's clearCache etc., except
+	// this module caches two files per item (one per `kind`), not one.
+	async clearCache(item) {
+		this._citationIndexCache.delete(`${item.id}:sentence`);
+		this._citationIndexCache.delete(`${item.id}:paragraph`);
+		try {
+			let dir = await this._cacheDir();
+			await IOUtils.remove(PathUtils.join(dir, `${item.id}-sentence.json`), { ignoreAbsent: true });
+			await IOUtils.remove(PathUtils.join(dir, `${item.id}-paragraph.json`), { ignoreAbsent: true });
+			this.log(`clearCache: cleared for item ${item.id}`);
+		}
+		catch (e) {
+			this.log(`clearCache: failed: ${e.message}`);
+		}
+	},
+
 	async getRelevantChunks(index, query, topK) {
 		let queryEmbedding = await this.getEmbedding(query, index.model);
 		let scored = index.embeddings.map((embedding, i) => ({

@@ -11,6 +11,7 @@ LLMUIKeyboardShortcuts = {
 		{ keys: "⌘ ⇧ ↓", desc: "Oldest message" },
 		{ keys: "⌘ ⇧ ↑", desc: "Newest message" },
 		{ keys: "⌘ I", desc: "Toggle chat pane" },
+		{ keys: "⌘ V", desc: "Paste Image" },
 	],
 
 	create(doc) {
@@ -19,7 +20,7 @@ LLMUIKeyboardShortcuts = {
 		let summary = doc.createElement("summary");
 		summary.textContent = "Keyboard Shortcuts";
 		let body = doc.createElement("div");
-		body.className = "llm-shortcuts-body";
+		body.className = "llm-collapsible-body llm-shortcuts-body";
 
 		// A real <table>, same as ui/providers.js/ui/advanced.js -- so the
 		// description column lines up at the same position for every row

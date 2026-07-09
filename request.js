@@ -252,6 +252,13 @@ LLMRequest = {
 			}
 
 			try {
+				// Snapshotted BEFORE this turn's own "You" bubble (and reply
+				// placeholder) get appended below -- see the messages-array
+				// build further down, right before streamModel -- so history
+				// naturally excludes the CURRENT turn (which gets sent
+				// separately, as the full context-stuffed modelPrompt, not
+				// this turn's own raw/placeholder transcript entries).
+				let priorTranscript = chat.exportTranscript();
 				let { text: liveText, info: selectionInfo } = chatPane.getReaderSelection();
 				let selectedText = liveText || takeCapturedSelection();
 				let { text: pageText, pageNum, info: pageInfo } = await chatPane.getReaderPageText();
@@ -267,7 +274,7 @@ LLMRequest = {
 					? LLMNotes.formatAnnotation(selectedAnnotationItem)
 					: null;
 				let readerContext = { pageNum, selectedText, selectedAnnotationNote };
-				let { prompt: modelPrompt, contextInfo, item: pdfItem, citationIndex } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
+				let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem, citationIndex } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
 				if (cancelled) return;
 				let tableIndexPromise = pdfItem
 					? LLMTables.getTableIndex(pdfItem).catch((e) => {
@@ -529,12 +536,33 @@ LLMRequest = {
 				chat.updateMessageText(reply, `Waiting for ${providerLabel}...`);
 				this.log(`Submitting prompt to ${providerLabel}: ${prompt}`);
 				reply.textContent = "";
-				let result = await LLMInterfaces.streamModel(modelPrompt, (token) => {
+
+				// Prior turns (see priorTranscript, snapshotted before this
+				// turn's own bubbles were appended) plus the current turn's
+				// full context-stuffed prompt as the final entry -- "You" ->
+				// "user", everything else (a provider/feature reply label)
+				// -> "assistant". Skipped entirely when
+				// LLMPrompt.useMessageHistory is off, trading conversation
+				// continuity for lower per-request token usage (every past
+				// turn otherwise gets resent, in full, on every subsequent
+				// request -- none of these backends remember anything
+				// server-side). Capped to the last maxHistoryMessages entries
+				// (a plain recency cutoff, not the whole conversation) so
+				// per-request size doesn't grow unbounded as a conversation
+				// gets longer -- slice(-N) is a no-op if there are fewer than
+				// N entries to begin with.
+				let messages = LLMPrompt.useMessageHistory
+					? priorTranscript.slice(-LLMPrompt.maxHistoryMessages).map(({ role, text }) => ({ role: role === "You" ? "user" : "assistant", content: text }))
+					: [];
+				messages.push({ role: "user", content: modelPrompt });
+
+				let result = await LLMInterfaces.streamModel(messages, (token) => {
 					if (!cancelled) reply.textContent += token;
 				}, {
 					onReady(cancelFn) {
 						cancelStream = cancelFn;
 					},
+					systemPrompt,
 				}, images);
 				if (cancelled) return;
 				if (!result.text) {

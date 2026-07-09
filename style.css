@@ -366,6 +366,10 @@
 	text-align: left;
 }
 
+.llm-advanced-checkbox {
+	cursor: pointer;
+}
+
 .llm-logs-details {
 	font-size: 0.9em;
 }

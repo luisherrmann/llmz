@@ -298,16 +298,42 @@ LLMInterfaces = {
 		}
 	},
 
-	async streamOllama(prompt, onToken, { onReady } = {}, images) {
+	// /api/chat (not /api/generate, the previous, single-shot-only
+	// endpoint) -- the difference matters for conversation history:
+	// /api/generate takes a single raw `prompt` string with no concept of
+	// roles/turns at all (it does have an experimental token-level
+	// `context` passthrough, but Ollama's own docs steer away from it for
+	// anything conversational), while /api/chat takes a
+	// `messages: [{role, content}, ...]` array, same shape as OpenAI's
+	// Chat Completions -- which is what lets `messages` here carry prior
+	// turns, not just the current one. Like every other backend, Ollama's
+	// server itself is still stateless -- it remembers nothing between
+	// calls, so the full history has to be resent every time (see
+	// request.js, which builds `messages`).
+	async streamOllama(messages, onToken, { onReady, systemPrompt } = {}, images) {
 		let model = await this.getOllamaModel();
-		let body = { model, prompt, stream: true };
-		if (images?.length) {
-			// Ollama wants raw base64, not a data: URI
-			body.images = images.map(dataUri => dataUri.split(",")[1] || dataUri);
+
+		let ollamaMessages = [];
+		if (systemPrompt) {
+			ollamaMessages.push({ role: "system", content: systemPrompt });
 		}
-		let response = await fetch(`${this.ollamaBaseURL}/api/generate`, {
+		for (let i = 0; i < messages.length; i++) {
+			let m = messages[i];
+			let entry = { role: m.role, content: m.content };
+			// Only the LAST message (the current turn) can carry images --
+			// see request.js, which only ever attaches pasted images to the
+			// newest prompt; historical turns' images were never persisted
+			// anywhere reusable (chat.exportTranscript() only tracks text).
+			if (i === messages.length - 1 && images?.length) {
+				// Ollama wants raw base64, not a data: URI
+				entry.images = images.map(dataUri => dataUri.split(",")[1] || dataUri);
+			}
+			ollamaMessages.push(entry);
+		}
+
+		let response = await fetch(`${this.ollamaBaseURL}/api/chat`, {
 			method: "POST",
-			body: JSON.stringify(body),
+			body: JSON.stringify({ model, messages: ollamaMessages, stream: true }),
 			headers: {
 				"Content-Type": "application/json",
 			},
@@ -324,6 +350,22 @@ LLMInterfaces = {
 		let buffer = "";
 		let text = "";
 
+		// /api/chat's streamed lines carry each token as message.content,
+		// not response (/api/generate's shape) -- everything else about
+		// the line-delimited-JSON streaming protocol is the same.
+		let processLine = (line) => {
+			if (!line.trim()) return;
+			let data = JSON.parse(line);
+			if (data.error) {
+				throw new Error(data.error);
+			}
+			let token = data.message?.content;
+			if (token) {
+				text += token;
+				onToken(token);
+			}
+		};
+
 		while (true) {
 			let { value, done } = await reader.read();
 			if (done) break;
@@ -332,30 +374,11 @@ LLMInterfaces = {
 			let lines = buffer.split("\n");
 			buffer = lines.pop();
 
-			for (let line of lines) {
-				if (!line.trim()) continue;
-				let data = JSON.parse(line);
-				if (data.error) {
-					throw new Error(data.error);
-				}
-				if (data.response) {
-					text += data.response;
-					onToken(data.response);
-				}
-			}
+			for (let line of lines) processLine(line);
 		}
 
 		buffer += decoder.decode();
-		if (buffer.trim()) {
-			let data = JSON.parse(buffer);
-			if (data.error) {
-				throw new Error(data.error);
-			}
-			if (data.response) {
-				text += data.response;
-				onToken(data.response);
-			}
-		}
+		if (buffer.trim()) processLine(buffer);
 
 		return {
 			model,
@@ -374,20 +397,46 @@ LLMInterfaces = {
 		return (data.data || []).filter(m => !/embed/i.test(m.id)).map(m => m.id);
 	},
 
-	async streamOpenAICompatible(baseURL, apiKey, model, prompt, onToken, { onReady } = {}, images) {
+	// `messages` is [{role: "user"|"assistant", content: string}, ...] --
+	// see request.js, which builds this from chat.exportTranscript() (prior
+	// turns, when LLMPrompt.useMessageHistory is on) plus the current
+	// turn's full context-stuffed prompt as the last entry. The server
+	// itself is stateless regardless of provider -- resending the whole
+	// array on every request is what makes this a "conversation" at all,
+	// not something OpenAI-compatible endpoints do on their own.
+	async streamOpenAICompatible(baseURL, apiKey, model, messages, onToken, { onReady, systemPrompt } = {}, images) {
 		let headers = { "Content-Type": "application/json" };
 		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-		let content = images?.length
-			? [
-				{ type: "text", text: prompt },
-				...images.map(dataUri => ({ type: "image_url", image_url: { url: dataUri } })),
-			]
-			: prompt;
+
+		let apiMessages = [];
+		if (systemPrompt) {
+			apiMessages.push({ role: "system", content: systemPrompt });
+		}
+		for (let i = 0; i < messages.length; i++) {
+			let m = messages[i];
+			// Only the LAST message (the current turn) can carry images --
+			// see request.js, which only ever attaches pasted images to the
+			// newest prompt; historical turns' images were never persisted
+			// anywhere reusable (chat.exportTranscript() only tracks text).
+			if (i === messages.length - 1 && images?.length) {
+				apiMessages.push({
+					role: m.role,
+					content: [
+						{ type: "text", text: m.content },
+						...images.map(dataUri => ({ type: "image_url", image_url: { url: dataUri } })),
+					],
+				});
+			}
+			else {
+				apiMessages.push({ role: m.role, content: m.content });
+			}
+		}
+
 		let response = await fetch(`${baseURL}/chat/completions`, {
 			method: "POST",
 			body: JSON.stringify({
 				model,
-				messages: [{ role: "user", content }],
+				messages: apiMessages,
 				stream: true,
 			}),
 			headers,
@@ -454,9 +503,9 @@ LLMInterfaces = {
 		return model;
 	},
 
-	async streamLMStudio(prompt, onToken, opts, images) {
+	async streamLMStudio(messages, onToken, opts, images) {
 		let model = await this.getLMStudioModel();
-		return this.streamOpenAICompatible(this.lmStudioBaseURL, null, model, prompt, onToken, opts, images);
+		return this.streamOpenAICompatible(this.lmStudioBaseURL, null, model, messages, onToken, opts, images);
 	},
 
 	async listLiteLLMModels() {
@@ -492,9 +541,9 @@ LLMInterfaces = {
 		}
 	},
 
-	async streamLiteLLM(prompt, onToken, opts, images) {
+	async streamLiteLLM(messages, onToken, opts, images) {
 		let model = await this.getLiteLLMModel();
-		return this.streamOpenAICompatible(this.liteLLMBaseURL, this._apiKeys.litellm || null, model, prompt, onToken, opts, images);
+		return this.streamOpenAICompatible(this.liteLLMBaseURL, this._apiKeys.litellm || null, model, messages, onToken, opts, images);
 	},
 
 	// OpenAI's own API is already OpenAI-compatible by definition, so this
@@ -523,9 +572,9 @@ LLMInterfaces = {
 		return model;
 	},
 
-	async streamOpenAI(prompt, onToken, opts, images) {
+	async streamOpenAI(messages, onToken, opts, images) {
 		let model = await this.getOpenAIModel();
-		return this.streamOpenAICompatible(this.openaiBaseURL, this._apiKeys.openai || null, model, prompt, onToken, opts, images);
+		return this.streamOpenAICompatible(this.openaiBaseURL, this._apiKeys.openai || null, model, messages, onToken, opts, images);
 	},
 
 	// Anthropic's Messages API is NOT OpenAI-compatible -- different auth
@@ -586,24 +635,51 @@ LLMInterfaces = {
 		}
 	},
 
-	async streamAnthropic(prompt, onToken, { onReady } = {}, images) {
+	// `messages` is [{role: "user"|"assistant", content: string}, ...] --
+	// same shape/source as streamOpenAICompatible's own `messages` (see
+	// request.js). `systemPrompt`, unlike the OpenAI-compatible backends
+	// (which get it prepended as a {role: "system"} message), goes in
+	// Anthropic's own dedicated top-level `system` field instead -- its
+	// Messages API has no "system" role within `messages` at all.
+	async streamAnthropic(messages, onToken, { onReady, systemPrompt } = {}, images) {
 		let model = await this.getAnthropicModel();
-		let content = images?.length
-			? [
-				...images.map((dataUri) => {
-					let match = dataUri.match(/^data:([^;]+);base64,(.+)$/);
-					return {
-						type: "image",
-						source: {
-							type: "base64",
-							media_type: match ? match[1] : "image/png",
-							data: match ? match[2] : dataUri,
-						},
-					};
-				}),
-				{ type: "text", text: prompt },
-			]
-			: prompt;
+
+		let apiMessages = messages.map((m, i) => {
+			// Only the LAST message (the current turn) can carry images --
+			// see request.js, which only ever attaches pasted images to the
+			// newest prompt; historical turns' images were never persisted
+			// anywhere reusable (chat.exportTranscript() only tracks text).
+			if (i !== messages.length - 1 || !images?.length) {
+				return { role: m.role, content: m.content };
+			}
+			return {
+				role: m.role,
+				content: [
+					...images.map((dataUri) => {
+						let match = dataUri.match(/^data:([^;]+);base64,(.+)$/);
+						return {
+							type: "image",
+							source: {
+								type: "base64",
+								media_type: match ? match[1] : "image/png",
+								data: match ? match[2] : dataUri,
+							},
+						};
+					}),
+					{ type: "text", text: m.content },
+				],
+			};
+		});
+
+		let body = {
+			model,
+			messages: apiMessages,
+			max_tokens: this._anthropicMaxTokens,
+			stream: true,
+		};
+		if (systemPrompt) {
+			body.system = systemPrompt;
+		}
 
 		let response = await fetch(`${this.anthropicBaseURL}/messages`, {
 			method: "POST",
@@ -612,12 +688,7 @@ LLMInterfaces = {
 				"x-api-key": this._apiKeys.anthropic || "",
 				"anthropic-version": this._anthropicVersion,
 			},
-			body: JSON.stringify({
-				model,
-				messages: [{ role: "user", content }],
-				max_tokens: this._anthropicMaxTokens,
-				stream: true,
-			}),
+			body: JSON.stringify(body),
 		});
 
 		if (!response.ok) {
@@ -666,20 +737,31 @@ LLMInterfaces = {
 		};
 	},
 
-	async streamModel(prompt, onToken, opts, images) {
+	// `messages` accepts either a plain string (wrapped into a single
+	// {role: "user"} entry below, for backward compatibility with every
+	// one-off/classification-style caller -- reference-retrieval.js's
+	// _callModel, and llm-prompt.js's several selectXWithLLM helpers --
+	// none of which are part of the visible chat conversation and
+	// shouldn't carry history or a custom system prompt) or an array of
+	// {role, content} entries (request.js's actual chat flow, built from
+	// chat.exportTranscript() plus the current turn).
+	async streamModel(messages, onToken, opts, images) {
+		if (typeof messages === "string") {
+			messages = [{ role: "user", content: messages }];
+		}
 		if (this._provider === "lmstudio") {
-			return this.streamLMStudio(prompt, onToken, opts, images);
+			return this.streamLMStudio(messages, onToken, opts, images);
 		}
 		if (this._provider === "litellm") {
-			return this.streamLiteLLM(prompt, onToken, opts, images);
+			return this.streamLiteLLM(messages, onToken, opts, images);
 		}
 		if (this._provider === "openai") {
-			return this.streamOpenAI(prompt, onToken, opts, images);
+			return this.streamOpenAI(messages, onToken, opts, images);
 		}
 		if (this._provider === "anthropic") {
-			return this.streamAnthropic(prompt, onToken, opts, images);
+			return this.streamAnthropic(messages, onToken, opts, images);
 		}
-		return this.streamOllama(prompt, onToken, opts, images);
+		return this.streamOllama(messages, onToken, opts, images);
 	},
 
 	async getCurrentModel() {

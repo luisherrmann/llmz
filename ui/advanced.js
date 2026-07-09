@@ -1,5 +1,6 @@
-// The collapsible "Advanced" settings panel -- currently just the two
-// PDF-context-retrieval tunables on LLMPrompt. Split out of
+// The collapsible "Advanced" settings panel -- currently the two
+// PDF-context-retrieval tunables, the "Use message history" toggle, and its
+// accompanying "Max history messages" cap, all on LLMPrompt. Split out of
 // llm-chat-pane.js's onRender for the same reason as the other ui/ modules.
 LLMUIAdvanced = {
 	// Returns a <tr> for one setting -- shared table layout with
@@ -32,6 +33,28 @@ LLMUIAdvanced = {
 		return tr;
 	},
 
+	// Same row layout as _makeIntegerSettingRow above, but a checkbox
+	// instead of a number <input> -- for a plain on/off setting like "Use
+	// message history".
+	_makeCheckboxSettingRow(doc, labelText, get, set) {
+		let tr = doc.createElement("tr");
+		let labelTd = doc.createElement("td");
+		labelTd.className = "llm-advanced-field-label";
+		labelTd.textContent = labelText;
+		let inputTd = doc.createElement("td");
+		inputTd.className = "llm-advanced-field-input";
+		let input = doc.createElement("input");
+		input.type = "checkbox";
+		input.className = "llm-advanced-checkbox";
+		input.checked = get();
+		input.addEventListener("change", () => {
+			set(input.checked);
+		});
+		inputTd.appendChild(input);
+		tr.append(labelTd, inputTd);
+		return tr;
+	},
+
 	create(doc) {
 		let details = doc.createElement("details");
 		details.className = "llm-advanced-details";
@@ -55,6 +78,18 @@ LLMUIAdvanced = {
 				"Chunk context top-K",
 				() => LLMPrompt.chunkContextTopK,
 				(value) => { LLMPrompt.chunkContextTopK = value; }
+			),
+			this._makeCheckboxSettingRow(
+				doc,
+				"Use message history",
+				() => LLMPrompt.useMessageHistory,
+				(value) => { LLMPrompt.useMessageHistory = value; }
+			),
+			this._makeIntegerSettingRow(
+				doc,
+				"Max history messages",
+				() => LLMPrompt.maxHistoryMessages,
+				(value) => { LLMPrompt.maxHistoryMessages = value; }
 			)
 		);
 		table.appendChild(tbody);

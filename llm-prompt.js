@@ -16,6 +16,24 @@ LLMPrompt = {
 	maxPDFContextChars: 60000,
 	maxPageContextChars: 5000,
 	chunkContextTopK: 10,
+	// Whether a request resends prior turns (see chat.exportTranscript()) to
+	// the model as conversation history, or just the current prompt alone
+	// (the previous, single-turn-only behavior) -- an in-memory setting
+	// only, not persisted across restarts (same as maxPDFContextChars/
+	// chunkContextTopK above), toggled via ui/advanced.js's "Use message
+	// history" checkbox. Off trades conversation continuity for lower
+	// per-request token usage, since every past turn no longer gets resent
+	// on every subsequent request.
+	useMessageHistory: true,
+	// Caps history to just the last N transcript entries (see request.js,
+	// Array.prototype.slice(-N)) rather than resending the ENTIRE
+	// conversation on every turn, which would otherwise grow (and cost)
+	// without bound as a conversation gets longer. A plain recency cutoff
+	// for now -- a smarter union(last K, top-L-by-embedding-similarity)
+	// scheme would recover long-range relevant context a pure cutoff drops,
+	// but needs message-level embedding storage/IDs this doesn't have yet,
+	// so it's deferred; simple truncation is a reasonable starting point.
+	maxHistoryMessages: 20,
 	_systemPrompt: [
 		"You are a helpful research assistant.",
 		"Always express mathematical formulas and equations using LaTeX notation.",
@@ -404,6 +422,18 @@ LLMPrompt = {
 		return "";
 	},
 
+	// `systemPrompt` (the citation/table/figure/equation formatting
+	// instructions -- see _systemPrompt above) is returned SEPARATELY from
+	// `prompt` now, rather than concatenated into it -- request.js passes
+	// it through to LLMInterfaces.streamModel as its own field (Anthropic's
+	// Messages API takes it as a dedicated top-level `system` parameter,
+	// not a message in the `messages` array; OpenAI-compatible endpoints
+	// and Ollama's /api/chat get it prepended as a {role: "system"} message
+	// instead -- see llm-interfaces.js). Everything else here (PDF/page/
+	// selection context, the actual question) stays turn-specific, since
+	// it's naturally query-dependent (retrieved chunks, selected text,
+	// etc.) rather than something that'd make sense to send once for a
+	// whole conversation.
 	async buildPromptWithActivePDFContext(userPrompt, selectedText = null, pageText = null) {
 		let item = LLMChatPane.getActiveReaderAttachment();
 
@@ -411,9 +441,10 @@ LLMPrompt = {
 			let parts = [];
 			if (pageText) parts.push("<PAGE_CONTEXT>", pageText, "</PAGE_CONTEXT>");
 			if (selectedText) parts.push("<SELECTION_CONTEXT>", selectedText, "</SELECTION_CONTEXT>");
-			parts.push(this._systemPrompt, userPrompt);
+			parts.push(userPrompt);
 			return {
 				prompt: parts.join("\n"),
+				systemPrompt: this._systemPrompt,
 				contextInfo: null,
 				selectedText,
 				item: null,
@@ -425,6 +456,7 @@ LLMPrompt = {
 		if (!text.trim()) {
 			return {
 				prompt: userPrompt,
+				systemPrompt: this._systemPrompt,
 				contextInfo: {
 					title: item.getField("title") || item.libraryKey,
 					missingText: true,
@@ -484,10 +516,11 @@ LLMPrompt = {
 		];
 		if (pageText) parts.push("<PAGE_CONTEXT>", pageText, "</PAGE_CONTEXT>");
 		if (selectedText) parts.push("<SELECTION_CONTEXT>", selectedText, "</SELECTION_CONTEXT>");
-		parts.push(this._systemPrompt, "<USER_QUESTION>", userPrompt, "</USER_QUESTION>");
+		parts.push("<USER_QUESTION>", userPrompt, "</USER_QUESTION>");
 
 		return {
 			prompt: parts.filter(line => line !== "").join("\n"),
+			systemPrompt: this._systemPrompt,
 			contextInfo: {
 				title,
 				charCount: text.length,

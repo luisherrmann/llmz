@@ -310,7 +310,19 @@ LLMInterfaces = {
 	// server itself is still stateless -- it remembers nothing between
 	// calls, so the full history has to be resent every time (see
 	// request.js, which builds `messages`).
-	async streamOllama(messages, onToken, { onReady, systemPrompt } = {}, images) {
+	// `tools` (same normalized [{name, description, schema}] shape as
+	// streamOpenAICompatible/streamAnthropic take) has been supported by
+	// Ollama's native /api/chat since 2024 -- confirmed against
+	// https://ollama.com/blog/tool-support and ollama-js's own
+	// examples/tools/calculator.ts, using the exact same OpenAI-shaped
+	// {type:"function", function:{name, description, parameters}} tool
+	// definitions the OpenAI-compatible providers already use. Whether the
+	// CURRENTLY SELECTED model actually honors it well is still a separate,
+	// real question -- see modelSupportsTools below (checked by callers,
+	// e.g. intent.js, before passing `tools` here at all) -- this function
+	// itself doesn't gate on that; it just forwards whatever `tools` it's
+	// given.
+	async streamOllama(messages, onToken, { onReady, systemPrompt, tools } = {}, images) {
 		let model = await this.getOllamaModel();
 
 		let ollamaMessages = [];
@@ -331,9 +343,17 @@ LLMInterfaces = {
 			ollamaMessages.push(entry);
 		}
 
+		let body = { model, messages: ollamaMessages, stream: true };
+		if (tools?.length) {
+			body.tools = tools.map(t => ({
+				type: "function",
+				function: { name: t.name, description: t.description, parameters: t.schema },
+			}));
+		}
+
 		let response = await fetch(`${this.ollamaBaseURL}/api/chat`, {
 			method: "POST",
-			body: JSON.stringify({ model, messages: ollamaMessages, stream: true }),
+			body: JSON.stringify(body),
 			headers: {
 				"Content-Type": "application/json",
 			},
@@ -350,6 +370,18 @@ LLMInterfaces = {
 		let buffer = "";
 		let text = "";
 
+		// Unlike streamOpenAICompatible/streamAnthropic's SSE protocols
+		// (where a tool call's arguments stream in as INCREMENTAL raw-JSON-
+		// string fragments across many chunks, needing _finalizeToolCalls'
+		// accumulate-then-parse dance), Ollama's /api/show-documented
+		// message.tool_calls[].function.arguments arrives as an ALREADY-
+		// PARSED JSON object, and (consistent with local inference not
+		// being able to emit a tool call before the whole thing has been
+		// generated) each qualifying chunk carries the complete tool_calls
+		// array already, not a partial fragment of it -- so this just keeps
+		// the latest non-empty one seen rather than accumulating anything.
+		let toolCalls = [];
+
 		// /api/chat's streamed lines carry each token as message.content,
 		// not response (/api/generate's shape) -- everything else about
 		// the line-delimited-JSON streaming protocol is the same.
@@ -363,6 +395,14 @@ LLMInterfaces = {
 			if (token) {
 				text += token;
 				onToken(token);
+			}
+			if (data.message?.tool_calls?.length) {
+				toolCalls = data.message.tool_calls.map(tc => ({
+					id: tc.id ?? null,
+					name: tc.function?.name ?? null,
+					arguments: tc.function?.arguments ?? null,
+					argumentsJSON: JSON.stringify(tc.function?.arguments ?? null),
+				}));
 			}
 		};
 
@@ -383,6 +423,7 @@ LLMInterfaces = {
 		return {
 			model,
 			text,
+			toolCalls,
 		};
 	},
 
@@ -404,7 +445,15 @@ LLMInterfaces = {
 	// itself is stateless regardless of provider -- resending the whole
 	// array on every request is what makes this a "conversation" at all,
 	// not something OpenAI-compatible endpoints do on their own.
-	async streamOpenAICompatible(baseURL, apiKey, model, messages, onToken, { onReady, systemPrompt } = {}, images) {
+	// `tools`, if given, is this plugin's own normalized shape --
+	// [{name, description, schema}], `schema` a plain JSON Schema object --
+	// translated below into OpenAI's wire format
+	// (tools: [{type:"function", function:{name, description, parameters}}]).
+	// Shared by every provider that routes through this function (OpenAI,
+	// LiteLLM, LM Studio -- see streamOpenAI/streamLiteLLM/streamLMStudio
+	// below), unlike Anthropic, which needs its own translation (see
+	// streamAnthropic) since its Messages API isn't OpenAI-shaped at all.
+	async streamOpenAICompatible(baseURL, apiKey, model, messages, onToken, { onReady, systemPrompt, tools } = {}, images) {
 		let headers = { "Content-Type": "application/json" };
 		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
@@ -432,13 +481,21 @@ LLMInterfaces = {
 			}
 		}
 
+		let body = {
+			model,
+			messages: apiMessages,
+			stream: true,
+		};
+		if (tools?.length) {
+			body.tools = tools.map(t => ({
+				type: "function",
+				function: { name: t.name, description: t.description, parameters: t.schema },
+			}));
+		}
+
 		let response = await fetch(`${baseURL}/chat/completions`, {
 			method: "POST",
-			body: JSON.stringify({
-				model,
-				messages: apiMessages,
-				stream: true,
-			}),
+			body: JSON.stringify(body),
 			headers,
 		});
 
@@ -453,6 +510,19 @@ LLMInterfaces = {
 		let buffer = "";
 		let text = "";
 
+		// A tool call streams in as several chunks, keyed by `index` (a
+		// model can request more than one call in the same response, e.g.
+		// two SINGLE reference lookups from one message) -- the first chunk
+		// for a given index usually carries `id`/`function.name`, while
+		// `function.arguments` streams in as incremental JSON-string
+		// fragments across many subsequent chunks that have to be
+		// concatenated before the whole thing is valid JSON. Accumulated
+		// here rather than exposed incrementally to the caller (unlike
+		// `text`/onToken) -- a half-formed tool call isn't actionable the
+		// way a partial text token is, so there's no equivalent streaming
+		// callback for it.
+		let toolCallsByIndex = new Map();
+
 		let processLine = (line) => {
 			line = line.trim();
 			if (!line.startsWith("data:")) return;
@@ -462,10 +532,17 @@ LLMInterfaces = {
 			if (data.error) {
 				throw new Error(data.error.message || JSON.stringify(data.error));
 			}
-			let delta = data.choices?.[0]?.delta?.content;
-			if (delta) {
-				text += delta;
-				onToken(delta);
+			let delta = data.choices?.[0]?.delta;
+			if (delta?.content) {
+				text += delta.content;
+				onToken(delta.content);
+			}
+			for (let tc of delta?.tool_calls || []) {
+				let entry = toolCallsByIndex.get(tc.index) || { id: null, name: null, argumentsJSON: "" };
+				if (tc.id) entry.id = tc.id;
+				if (tc.function?.name) entry.name = tc.function.name;
+				if (tc.function?.arguments) entry.argumentsJSON += tc.function.arguments;
+				toolCallsByIndex.set(tc.index, entry);
 			}
 		};
 
@@ -486,7 +563,32 @@ LLMInterfaces = {
 		return {
 			model,
 			text,
+			toolCalls: this._finalizeToolCalls(toolCallsByIndex),
 		};
+	},
+
+	// Shared by streamOpenAICompatible/streamAnthropic below -- both
+	// accumulate one tool call's arguments as a raw JSON string across many
+	// stream chunks (see either function's own comment for why), keyed by
+	// each provider's own stream-assigned index, and need the exact same
+	// "parse what's there, keep going even if a single call's JSON came out
+	// malformed" finalization once the stream ends. Returns
+	// [{id, name, arguments, argumentsJSON}] in index order -- `arguments`
+	// is the parsed object (or null if parsing failed, in which case
+	// `argumentsJSON` -- always present -- is the caller's only recourse).
+	_finalizeToolCalls(byIndex) {
+		return [...byIndex.entries()]
+			.sort((a, b) => a[0] - b[0])
+			.map(([, entry]) => {
+				let args = null;
+				try {
+					args = JSON.parse(entry.argumentsJSON || "{}");
+				}
+				catch (e) {
+					this.log(`_finalizeToolCalls: failed to parse arguments for tool "${entry.name}": ${e.message}`);
+				}
+				return { id: entry.id, name: entry.name, arguments: args, argumentsJSON: entry.argumentsJSON };
+			});
 	},
 
 	async listLMStudioModels() {
@@ -640,8 +742,13 @@ LLMInterfaces = {
 	// request.js). `systemPrompt`, unlike the OpenAI-compatible backends
 	// (which get it prepended as a {role: "system"} message), goes in
 	// Anthropic's own dedicated top-level `system` field instead -- its
-	// Messages API has no "system" role within `messages` at all.
-	async streamAnthropic(messages, onToken, { onReady, systemPrompt } = {}, images) {
+	// Messages API has no "system" role within `messages` at all. `tools`
+	// is the same normalized [{name, description, schema}] shape
+	// streamOpenAICompatible takes -- translated below into Anthropic's own
+	// wire format (tools: [{name, description, input_schema}]), a plain
+	// top-level array rather than OpenAI's {type:"function", function:{...}}
+	// wrapper.
+	async streamAnthropic(messages, onToken, { onReady, systemPrompt, tools } = {}, images) {
 		let model = await this.getAnthropicModel();
 
 		let apiMessages = messages.map((m, i) => {
@@ -680,6 +787,9 @@ LLMInterfaces = {
 		if (systemPrompt) {
 			body.system = systemPrompt;
 		}
+		if (tools?.length) {
+			body.tools = tools.map(t => ({ name: t.name, description: t.description, input_schema: t.schema }));
+		}
 
 		let response = await fetch(`${this.anthropicBaseURL}/messages`, {
 			method: "POST",
@@ -702,6 +812,18 @@ LLMInterfaces = {
 		let buffer = "";
 		let text = "";
 
+		// Same accumulate-then-finalize approach as streamOpenAICompatible's
+		// own toolCallsByIndex (see _finalizeToolCalls, shared by both), but
+		// keyed and shaped differently since Anthropic's streaming protocol
+		// for a tool_use block is structured differently from OpenAI's:
+		// `content_block_start` (keyed by `data.index`) carries the tool's
+		// `id`/`name` up front in a single event, and its `input` (the
+		// arguments) then streams in as raw JSON-string fragments via
+		// `content_block_delta` events of type "input_json_delta" --
+		// `delta.partial_json` -- rather than being split across the same
+		// kind of event that also carries `name`.
+		let toolCallsByIndex = new Map();
+
 		let processLine = (line) => {
 			line = line.trim();
 			if (!line.startsWith("data:")) return;
@@ -714,6 +836,17 @@ LLMInterfaces = {
 			if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
 				text += data.delta.text;
 				onToken(data.delta.text);
+			}
+			else if (data.type === "content_block_start" && data.content_block?.type === "tool_use") {
+				toolCallsByIndex.set(data.index, {
+					id: data.content_block.id,
+					name: data.content_block.name,
+					argumentsJSON: "",
+				});
+			}
+			else if (data.type === "content_block_delta" && data.delta?.type === "input_json_delta") {
+				let entry = toolCallsByIndex.get(data.index);
+				if (entry) entry.argumentsJSON += data.delta.partial_json || "";
 			}
 		};
 
@@ -734,6 +867,7 @@ LLMInterfaces = {
 		return {
 			model,
 			text,
+			toolCalls: this._finalizeToolCalls(toolCallsByIndex),
 		};
 	},
 
@@ -745,6 +879,17 @@ LLMInterfaces = {
 	// shouldn't carry history or a custom system prompt) or an array of
 	// {role, content} entries (request.js's actual chat flow, built from
 	// chat.exportTranscript() plus the current turn).
+	// `opts.tools`, if given, is passed straight through to whichever
+	// provider function ends up handling this call -- normalized
+	// [{name, description, schema}] (schema a plain JSON Schema object),
+	// translated into each provider's own wire format by
+	// streamOpenAICompatible (OpenAI/LiteLLM/LM Studio), streamAnthropic,
+	// or streamOllama (all four support it -- see modelSupportsTools for
+	// checking whether the CURRENTLY SELECTED model actually honors it
+	// well, which this function itself doesn't gate on). Every path's
+	// result is `{model, text, toolCalls}` --
+	// `toolCalls` is `[{id, name, arguments, argumentsJSON}]`, empty unless
+	// the model actually decided to call something.
 	async streamModel(messages, onToken, opts, images) {
 		if (typeof messages === "string") {
 			messages = [{ role: "user", content: messages }];
@@ -791,6 +936,28 @@ LLMInterfaces = {
 			return this.anthropicSupportsVision(model);
 		}
 		return this._visionModelNamePattern.test(model);
+	},
+
+	// Same idea as modelSupportsImages above, but for tool-calling (see
+	// intent.js's detectIntent, the only current caller -- it uses this to
+	// decide whether to route through native tool-calling at all, falling
+	// back to the older sequential prompt-based classifiers otherwise).
+	// Ollama's /api/show capabilities array reports "tools" per-model, same
+	// mechanism modelSupportsImages already uses for "vision" -- unlike
+	// vision, none of the other three providers expose an equivalent
+	// per-model capability query for tool support (LiteLLM's own
+	// /model_group/info has no supports_tools field the way it has
+	// supports_vision), so OpenAI/Anthropic/LiteLLM/LM Studio are all
+	// assumed to support it -- consistent with tools/reference-retrieval.js's/
+	// reference-linker.js's own native-tool-calling design already
+	// targeting exactly those four providers.
+	async modelSupportsTools(model) {
+		if (!model) return false;
+		if (this._provider === "ollama") {
+			let caps = await this.getOllamaModelCapabilities(model);
+			return caps.includes("tools");
+		}
+		return true;
 	},
 
 	async listModels() {

@@ -14,6 +14,49 @@ LLMReferenceLinker = {
 		Zotero.debug("LLM Chat Pane [Reference Linker]: " + msg);
 	},
 
+	// Native-tool-calling descriptor for this tool (see intent.js's
+	// detectIntent) -- same shape/rationale as
+	// LLMReferenceRetrieval.intentTool, see its own comment. Used for every
+	// provider except Ollama, which falls back to detectLinkIntent below
+	// instead.
+	intentTool: {
+		name: "link_reference",
+		description: [
+			"Links one or more bibliography/reference-list entries from the paper",
+			"currently open in the reader to the matching item ALREADY in the",
+			"user's Zotero library, creating a \"Related\" relation between the",
+			"current paper and that reference. Use this when the user asks to",
+			"link, relate, or connect a reference to the corresponding library",
+			"item -- NOT for downloading, saving, or fetching a reference from the",
+			"web (a separate tool exists for that), and not for anything else",
+			"about the PDF's content.",
+		].join(" "),
+		schema: {
+			type: "object",
+			properties: {
+				type: {
+					type: "string",
+					enum: ["single", "describe", "list", "range", "all", "select"],
+					description: [
+						"single: one reference by explicit number (set index). describe: one",
+						"reference identified by title/author/description, no number given",
+						"(set description). list: an enumerated set of specific numbers (set",
+						"indices). range: a numeric range (set from/to). all: every reference",
+						"in the bibliography (no other fields needed). select: a criterion",
+						"other than an explicit number/range/list, e.g. author/year/topic (set",
+						"description).",
+					].join(" "),
+				},
+				index: { type: "integer", description: "Required when type is 'single' -- the reference number." },
+				description: { type: "string", description: "Required when type is 'describe' or 'select' -- the identifying text or selection criterion, in the user's own words." },
+				indices: { type: "array", items: { type: "integer" }, description: "Required when type is 'list' -- the explicit reference numbers." },
+				from: { type: "integer", description: "Required when type is 'range' -- the start of the range." },
+				to: { type: "integer", description: "Required when type is 'range' -- the end of the range." },
+			},
+			required: ["type"],
+		},
+	},
+
 	// Same six-shape classification as LLMReferenceRetrieval.
 	// detectDownloadIntent, but for a "link reference(s) to the existing
 	// library item" request instead of a download -- e.g. "link reference
@@ -22,9 +65,13 @@ LLMReferenceLinker = {
 	// format, just different classify-prompt wording) rather than
 	// duplicating that parsing logic. Explicitly excludes download phrasing
 	// in its own "none" case (and vice versa in detectDownloadIntent) so a
-	// single message reliably matches at most one of the two, despite both
-	// being checked independently (see request.js, which tries download
-	// intent first, then link intent, each its own classify call).
+	// single message reliably matches at most one of the two -- still
+	// relevant for the Ollama fallback path (see intent.js), which runs
+	// both classifiers sequentially exactly as before; providers with
+	// native tool-calling support see both tools in the SAME call instead
+	// (see intentTool above), where this disambiguation is handled by the
+	// model picking at most one tool rather than by two independent "none"
+	// checks.
 	// Returns one of:
 	//   { type: "single", index }
 	//   { type: "describe", description }

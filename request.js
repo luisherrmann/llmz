@@ -47,13 +47,13 @@ LLMRequest = {
 	// linking strictly needs, but shared for simplicity.
 	_REFERENCE_CONCURRENCY: 8,
 
-	// Resolves `intent` (see LLMReferenceRetrieval.detectDownloadIntent/
-	// tools/reference-linker.js's detectLinkIntent -- both return the same
-	// six-shape intent object) down to a concrete list of reference numbers,
-	// against `pdfItem`'s own bibliography. Shared between the download and
-	// link flows in send() below, since this resolution step is completely
-	// identical either way -- only what's DONE with the resulting indices
-	// differs (see downloadOneReference/linkOneReference).
+	// Resolves `intent` (see intent.js's detectIntent, which returns the
+	// same six-shape intent object regardless of which tool matched or
+	// which detection path produced it) down to a concrete list of
+	// reference numbers, against `pdfItem`'s own bibliography. Shared
+	// between the download and link cases in send() below, since this
+	// resolution step is completely identical either way -- only what's
+	// DONE with the resulting indices differs (see processOneReference).
 	// "single"/"describe" resolve to at most one entry each; "list"/"range"/
 	// "all" are pure arithmetic against the paper's own reference list
 	// (resolveExplicitIndices, no model call); "select" (a criterion like
@@ -127,13 +127,25 @@ LLMRequest = {
 			let replyLabel = currentModel ? `${providerLabel} - ${currentModel}` : providerLabel;
 
 			// Checked FIRST, before building the (comparatively expensive)
-			// full PDF-context prompt -- a "download reference N" request
-			// short-circuits the normal chat flow entirely, since the main
-			// model has nothing useful to add to a request this specific.
+			// full PDF-context prompt -- a "download reference N"/"link
+			// reference N" request short-circuits the normal chat flow
+			// entirely, since the main model has nothing useful to add to a
+			// request this specific. LLMIntent.detectIntent (see intent.js)
+			// owns deciding WHICH of the two tools (if either) applies --
+			// native tool-calling for models that support it, or
+			// LLMReferenceRetrieval.detectDownloadIntent/
+			// LLMReferenceLinker.detectLinkIntent run sequentially otherwise
+			// (currently only reachable for a non-tool-capable Ollama model)
+			// -- so this block doesn't need to know or care which path
+			// actually ran.
 			try {
-				let intent = await LLMReferenceRetrieval.detectDownloadIntent(prompt);
+				let detected = await LLMIntent.detectIntent(prompt, currentModel, (msg) => {
+					if (cancelled) return;
+					appendMessage("System", msg);
+				});
 				if (cancelled) return;
-				if (intent !== null) {
+				if (detected !== null) {
+					let { tool, intent } = detected;
 					appendMessage("You", prompt);
 					let pdfItem = chatPane.getActiveReaderAttachment();
 					if (!pdfItem) {
@@ -142,8 +154,8 @@ LLMRequest = {
 					}
 
 					// Resolves `intent` down to a concrete list of reference
-					// numbers to download -- see _resolveIntentIndices above,
-					// shared with the link-intent block below.
+					// numbers -- see _resolveIntentIndices above, shared
+					// regardless of which tool matched.
 					let indices = await this._resolveIntentIndices(intent, pdfItem);
 					if (cancelled) return;
 
@@ -155,7 +167,7 @@ LLMRequest = {
 					}
 
 					if (indices.length > 1) {
-						appendMessage("System", `Found ${indices.length} matching references: ${indices.join(", ")}. Downloading...`);
+						appendMessage("System", `Found ${indices.length} matching references: ${indices.join(", ")}. ${tool === "download" ? "Downloading" : "Linking"}...`);
 					}
 
 					// One reply bubble per reference, even for a multi-reference
@@ -168,9 +180,13 @@ LLMRequest = {
 					// below, kept separate from onProgress (full step-by-step
 					// detail, Logs panel only) since the bubble only wants a
 					// few coarse, general status lines, not every query/
-					// candidate onProgress reports.
-					let downloadOneReference = async (downloadRefNum) => {
-						let reply = appendMessage(replyLabel, `Looking up reference ${downloadRefNum}...`);
+					// candidate onProgress reports. Branches on `tool` for
+					// both the actual call (downloadReferenceToLibrary vs
+					// linkReferenceToLibrary) and how its result renders --
+					// the two results carry different shapes (alreadyInLibrary/
+					// hasPDF/sourceURL vs linked/alreadyLinked).
+					let processOneReference = async (refNum) => {
+						let reply = appendMessage(replyLabel, `Looking up reference ${refNum}...`);
 						let onProgress = (msg) => {
 							if (cancelled) return;
 							appendMessage("System", msg);
@@ -179,38 +195,57 @@ LLMRequest = {
 							if (cancelled) return;
 							chat.updateMessageText(reply, msg);
 						};
-						let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(downloadRefNum, pdfItem, onProgress, onStage);
-						if (cancelled) return;
-						// The outcome of the fetch -- as opposed to the interim
-						// progress notices above -- is what the user actually asked
-						// for, so it replaces the placeholder in the visible
-						// conversation rather than just logging it.
-						if (result.alreadyInLibrary) {
-							chat.finalizeRichMessage(reply, [
-								{ text: "The paper is already included in your Zotero library: " },
-								{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-								{ text: "." },
-							]);
-						}
-						else if (result.success) {
-							let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
-							let parts = [
-								{ text: `Added "` },
-								{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-								{ text: `"${statusText}` },
-							];
-							if (result.sourceURL) {
-								parts.push(
-									{ text: " (source: " },
-									{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
-									{ text: ")" }
-								);
+						if (tool === "download") {
+							let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(refNum, pdfItem, onProgress, onStage);
+							if (cancelled) return;
+							if (result.alreadyInLibrary) {
+								chat.finalizeRichMessage(reply, [
+									{ text: "The paper is already included in your Zotero library: " },
+									{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+									{ text: "." },
+								]);
 							}
-							parts.push({ text: "." });
-							chat.finalizeRichMessage(reply, parts);
+							else if (result.success) {
+								let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
+								let parts = [
+									{ text: `Added "` },
+									{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+									{ text: `"${statusText}` },
+								];
+								if (result.sourceURL) {
+									parts.push(
+										{ text: " (source: " },
+										{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
+										{ text: ")" }
+									);
+								}
+								parts.push({ text: "." });
+								chat.finalizeRichMessage(reply, parts);
+							}
+							else {
+								chat.updateMessageText(reply, result.message);
+							}
 						}
 						else {
-							chat.updateMessageText(reply, result.message);
+							let result = await LLMReferenceLinker.linkReferenceToLibrary(refNum, pdfItem, onProgress, onStage);
+							if (cancelled) return;
+							if (result.success && result.linked) {
+								let verb = result.alreadyLinked ? "is already linked to" : "linked to";
+								chat.finalizeRichMessage(reply, [
+									{ text: `"` },
+									{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+									{ text: `" ${verb} the current paper.` },
+								]);
+							}
+							else {
+								// Either the reference's title couldn't be
+								// resolved, or a title WAS resolved but nothing
+								// matching exists in the library yet (see
+								// linkReferenceToLibrary -- deliberately never
+								// downloads anything itself) -- both cases
+								// already carry a complete, user-facing message.
+								chat.updateMessageText(reply, result.message);
+							}
 						}
 					};
 
@@ -227,23 +262,25 @@ LLMRequest = {
 					// tools/reference-retrieval.js's _findPDFViaWebSearch), is serialized
 					// separately via _throttledSearchWeb, so parallelizing here
 					// doesn't make that worse. Bounded (not a free-for-all
-					// Promise.all over every index) since "download all references"
-					// can mean 50+ papers at once -- an unbounded fan-out would mean
-					// that many simultaneous HiddenBrowser instances/Translate calls.
-					// A single reference throwing (e.g. a network error) is caught
-					// per-reference so it doesn't abort the rest of the batch.
+					// Promise.all over every index) since "download/link all
+					// references" can mean 50+ papers at once -- an unbounded
+					// fan-out would mean that many simultaneous HiddenBrowser
+					// instances/Translate calls (download) or LLM calls (link).
+					// A single reference throwing (e.g. a network error) is
+					// caught per-reference so it doesn't abort the rest of the
+					// batch.
 					let nextIndexPos = 0;
 					let worker = async () => {
 						while (nextIndexPos < indices.length) {
 							if (cancelled) return;
-							let downloadRefNum = indices[nextIndexPos++];
+							let refNum = indices[nextIndexPos++];
 							try {
-								await downloadOneReference(downloadRefNum);
+								await processOneReference(refNum);
 							}
 							catch (e) {
 								if (cancelled) return;
-								this.log(`downloadOneReference(${downloadRefNum}) failed: ${e.message}`);
-								appendMessage("System", `Reference ${downloadRefNum} download failed: ${e.message}`);
+								this.log(`processOneReference(${refNum}) [${tool}] failed: ${e.message}`);
+								appendMessage("System", `Reference ${refNum} ${tool === "download" ? "download" : "linking"} failed: ${e.message}`);
 							}
 						}
 					};
@@ -254,107 +291,8 @@ LLMRequest = {
 			}
 			catch (e) {
 				if (cancelled) return;
-				this.log(`LLMReferenceRetrieval.detectDownloadIntent/downloadReferenceToLibrary failed: ${e.message}`);
-				appendMessage("System", `Reference download failed: ${e.message}`);
-				return;
-			}
-
-			// Checked SECOND, only once the download-intent check above came
-			// back null -- a "link reference N" request short-circuits the
-			// normal chat flow the same way a download request does, just
-			// linking to whatever's already in the library (see
-			// tools/reference-linker.js's LLMReferenceLinker) instead of fetching
-			// anything new. Structurally identical to the download block
-			// above (same intent-resolution helper, same per-reference
-			// worker-pool pattern), differing only in what happens with each
-			// resolved reference number.
-			try {
-				let intent = await LLMReferenceLinker.detectLinkIntent(prompt);
-				if (cancelled) return;
-				if (intent !== null) {
-					appendMessage("You", prompt);
-					let pdfItem = chatPane.getActiveReaderAttachment();
-					if (!pdfItem) {
-						appendMessage("System", "No active PDF to look up references from.");
-						return;
-					}
-
-					let indices = await this._resolveIntentIndices(intent, pdfItem);
-					if (cancelled) return;
-
-					if (!indices || !indices.length) {
-						appendMessage("System", intent.description
-							? `Could not find any references matching "${intent.description}" in this paper's bibliography.`
-							: "Could not find any matching references in this paper's bibliography.");
-						return;
-					}
-
-					if (indices.length > 1) {
-						appendMessage("System", `Found ${indices.length} matching references: ${indices.join(", ")}. Linking...`);
-					}
-
-					let linkOneReference = async (linkRefNum) => {
-						let reply = appendMessage(replyLabel, `Looking up reference ${linkRefNum}...`);
-						let onProgress = (msg) => {
-							if (cancelled) return;
-							appendMessage("System", msg);
-						};
-						let onStage = (msg) => {
-							if (cancelled) return;
-							chat.updateMessageText(reply, msg);
-						};
-						let result = await LLMReferenceLinker.linkReferenceToLibrary(linkRefNum, pdfItem, onProgress, onStage);
-						if (cancelled) return;
-						if (result.success && result.linked) {
-							let verb = result.alreadyLinked ? "is already linked to" : "linked to";
-							chat.finalizeRichMessage(reply, [
-								{ text: `"` },
-								{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-								{ text: `" ${verb} the current paper.` },
-							]);
-						}
-						else {
-							// Either the reference's title couldn't be
-							// resolved, or a title WAS resolved but nothing
-							// matching exists in the library yet (see
-							// linkReferenceToLibrary -- deliberately never
-							// downloads anything itself) -- both cases
-							// already carry a complete, user-facing message.
-							chat.updateMessageText(reply, result.message);
-						}
-					};
-
-					// Same bounded-parallel worker-pool pattern as
-					// downloadOneReference above, for the same "linking all
-					// references could mean 50+ at once" reason -- though
-					// linking itself has no per-reference network fan-out
-					// (just one LLM call + one local DB search each), so
-					// this mainly bounds simultaneous LLM calls rather than
-					// HiddenBrowser/Translate load.
-					let nextIndexPos = 0;
-					let worker = async () => {
-						while (nextIndexPos < indices.length) {
-							if (cancelled) return;
-							let linkRefNum = indices[nextIndexPos++];
-							try {
-								await linkOneReference(linkRefNum);
-							}
-							catch (e) {
-								if (cancelled) return;
-								this.log(`linkOneReference(${linkRefNum}) failed: ${e.message}`);
-								appendMessage("System", `Reference ${linkRefNum} linking failed: ${e.message}`);
-							}
-						}
-					};
-					let workerCount = Math.min(this._REFERENCE_CONCURRENCY, indices.length);
-					await Promise.all(Array.from({ length: workerCount }, () => worker()));
-					return;
-				}
-			}
-			catch (e) {
-				if (cancelled) return;
-				this.log(`LLMReferenceLinker.detectLinkIntent/linkReferenceToLibrary failed: ${e.message}`);
-				appendMessage("System", `Reference linking failed: ${e.message}`);
+				this.log(`LLMIntent.detectIntent failed: ${e.message}`);
+				appendMessage("System", `Reference lookup failed: ${e.message}`);
 				return;
 			}
 

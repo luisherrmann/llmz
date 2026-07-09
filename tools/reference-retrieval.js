@@ -72,6 +72,55 @@ LLMReferenceRetrieval = {
 		return null;
 	},
 
+	// Native-tool-calling descriptor for this tool (see intent.js's
+	// detectIntent) -- {name, description, schema} in the shape
+	// llm-interfaces.js's streamModel `opts.tools` expects. Used for every
+	// provider EXCEPT Ollama (see streamOllama's own comment for why) --
+	// Ollama instead falls back to detectDownloadIntent's prompt-based
+	// classify call below. `schema`'s six-shape `type` enum deliberately
+	// mirrors _parseIntentResponse's SINGLE/DESCRIBE/LIST/RANGE/ALL/SELECT
+	// text format exactly -- a native tool call's already-parsed
+	// `arguments` (see llm-interfaces.js's _finalizeToolCalls) ends up the
+	// same shape _parseIntentResponse returns either way (see intent.js's
+	// _argumentsToIntent), so downstream resolution (request.js's
+	// _resolveIntentIndices) never needs to know which path produced it.
+	intentTool: {
+		name: "download_reference",
+		description: [
+			"Downloads one or more bibliography/reference-list entries from the",
+			"paper currently open in the reader into the user's Zotero library,",
+			"fetching a PDF copy from the web when possible. Use this when the user",
+			"asks to download, save, fetch, or grab a reference/citation FROM this",
+			"paper's own bibliography -- NOT for linking/relating a reference to an",
+			"item that's already in the library (a separate tool exists for that),",
+			"and not for anything else about the PDF's content.",
+		].join(" "),
+		schema: {
+			type: "object",
+			properties: {
+				type: {
+					type: "string",
+					enum: ["single", "describe", "list", "range", "all", "select"],
+					description: [
+						"single: one reference by explicit number (set index). describe: one",
+						"reference identified by title/author/description, no number given",
+						"(set description). list: an enumerated set of specific numbers (set",
+						"indices). range: a numeric range (set from/to). all: every reference",
+						"in the bibliography (no other fields needed). select: a criterion",
+						"other than an explicit number/range/list, e.g. author/year/topic (set",
+						"description).",
+					].join(" "),
+				},
+				index: { type: "integer", description: "Required when type is 'single' -- the reference number." },
+				description: { type: "string", description: "Required when type is 'describe' or 'select' -- the identifying text or selection criterion, in the user's own words." },
+				indices: { type: "array", items: { type: "integer" }, description: "Required when type is 'list' -- the explicit reference numbers." },
+				from: { type: "integer", description: "Required when type is 'range' -- the start of the range." },
+				to: { type: "integer", description: "Required when type is 'range' -- the end of the range." },
+			},
+			required: ["type"],
+		},
+	},
+
 	// Detects a "download reference(s)" request before the message is sent
 	// to the main chat model, in whatever phrasing the user happens to
 	// use, and classifies it into one of six shapes -- a single explicit

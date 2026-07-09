@@ -6,7 +6,7 @@
 // llm-chat-pane.js's onRender for the same reason as the other ui/ modules.
 LLMUIAdvanced = {
 	// Returns a <tr> for one setting -- shared table layout with
-	// ui/providers.js/ui/keyboard_shortcuts.js, so the input column lines up
+	// ui/providers.js/ui/keyboard-shortcuts.js, so the input column lines up
 	// at the same position for every row regardless of label length.
 	_makeIntegerSettingRow(doc, labelText, get, set, { min = 1 } = {}) {
 		let tr = doc.createElement("tr");

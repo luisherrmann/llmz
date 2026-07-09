@@ -1,6 +1,6 @@
 // The collapsible "Past Conversations" panel: a fixed-height, independently scrolling
 // list of cards, one per conversation previously saved (via Export -- see
-// export.js/ui/conversation-history.js) for the active PDF, one .md file per
+// export.js/conversation-history.js) for the active PDF, one .md file per
 // card under $HOME/Zotero/zllm/chats/<PDF_ID>/. Split out of
 // llm-chat-pane.js's onRender for the same reason as the other ui/ modules.
 LLMUIConversationHistory = {
@@ -52,7 +52,7 @@ LLMUIConversationHistory = {
 			list.appendChild(empty);
 		};
 
-		// Builds one timeline entry for `conv` (see ui/conversation-history.js's
+		// Builds one timeline entry for `conv` (see conversation-history.js's
 		// listConversations: { filename, path, preview, started, saved,
 		// length }) -- any field the source file didn't have comes back as
 		// the literal string "UNKNOWN" from that same call, and is shown

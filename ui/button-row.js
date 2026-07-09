@@ -28,7 +28,7 @@ LLMUIButtonRow = {
 	// `onImport()` is called on an Import click -- everything else is the
 	// caller's concern. `onExported()` is called after a successful (not
 	// cancelled) Export -- the caller uses this to refresh
-	// ui/conversation_history.js's table, which this module has no
+	// ui/past-conversations.js's table, which this module has no
 	// business knowing about directly. `onClearConversation()` is called on
 	// a Clear click -- wired directly to ui/chat.js's clear(), which this
 	// module doesn't hold a reference to itself. `sendIconURL`/
@@ -53,7 +53,7 @@ LLMUIButtonRow = {
 		// the "No messages loaded yet..." placeholder state -- does NOT
 		// touch any saved file on disk, so this is purely "start a fresh
 		// conversation in the pane", distinct from Delete on a
-		// ui/conversation_history.js card (which DOES remove a file).
+		// ui/past-conversations.js card (which DOES remove a file).
 		let clearConversationButton = doc.createElement("button");
 		clearConversationButton.className = "llm-clear-conversation";
 		clearConversationButton.title = "Clear the current conversation (does not delete any saved file)";

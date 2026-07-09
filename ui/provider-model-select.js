@@ -84,7 +84,7 @@ LLMUIProviderModelSelect = {
 	// `refreshIconURL` is a plain file:/jar: URL (see llm-chat-pane.js's
 	// onRender, rootURI + "icons/refresh_*.svg"), rendered via the shared
 	// CSS mask-image .llm-icon class (see style.css) -- same technique as
-	// ui/conversation_history.js's edit/done_outline toggle icons.
+	// ui/past-conversations.js's edit/done_outline toggle icons.
 	// Returns:
 	//   element   -- the row <div> (provider select, model select, refresh
 	//                button) to place in the pane's controls

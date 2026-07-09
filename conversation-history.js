@@ -2,13 +2,12 @@
 // (see export.js's buildMarkdown, which embeds it directly under the title,
 // before "## Info"), and lists every conversation stored for a given PDF
 // under $HOME/Zotero/zllm/chats/<PDF_ID>/ -- the data source for
-// ui/conversation_history.js's card list (the two are separate files despite
-// both living under ui/ -- hyphen vs underscore in the filename -- since
-// this one is filesystem interaction + markdown parsing, not UI
-// construction; kept as its own file rather than folded into
-// ui/conversation_history.js for the same reason export.js/import.js are
-// their own top-level modules instead of being merged into whatever UI
-// module triggers them).
+// ui/past-conversations.js's card list. Lives at the plugin root (NOT
+// under ui/, despite the near-identical filename that briefly lived there
+// too) for the same reason export.js/import.js do: this is filesystem
+// interaction + markdown parsing, not UI construction, so it isn't folded
+// into ui/past-conversations.js or given an LLMUI-prefixed name like
+// every actual ui/ module has.
 //
 // There's no separate persisted index/manifest of conversations -- the .md
 // files themselves are the source of truth, and listConversations() below
@@ -187,7 +186,7 @@ LLMConversationHistory = {
 	},
 
 	// Permanently removes a conversation file from disk -- used by
-	// ui/conversation_history.js's Delete button. The caller is
+	// ui/past-conversations.js's Delete button. The caller is
 	// responsible for updating whatever's displayed (removing the
 	// corresponding card) -- this module has no UI to keep in sync itself.
 	async deleteConversation(path) {
@@ -205,7 +204,7 @@ LLMConversationHistory = {
 	},
 
 	// Renames a conversation file to `<newTitle>.md`, in the same directory
-	// the original file lives in -- used by ui/conversation_history.js's
+	// the original file lives in -- used by ui/past-conversations.js's
 	// inline title editor. Throws if `newTitle` sanitizes down to nothing,
 	// or if a file with that name already exists (deliberately NOT
 	// overwritten -- IOUtils.move's default behavior -- so renaming one

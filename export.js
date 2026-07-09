@@ -94,10 +94,10 @@ LLMExport = {
 	// "ROLE | time:" heading. import.js's parseConversation is this format's
 	// inverse -- keep the two in sync if this ever changes.
 	// Always regenerates the WHOLE document (including the METADATA block
-	// -- see ui/conversation-history.js) from the CURRENT transcript,
+	// -- see conversation-history.js) from the CURRENT transcript,
 	// whether this is a brand new file or an overwrite of an existing one
 	// -- so there's no separate "patch an existing file's METADATA" path to
-	// keep in sync; ui/conversation_history.js's card list just reflects
+	// keep in sync; ui/past-conversations.js's card list just reflects
 	// whatever's actually on disk the next time it reads the folder.
 	buildMarkdown(paperItem, transcript) {
 		let title = paperItem.getField("title") || paperItem.libraryKey;

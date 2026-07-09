@@ -5,7 +5,7 @@
 // how this chrome context happens to parse raw SVG markup injected via
 // innerHTML). Pulled out as its own tiny module once this exact
 // span-plus-mask-image construction started repeating across
-// ui/conversation_history.js (edit/done_outline), ui/provider_model_select.js
+// ui/past-conversations.js (edit/done_outline), ui/provider-model-select.js
 // (refresh), and ui/button-row.js/ui/image-paste.js (send/cancel/delete/
 // upload/file_export/remove_selection).
 LLMUIIcon = {

@@ -781,12 +781,12 @@ LLMChatPane = {
 
 				// Reloads the card list from whatever's actually on disk for
 				// the active PDF right now -- there's no separate persisted
-				// index to keep in sync (see ui/conversation-history.js), so a
+				// index to keep in sync (see conversation-history.js), so a
 				// "refresh" is just "re-read the folder". Called once below
 				// (initial population) and again after every successful
 				// Export (see onExported), which is the only action that
 				// changes what's on disk from within this pane. Deleting a
-				// card (see ui/conversation_history.js) doesn't need this --
+				// card (see ui/past-conversations.js) doesn't need this --
 				// it just removes its own DOM node directly.
 				let refreshConversationHistory = async () => {
 					let pdfItem = this.getActiveReaderAttachment();

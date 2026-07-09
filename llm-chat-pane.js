@@ -619,6 +619,14 @@ LLMChatPane = {
 				let container = doc.createElement("div");
 				container.className = "llm-container";
 
+				// Top-level header for the whole Conversation History/Prompt/
+				// Messages grouping below -- distinct from ui/chat.js's own
+				// "Messages" label, which sits directly above just the
+				// scrollable message list itself.
+				let conversationLabel = doc.createElement("div");
+				conversationLabel.className = "llm-section-label";
+				conversationLabel.textContent = "Conversation";
+
 				let inputLabel = doc.createElement("div");
 				inputLabel.className = "llm-section-label";
 				inputLabel.textContent = "Prompt";
@@ -628,6 +636,14 @@ LLMChatPane = {
 				input.className = "llm-input";
 
 				let imagePaste = LLMUIImagePaste.create(doc, input, (text) => appendMessage("System", text));
+
+				// Header for the provider/model select + Providers/Keyboard
+				// Shortcuts/Advanced/Logs grouping below -- all
+				// configuration, as opposed to the Conversation grouping
+				// (Conversation header onward) below it.
+				let settingsLabel = doc.createElement("div");
+				settingsLabel.className = "llm-section-label";
+				settingsLabel.textContent = "Settings";
 
 				let providerModelSelect = LLMUIProviderModelSelect.create(doc);
 
@@ -652,32 +668,28 @@ LLMChatPane = {
 
 				let chat = LLMUIChat.create(doc);
 
-				// Imports a conversation previously written by Export,
-				// replacing whatever's currently shown. Non-"You" messages are
-				// re-rendered as markdown (not just dumped as plain text) using
-				// the SAME link-resolution data a live request would build --
-				// table/figure/reference/equation links key off each item's own
-				// stable paper-native number, and note links key off the
-				// annotation's own stable Zotero item key (see
-				// LLMPrompt.buildLinkIndex/_formatNoteContext), so as long as
-				// the active PDF's cached extraction indexes (and, for notes,
-				// its still-existing annotations) are the same ones the export
-				// came from, ALL of these resolve identically to a live reply
-				// -- there's no historical/live distinction left. A note link
-				// only fails to resolve if that specific annotation has since
-				// been deleted, in which case it falls back to plain unlinked
-				// text via _renderMarkdown's own handling of an unresolvable
+				// Replaces whatever's currently shown with `transcript` --
+				// shared by both onImport (a file-picker-selected file) and
+				// onLoadConversation (a Conversation History card's Load
+				// button), since both need the exact same rebuild. Non-"You"
+				// messages are re-rendered as markdown (not just dumped as
+				// plain text) using the SAME link-resolution data a live
+				// request would build -- table/figure/reference/equation
+				// links key off each item's own stable paper-native number,
+				// and note links key off the annotation's own stable Zotero
+				// item key (see LLMPrompt.buildLinkIndex/_formatNoteContext),
+				// so as long as the active PDF's cached extraction indexes
+				// (and, for notes, its still-existing annotations) are the
+				// same ones the export came from, ALL of these resolve
+				// identically to a live reply -- there's no historical/live
+				// distinction left. A note link only fails to resolve if
+				// that specific annotation has since been deleted, in which
+				// case it falls back to plain unlinked text via
+				// _renderMarkdown's own handling of an unresolvable
 				// linkIndex entry.
-				let onImport = async () => {
-					let transcript = await LLMImport.importConversation();
-					if (transcript === null) return; // cancelled
-					if (!transcript.length) {
-						appendMessage("System", "Import: no messages found in that file.");
-						return;
-					}
+				let loadTranscriptIntoChat = async (transcript, pdfItem, logLabel) => {
 					chat.clear();
 
-					let pdfItem = this.getActiveReaderAttachment();
 					let linkIndex = {};
 					if (pdfItem) {
 						try {
@@ -698,7 +710,7 @@ LLMChatPane = {
 							linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes });
 						}
 						catch (e) {
-							this.log(`Failed to build link index for import: ${e.message}`);
+							this.log(`Failed to build link index for ${logLabel}: ${e.message}`);
 						}
 					}
 
@@ -713,8 +725,69 @@ LLMChatPane = {
 						let html = this._renderMarkdown(text, linkIndex);
 						if (html) chat.renderMarkdownMessage(content, html, text);
 					}
+				};
+
+				// Imports a conversation previously written by Export
+				// (picked via a native file dialog), replacing whatever's
+				// currently shown.
+				let onImport = async () => {
+					let pdfItem = this.getActiveReaderAttachment();
+					let transcript = await LLMImport.importConversation(pdfItem);
+					if (transcript === null) return; // cancelled
+					if (!transcript.length) {
+						appendMessage("System", "Import: no messages found in that file.");
+						return;
+					}
+					await loadTranscriptIntoChat(transcript, pdfItem, "import");
 					appendMessage("System", `Imported ${transcript.length} message${transcript.length === 1 ? "" : "s"}.`);
 				};
+
+				// Loads a specific conversation from the Conversation
+				// History panel's Load button, replacing whatever's
+				// currently shown -- same rebuild as onImport, just reading
+				// `conv.path` directly instead of going through a file
+				// picker.
+				let onLoadConversation = async (conv) => {
+					let pdfItem = this.getActiveReaderAttachment();
+					let markdown = await IOUtils.readUTF8(conv.path);
+					let transcript = LLMImport.parseConversation(markdown);
+					if (!transcript.length) {
+						appendMessage("System", `Load: no messages found in ${conv.filename}.`);
+						return;
+					}
+					await loadTranscriptIntoChat(transcript, pdfItem, "conversation history load");
+					appendMessage("System", `Loaded ${transcript.length} message${transcript.length === 1 ? "" : "s"} from ${conv.filename}.`);
+				};
+
+				let conversationHistory = LLMUIConversationHistory.create(doc, {
+					onLoad: (conv) => onLoadConversation(conv).catch(e => appendMessage("System", `Load failed: ${e.message}`)),
+				});
+
+				// Reloads the card list from whatever's actually on disk for
+				// the active PDF right now -- there's no separate persisted
+				// index to keep in sync (see ui/conversation-history.js), so a
+				// "refresh" is just "re-read the folder". Called once below
+				// (initial population) and again after every successful
+				// Export (see onExported), which is the only action that
+				// changes what's on disk from within this pane. Deleting a
+				// card (see ui/conversation_history.js) doesn't need this --
+				// it just removes its own DOM node directly.
+				let refreshConversationHistory = async () => {
+					let pdfItem = this.getActiveReaderAttachment();
+					if (!pdfItem) {
+						conversationHistory.render([]);
+						return;
+					}
+					try {
+						let conversations = await LLMConversationHistory.listConversations(pdfItem);
+						conversationHistory.render(conversations);
+					}
+					catch (e) {
+						this.log(`Failed to load conversation history: ${e.message}`);
+						conversationHistory.render([]);
+					}
+				};
+				refreshConversationHistory();
 
 				let { element: buttonRow, submitButton, stopButton } = LLMUIButtonRow.create(doc, {
 					getActiveItem: () => this.getActiveReaderAttachment(),
@@ -722,6 +795,8 @@ LLMChatPane = {
 					discardImagesButton: imagePaste.discardButton,
 					getTranscript: () => chat.exportTranscript(),
 					onImport: () => onImport().catch(e => appendMessage("System", `Import failed: ${e.message}`)),
+					onExported: () => refreshConversationHistory(),
+					onClearConversation: () => chat.clear(),
 				});
 
 				// Stashed on input focus as a fallback for LLMRequest.send's
@@ -915,8 +990,30 @@ LLMChatPane = {
 					}
 				});
 
-				controls.append(providerModelSelect.element, providers.element, keyboardShortcuts.element, advanced.element, logs.element, inputLabel, input, imagePaste.row, buttonRow);
-				container.append(controls, chat.label, chat.list);
+				// Conversation section grouping (header, History, Prompt,
+				// Button row, Messages header) is a contiguous run within
+				// controls, in that order -- only chat.list (the actual
+				// scrollable message area) stays outside controls entirely,
+				// appended directly to container below, since its height is
+				// computed from controls.offsetHeight (see the section-height
+				// calculation right after) and needs to end up as everything
+				// EXCEPT the scrollable area itself.
+				controls.append(
+					settingsLabel,
+					providerModelSelect.element,
+					providers.element,
+					keyboardShortcuts.element,
+					advanced.element,
+					logs.element,
+					conversationLabel,
+					conversationHistory.element,
+					inputLabel,
+					input,
+					imagePaste.row,
+					buttonRow,
+					chat.label
+				);
+				container.append(controls, chat.list);
 				body.appendChild(container);
 
 				if (section && scrollContainer) {

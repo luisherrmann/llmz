@@ -24,8 +24,13 @@ LLMUIButtonRow = {
 	// module's. `getTranscript()` returns the current conversation as
 	// [{ role, text }] (see ui/chat.js's exportTranscript()), for Export.
 	// `onImport()` is called on an Import click -- everything else is the
-	// caller's concern.
-	create(doc, { getActiveItem, onMessage, discardImagesButton, getTranscript, onImport } = {}) {
+	// caller's concern. `onExported()` is called after a successful (not
+	// cancelled) Export -- the caller uses this to refresh
+	// ui/conversation_history.js's table, which this module has no
+	// business knowing about directly. `onClearConversation()` is called on
+	// a Clear Conversation click -- wired directly to ui/chat.js's clear(),
+	// which this module doesn't hold a reference to itself.
+	create(doc, { getActiveItem, onMessage, discardImagesButton, getTranscript, onImport, onExported, onClearConversation } = {}) {
 		let submitButton = doc.createElement("button");
 		submitButton.textContent = "Submit";
 		submitButton.className = "llm-submit";
@@ -63,12 +68,26 @@ LLMUIButtonRow = {
 			onMessage?.("Cleared extraction cache for the active PDF. The next prompt will re-run extraction from scratch.");
 		});
 
+		// Wipes the visible conversation (see ui/chat.js's clear()) back to
+		// the "No messages loaded yet..." placeholder state -- does NOT
+		// touch any saved file on disk, so this is purely "start a fresh
+		// conversation in the pane", distinct from Delete on a
+		// ui/conversation_history.js card (which DOES remove a file).
+		let clearConversationButton = doc.createElement("button");
+		clearConversationButton.textContent = "Clear Conversation";
+		clearConversationButton.className = "llm-clear-conversation";
+		clearConversationButton.title = "Clear the current conversation (does not delete any saved file)";
+		clearConversationButton.addEventListener("click", () => onClearConversation?.());
+
 		// Exports the visible conversation (see ui/chat.js's
 		// exportTranscript()) as a Markdown file -- prompts for a save
 		// location via LLMExport.exportConversation's own file picker
-		// (defaulting to $HOME/Zotero/zllm/chats/<item key>_<ddmmyy>.md), so
-		// nothing more is needed here than gathering the inputs and
-		// reporting how it went.
+		// (defaulting to $HOME/Zotero/zllm/chats/<item key>/<item
+		// key>_<ddmmyy>.md), so nothing more is needed here than gathering
+		// the inputs and reporting how it went. onExported() fires after a
+		// successful (not cancelled) save, whether that wrote a brand new
+		// file or overwrote an existing one -- either way, the on-disk
+		// conversation list for this PDF just changed.
 		let exportButton = doc.createElement("button");
 		exportButton.textContent = "Export";
 		exportButton.className = "llm-export";
@@ -83,6 +102,7 @@ LLMUIButtonRow = {
 				let result = await LLMExport.exportConversation(item, getTranscript?.() || []);
 				if (!result.cancelled) {
 					onMessage?.(`Exported conversation to ${result.path}`);
+					onExported?.();
 				}
 			}
 			catch (e) {
@@ -102,8 +122,8 @@ LLMUIButtonRow = {
 
 		let element = doc.createElement("div");
 		element.className = "llm-button-row";
-		element.append(submitButton, stopButton, discardImagesButton, clearCacheButton, exportButton, importButton);
+		element.append(submitButton, stopButton, discardImagesButton, clearCacheButton, clearConversationButton, exportButton, importButton);
 
-		return { element, submitButton, stopButton, clearCacheButton, exportButton, importButton };
+		return { element, submitButton, stopButton, clearCacheButton, clearConversationButton, exportButton, importButton };
 	},
 };

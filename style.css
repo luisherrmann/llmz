@@ -101,6 +101,17 @@
 	text-decoration: underline;
 }
 
+/* Shown in .llm-message-list in place of real messages when there are none
+   (fresh render, or right after Clear Conversation -- see ui/chat.js's
+   show/removePlaceholder) -- centered and muted so it reads as "nothing
+   here yet", not as a message bubble of its own. */
+.llm-message-placeholder {
+	text-align: center;
+	color: GrayText;
+	font-style: italic;
+	padding: 1em;
+}
+
 /* Input controls */
 .llm-section-label {
 	font-weight: 600;
@@ -414,6 +425,77 @@
    (3 classes) beats the plain .llm-log-text rule above (2 classes). */
 .llm-logs-body .llm-clickable-message.llm-log-text {
 	color: #4ea1ff;
+}
+
+/* Conversation History dropdown, same disclosure pattern as .llm-logs-details
+   above. Each conversation renders as its own card (not a table row) since a
+   row's fixed columns don't leave room for the preview text block + a
+   Load/Delete action row the way a card's natural vertical stacking does. */
+.llm-history-details {
+	font-size: 0.9em;
+}
+
+.llm-history-details summary {
+	cursor: pointer;
+	color: -moz-nativehyperlinktext;
+}
+
+.llm-history-body {
+	margin-top: 6px;
+	padding: 1em;
+	box-sizing: border-box;
+}
+
+/* Fixed (not min-) height, in em so it scales with this element's own
+   font-size -- content scrolls within it rather than growing the box, same
+   technique as .llm-logs-body. Cards stack vertically with a visible gap
+   rather than touching edge-to-edge. */
+.llm-history-scroll {
+	height: 16em;
+	overflow-y: auto;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.llm-history-card {
+	border: 1px solid ThreeDShadow;
+	border-radius: 4px;
+	padding: 6px 8px;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.llm-history-header {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 4px 12px;
+}
+
+.llm-history-title {
+	font-weight: bold;
+	word-break: break-all;
+}
+
+.llm-history-meta {
+	color: GrayText;
+	white-space: nowrap;
+}
+
+.llm-history-preview {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.llm-history-actions {
+	display: flex;
+	gap: 6px;
+	margin-top: 2px;
 }
 
 /* Markdown output */

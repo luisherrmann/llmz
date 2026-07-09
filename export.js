@@ -65,11 +65,20 @@ LLMExport = {
 	// "dd/mm/yyyy - hh:mm:ss", so both are used verbatim in each message's
 	// "ROLE | time:" heading. import.js's parseConversation is this format's
 	// inverse -- keep the two in sync if this ever changes.
+	// Always regenerates the WHOLE document (including the METADATA block
+	// -- see ui/conversation-history.js) from the CURRENT transcript,
+	// whether this is a brand new file or an overwrite of an existing one
+	// -- so there's no separate "patch an existing file's METADATA" path to
+	// keep in sync; ui/conversation_history.js's card list just reflects
+	// whatever's actually on disk the next time it reads the folder.
 	buildMarkdown(paperItem, transcript) {
 		let title = paperItem.getField("title") || paperItem.libraryKey;
 		let messageBlocks = transcript.map(({ role, time, text }) => `**${role} | ${time}:**\n\n${text}`);
 
 		let sections = [`# ${title}`];
+
+		let metadata = LLMConversationHistory.computeMetadata(transcript);
+		sections.push(LLMConversationHistory.formatMetadataBlock(metadata));
 
 		let infoLines = this._buildInfoLines(paperItem);
 		if (infoLines.length) {
@@ -86,15 +95,11 @@ LLMExport = {
 		return sections.join("\n\n") + "\n";
 	},
 
-	async _defaultDir() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "chats");
-		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
-		return dir;
-	},
-
 	// An nsIFilePicker in the given mode, filtered to *.md, defaulting to
-	// $HOME/Zotero/zllm/chats/ (see _defaultDir) as its initial directory.
-	async _createFilePicker(title, mode) {
+	// $HOME/Zotero/zllm/chats/<item key>/ (see LLMConversationHistory.
+	// conversationDir) as its initial directory -- `item` is the PDF
+	// ATTACHMENT, same as everywhere else in this file.
+	async _createFilePicker(title, mode, item) {
 		let win = Zotero.getMainWindow();
 		let fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
 		// nsIFilePicker.init() takes a BrowsingContext, not the window itself,
@@ -105,7 +110,7 @@ LLMExport = {
 		fp.appendFilter("Markdown", "*.md");
 		try {
 			let dirFile = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
-			dirFile.initWithPath(await this._defaultDir());
+			dirFile.initWithPath(await LLMConversationHistory.conversationDir(item));
 			fp.displayDirectory = dirFile;
 		}
 		catch (e) {
@@ -115,9 +120,10 @@ LLMExport = {
 	},
 
 	// Shows a native save dialog (defaulting to $HOME/Zotero/zllm/chats/<item
-	// key>_<ddmmyy>.md, editable by the user) and writes the exported
-	// markdown there. Returns { cancelled: true } if the user dismisses the
-	// dialog without saving, or { cancelled: false, path } once written.
+	// key>/<item key>_<ddmmyy>.md, editable by the user) and writes the
+	// exported markdown there. Returns { cancelled: true } if the user
+	// dismisses the dialog without saving, or { cancelled: false, path }
+	// once written.
 	async exportConversation(item, transcript) {
 		if (!transcript.length) {
 			throw new Error("Nothing to export -- the conversation is empty.");
@@ -131,7 +137,7 @@ LLMExport = {
 		let paperItem = item.parentItem || item;
 		let markdown = this.buildMarkdown(paperItem, transcript);
 
-		let fp = await this._createFilePicker("Export Conversation", Ci.nsIFilePicker.modeSave);
+		let fp = await this._createFilePicker("Export Conversation", Ci.nsIFilePicker.modeSave, item);
 		fp.defaultString = `${item.key}_${this._formatDateDDMMYY()}.md`;
 		fp.defaultExtension = "md";
 

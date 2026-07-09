@@ -1,8 +1,13 @@
-// The main conversation area: the "Conversation" label + scrollable message
-// list holding the user's own messages and the model's replies (as opposed
-// to ui/logs.js's separate Logs panel, which holds System-level status
-// messages instead). Split out of llm-chat-pane.js's onRender for the same
-// reason as ui/logs.js.
+// The main conversation area: the "Messages" label + scrollable message list
+// holding the user's own messages and the model's replies (as opposed to
+// ui/logs.js's separate Logs panel, which holds System-level status messages
+// instead). Split out of llm-chat-pane.js's onRender for the same reason as
+// ui/logs.js. Despite the "Messages" label, the module/file/global names
+// still say "chat"/"Chat" throughout -- renamed only where the user actually
+// sees it, not the internal plumbing, when llm-chat-pane.js's onRender was
+// restructured to put a separate top-level "Conversation" header above the
+// whole Conversation History/Prompt/Messages grouping (this label alone
+// would otherwise be ambiguous with that).
 LLMUIChat = {
 	// Builds the conversation area for one item-pane render. Returns:
 	//   label, list                       -- the section label and scrollable
@@ -102,7 +107,15 @@ LLMUIChat = {
 	//                                         transcript (e.g. before
 	//                                         repopulating from an imported
 	//                                         conversation -- see
-	//                                         import.js's importConversation)
+	//                                         import.js's importConversation,
+	//                                         or Clear Conversation -- see
+	//                                         ui/button-row.js), then shows
+	//                                         the "No messages loaded yet..."
+	//                                         placeholder, same as a fresh
+	//                                         render with no conversation at
+	//                                         all -- removed again
+	//                                         automatically the moment the
+	//                                         next real message is appended
 	//   renderMarkdownMessage(contentEl,
 	//     html, fallbackText)             -- swaps a plain-text message's
 	//                                         content (as returned by
@@ -126,7 +139,7 @@ LLMUIChat = {
 	create(doc) {
 		let label = doc.createElement("div");
 		label.className = "llm-section-label";
-		label.textContent = "Conversation";
+		label.textContent = "Messages";
 
 		let list = doc.createElement("div");
 		list.className = "llm-message-list";
@@ -138,6 +151,27 @@ LLMUIChat = {
 		// markdown export.js actually wants.
 		let transcript = [];
 		let transcriptByContent = new WeakMap();
+
+		// A single dummy element shown in place of real messages whenever
+		// the list is empty (fresh render with no conversation yet, or
+		// right after Clear Conversation -- see ui/button-row.js) --
+		// removed the moment a real message is about to be added
+		// (appendShell below), and re-shown by clear(). Not part of
+		// `transcript`/exportTranscript() at all -- it's not a message.
+		let placeholder = null;
+		let showPlaceholder = () => {
+			if (placeholder) return;
+			placeholder = doc.createElement("div");
+			placeholder.className = "llm-message-placeholder";
+			placeholder.textContent = "No messages loaded yet...";
+			list.appendChild(placeholder);
+		};
+		let removePlaceholder = () => {
+			if (!placeholder) return;
+			placeholder.remove();
+			placeholder = null;
+		};
+		showPlaceholder();
 
 		// dd/mm/yyyy - hh:mm:ss, local time, zero-padded.
 		let formatTimestamp = () => {
@@ -152,6 +186,7 @@ LLMUIChat = {
 		// fill `content` in however suits it (plain text vs. mixed text/link
 		// nodes) and to set the entry's initial text.
 		let appendShell = (role, contentTag, time) => {
+			removePlaceholder();
 			let message = doc.createElement("div");
 			// role is "You" for the user, or a provider/feature label (e.g.
 			// "Ollama", "OpenAI - gpt-5.4", "Zotero") for everything else --
@@ -262,6 +297,8 @@ LLMUIChat = {
 			// transcriptByContent entries for the now-removed content
 			// elements are simply unreachable garbage now -- WeakMap needs
 			// no explicit cleanup.
+			placeholder = null; // replaceChildren() above already removed it from the DOM
+			showPlaceholder();
 		};
 
 		let renderMarkdownMessage = (contentEl, html, fallbackText) => {

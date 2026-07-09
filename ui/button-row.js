@@ -82,9 +82,9 @@ LLMUIButtonRow = {
 		// Exports the visible conversation (see ui/chat.js's
 		// exportTranscript()) as a Markdown file -- prompts for a save
 		// location via LLMExport.exportConversation's own file picker
-		// (defaulting to $HOME/Zotero/zllm/chats/<item key>/<item
-		// key>_<ddmmyy>.md), so nothing more is needed here than gathering
-		// the inputs and reporting how it went. onExported() fires after a
+		// (defaulting to $HOME/Zotero/zllm/chats/<item key>/<ddmmyy>_<NNN>.md),
+		// so nothing more is needed here than gathering the inputs and
+		// reporting how it went. onExported() fires after a
 		// successful (not cancelled) save, whether that wrote a brand new
 		// file or overwrote an existing one -- either way, the on-disk
 		// conversation list for this PDF just changed.

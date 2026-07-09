@@ -761,6 +761,8 @@ LLMChatPane = {
 
 				let conversationHistory = LLMUIConversationHistory.create(doc, {
 					onLoad: (conv) => onLoadConversation(conv).catch(e => appendMessage("System", `Load failed: ${e.message}`)),
+					editIconURL: this.rootURI + "icons/edit_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg",
+					doneIconURL: this.rootURI + "icons/done_outline_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg",
 				});
 
 				// Reloads the card list from whatever's actually on disk for

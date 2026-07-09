@@ -10,10 +10,18 @@ LLMUIConversationHistory = {
 	// request does (see llm-chat-pane.js's loadTranscriptIntoChat), which is
 	// exactly the kind of business logic this module otherwise stays out of
 	// -- same rationale as ui/button-row.js's Import staying uninvolved in
-	// that logic. Delete, by contrast, IS handled directly here (just a
-	// file removal + removing the card from the DOM), since it doesn't need
-	// any context this module doesn't already have.
-	create(doc, { onLoad } = {}) {
+	// that logic. Delete and the inline title editor, by contrast, ARE
+	// handled directly here (a file removal/rename + a small DOM update
+	// each), since neither needs any context this module doesn't already
+	// have. `editIconURL`/`doneIconURL` are plain file:/jar: URLs (see
+	// llm-chat-pane.js's onRender, rootURI + "icons/...svg") -- rendered as
+	// a CSS mask-image (see style.css's .llm-history-edit-icon) rather than
+	// fetched-and-inlined SVG markup, so the icon's actual visible color is
+	// entirely controlled by background-color: currentColor regardless of
+	// whatever fill the source SVG file itself hardcodes, and rendering
+	// doesn't depend on however this chrome context happens to parse raw
+	// SVG markup injected via innerHTML.
+	create(doc, { onLoad, editIconURL, doneIconURL } = {}) {
 		let details = doc.createElement("details");
 		details.className = "llm-history-details";
 		let summary = doc.createElement("summary");
@@ -43,24 +51,139 @@ LLMUIConversationHistory = {
 			list.appendChild(empty);
 		};
 
-		// Builds one card for `conv` (see ui/conversation-history.js's
+		// Builds one timeline entry for `conv` (see ui/conversation-history.js's
 		// listConversations: { filename, path, preview, started, saved,
 		// length }) -- any field the source file didn't have comes back as
 		// the literal string "UNKNOWN" from that same call, and is shown
-		// as-is here rather than specially handled.
-		let createCard = (conv) => {
-			let card = doc.createElement("div");
-			card.className = "llm-history-card";
+		// as-is here rather than specially handled. The dot/connecting line
+		// are pure CSS (.llm-history-item's ::before/::after in style.css),
+		// not DOM nodes built here.
+		let createItem = (conv) => {
+			let item = doc.createElement("div");
+			item.className = "llm-history-item";
+
+			// Sits to the left of the dot (see style.css's .llm-history-date
+			// -- absolutely positioned within the space item's padding-left
+			// reserves, same idea as the dot/line themselves), same
+			// mid-green as those. This IS the "Saved" timestamp (no "Last:"
+			// label -- its position alone conveys what it is), not repeated
+			// in .llm-history-meta below.
+			let dateEl = doc.createElement("span");
+			dateEl.className = "llm-history-date";
+			dateEl.textContent = conv.saved;
+			item.appendChild(dateEl);
+
+			// Stacked directly below the Saved date, same left-of-the-dot
+			// column, but its OWN (unchanged, not green) color. No
+			// "Started:" label -- same reasoning as the Saved date itself
+			// having none: position alone conveys which is which (top =
+			// Saved, bottom = Started), and a label here would make the
+			// text long enough to risk the same overflow-past-the-dot bug
+			// the Saved date needed a width/overflow fix for earlier.
+			let startedEl = doc.createElement("span");
+			startedEl.className = "llm-history-started";
+			startedEl.textContent = conv.started;
+			item.appendChild(startedEl);
 
 			let header = doc.createElement("div");
 			header.className = "llm-history-header";
+
+			// The title + its inline rename editor. Toggles between two
+			// states: a plain <span> (title text + a pencil "edit" button)
+			// and, once clicked, a text <input> (pre-filled with the
+			// current title, focused+selected) + a "done_outline" button in
+			// the SAME spot the pencil was. Clicking done_outline (or
+			// pressing Enter) saves -- see LLMConversationHistory.
+			// renameConversation, which actually renames the file on disk
+			// -- and swaps back to the plain span/pencil pair with the new
+			// title. Escape cancels back to the plain span WITHOUT saving.
+			let titleRow = doc.createElement("span");
+			titleRow.className = "llm-history-title-row";
+
 			let titleEl = doc.createElement("span");
 			titleEl.className = "llm-history-title";
-			titleEl.textContent = conv.filename;
+			// Just the filename's stem -- ".md" is implied (every file in
+			// this folder is one) and not worth the extra visual noise.
+			titleEl.textContent = conv.filename.replace(/\.md$/i, "");
+
+			let editButton = doc.createElement("button");
+			editButton.className = "llm-history-edit-title";
+			editButton.title = "Rename this conversation";
+			let editIcon = doc.createElement("span");
+			editIcon.className = "llm-history-edit-icon";
+			editIcon.style.maskImage = `url("${editIconURL}")`;
+			editButton.appendChild(editIcon);
+
+			let titleInput = null;
+
+			let enterEditMode = () => {
+				titleInput = doc.createElement("input");
+				titleInput.type = "text";
+				titleInput.className = "llm-history-title-input";
+				titleInput.value = titleEl.textContent;
+				titleEl.replaceWith(titleInput);
+				titleInput.focus();
+				titleInput.select();
+				editIcon.style.maskImage = `url("${doneIconURL}")`;
+				editButton.title = "Save this title";
+				titleInput.addEventListener("keydown", (e) => {
+					if (e.key === "Enter") {
+						e.preventDefault();
+						saveTitle();
+					}
+					else if (e.key === "Escape") {
+						e.preventDefault();
+						cancelEdit();
+					}
+				});
+			};
+
+			let cancelEdit = () => {
+				titleInput.replaceWith(titleEl);
+				titleInput = null;
+				editIcon.style.maskImage = `url("${editIconURL}")`;
+				editButton.title = "Rename this conversation";
+			};
+
+			let saveTitle = async () => {
+				let newStem = titleInput.value;
+				editButton.disabled = true;
+				try {
+					let newPath = await LLMConversationHistory.renameConversation(conv.path, newStem);
+					conv.path = newPath;
+					conv.filename = PathUtils.filename(newPath);
+					titleEl.textContent = conv.filename.replace(/\.md$/i, "");
+					titleInput.replaceWith(titleEl);
+					titleInput = null;
+					editIcon.style.maskImage = `url("${editIconURL}")`;
+					editButton.title = "Rename this conversation";
+				}
+				catch (e) {
+					// Stays in edit mode (rather than reverting) so the
+					// user can fix whatever caused the failure (e.g. a
+					// name collision) and retry without retyping.
+					Services.prompt.alert(doc.defaultView, "ZLLM", `Rename failed: ${e.message}`);
+				}
+				finally {
+					editButton.disabled = false;
+				}
+			};
+
+			editButton.addEventListener("click", () => {
+				if (titleInput) {
+					saveTitle();
+				}
+				else {
+					enterEditMode();
+				}
+			});
+
+			titleRow.append(titleEl, editButton);
+
 			let metaEl = doc.createElement("span");
 			metaEl.className = "llm-history-meta";
-			metaEl.textContent = `Started: ${conv.started}   Last: ${conv.saved}   Prompts: ${conv.length}`;
-			header.append(titleEl, metaEl);
+			metaEl.textContent = `Prompts: ${conv.length}`;
+			header.append(titleRow, metaEl);
 
 			let previewEl = doc.createElement("div");
 			previewEl.className = "llm-history-preview";
@@ -99,7 +222,7 @@ LLMUIConversationHistory = {
 				deleteButton.disabled = true;
 				try {
 					await LLMConversationHistory.deleteConversation(conv.path);
-					card.remove();
+					item.remove();
 					if (!list.children.length) showEmptyPlaceholder();
 				}
 				catch (e) {
@@ -109,12 +232,14 @@ LLMUIConversationHistory = {
 			});
 
 			actions.append(loadButton, deleteButton);
-			card.append(header, previewEl, actions);
-			return card;
+			item.append(header, previewEl, actions);
+			return item;
 		};
 
-		// Replaces the list with one card per conversation -- `conversations`
-		// is already sorted newest-saved-first (see listConversations).
+		// Replaces the list with one timeline entry per conversation --
+		// `conversations` is already sorted newest-saved-first (see
+		// listConversations), so the timeline reads top-to-bottom as most-
+		// to-least recent.
 		let render = (conversations) => {
 			list.replaceChildren();
 			if (!conversations.length) {
@@ -122,7 +247,7 @@ LLMUIConversationHistory = {
 				return;
 			}
 			for (let conv of conversations) {
-				list.appendChild(createCard(conv));
+				list.appendChild(createItem(conv));
 			}
 		};
 

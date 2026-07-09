@@ -17,11 +17,39 @@ LLMExport = {
 	},
 
 	// ddmmyy, local time, zero-padded, no separators -- matches the
-	// "<zotero_ID>_<ddmmyy>.md" default filename format.
+	// "<ddmmyy>_<NNN>.md" default filename format (see exportConversation).
 	_formatDateDDMMYY() {
 		let d = new Date();
 		let pad = n => String(n).padStart(2, "0");
 		return `${pad(d.getDate())}${pad(d.getMonth() + 1)}${String(d.getFullYear()).slice(-2)}`;
+	},
+
+	// Finds the next available zero-padded index for today's date within
+	// the PDF's own conversation folder, so the default export filename
+	// "<ddmmyy>_<NNN>.md" doesn't collide with an existing file from
+	// earlier the same day -- scans for existing "<datePrefix>_NNN.md"
+	// files and returns (highest existing index found) + 1, or 1 if none
+	// exist yet. No item-key prefix needed in the filename itself (unlike
+	// the old "<item key>_<ddmmyy>.md" format) since these files already
+	// live under a per-PDF folder (see LLMConversationHistory.conversationDir)
+	// -- the folder itself is what scopes them to this paper.
+	async _nextIndexForToday(dir, datePrefix) {
+		let entries = [];
+		try {
+			entries = await IOUtils.getChildren(dir);
+		}
+		catch (e) {
+			return 1;
+		}
+		let re = new RegExp(`^${datePrefix}_(\\d{3})\\.md$`, "i");
+		let maxIndex = 0;
+		for (let path of entries) {
+			let match = PathUtils.filename(path).match(re);
+			if (match) {
+				maxIndex = Math.max(maxIndex, parseInt(match[1], 10));
+			}
+		}
+		return maxIndex + 1;
 	},
 
 	_formatCreatorName(creator) {
@@ -120,10 +148,9 @@ LLMExport = {
 	},
 
 	// Shows a native save dialog (defaulting to $HOME/Zotero/zllm/chats/<item
-	// key>/<item key>_<ddmmyy>.md, editable by the user) and writes the
-	// exported markdown there. Returns { cancelled: true } if the user
-	// dismisses the dialog without saving, or { cancelled: false, path }
-	// once written.
+	// key>/<ddmmyy>_<NNN>.md, editable by the user) and writes the exported
+	// markdown there. Returns { cancelled: true } if the user dismisses the
+	// dialog without saving, or { cancelled: false, path } once written.
 	async exportConversation(item, transcript) {
 		if (!transcript.length) {
 			throw new Error("Nothing to export -- the conversation is empty.");
@@ -138,7 +165,10 @@ LLMExport = {
 		let markdown = this.buildMarkdown(paperItem, transcript);
 
 		let fp = await this._createFilePicker("Export Conversation", Ci.nsIFilePicker.modeSave, item);
-		fp.defaultString = `${item.key}_${this._formatDateDDMMYY()}.md`;
+		let datePrefix = this._formatDateDDMMYY();
+		let dir = await LLMConversationHistory.conversationDir(item);
+		let index = await this._nextIndexForToday(dir, datePrefix);
+		fp.defaultString = `${datePrefix}_${String(index).padStart(3, "0")}.md`;
 		fp.defaultExtension = "md";
 
 		let result = await new Promise(resolve => fp.open(resolve));

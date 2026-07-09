@@ -45,14 +45,20 @@ LLMConversationHistory = {
 		return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} - ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 	},
 
-	// Up to this many words of the first message (always the user's own
-	// first prompt -- see ui/chat.js's exportTranscript, which returns
-	// messages in the order they were sent), truncated with "…" if the
-	// message itself runs longer.
-	_PREVIEW_MAX_WORDS: 8,
+	// Up to this many words of the user's OWN LAST prompt (not the model's
+	// replies, and not the FIRST prompt) -- see ui/chat.js's
+	// exportTranscript, which returns messages in the order they were sent,
+	// so the last entry with role "You" is whatever the user asked most
+	// recently. Deliberately the last prompt rather than the first: the
+	// opening prompt is often generic ("Explain this paper"), while the
+	// most recent one is usually a much better indicator of what the
+	// conversation actually ended up being about. Truncated with "…" if
+	// the message itself runs longer.
+	_PREVIEW_MAX_WORDS: 20,
 	_preview(transcript) {
-		let first = transcript[0]?.text || "";
-		let words = first.trim().split(/\s+/).filter(Boolean);
+		let userMessages = transcript.filter(m => m.role === "You");
+		let lastPrompt = userMessages[userMessages.length - 1]?.text || "";
+		let words = lastPrompt.trim().split(/\s+/).filter(Boolean);
 		if (!words.length) return "";
 		let truncated = words.slice(0, this._PREVIEW_MAX_WORDS).join(" ");
 		return words.length > this._PREVIEW_MAX_WORDS ? `${truncated}…` : truncated;
@@ -187,5 +193,39 @@ LLMConversationHistory = {
 	async deleteConversation(path) {
 		await IOUtils.remove(path);
 		this.log(`deleteConversation: removed ${path}`);
+	},
+
+	// Strips characters that aren't safe as a filename (path separators,
+	// reserved Windows characters, etc.) from a user-typed title -- used by
+	// renameConversation below before ever touching the filesystem, rather
+	// than letting an unsanitized "/" or similar silently turn into a
+	// nested path or a failed IOUtils.move.
+	_sanitizeTitle(title) {
+		return title.trim().replace(/[/\\:*?"<>|]/g, "_");
+	},
+
+	// Renames a conversation file to `<newTitle>.md`, in the same directory
+	// the original file lives in -- used by ui/conversation_history.js's
+	// inline title editor. Throws if `newTitle` sanitizes down to nothing,
+	// or if a file with that name already exists (deliberately NOT
+	// overwritten -- IOUtils.move's default behavior -- so renaming one
+	// conversation can never silently clobber another). Returns the new
+	// path.
+	async renameConversation(path, newTitle) {
+		let sanitized = this._sanitizeTitle(newTitle);
+		if (!sanitized) {
+			throw new Error("Title can't be empty.");
+		}
+		let dir = PathUtils.parent(path);
+		let newPath = PathUtils.join(dir, `${sanitized}.md`);
+		if (newPath === path) {
+			return path; // no-op rename (unchanged title)
+		}
+		if (await IOUtils.exists(newPath)) {
+			throw new Error(`A conversation named "${sanitized}.md" already exists.`);
+		}
+		await IOUtils.move(path, newPath);
+		this.log(`renameConversation: ${path} -> ${newPath}`);
+		return newPath;
 	},
 };

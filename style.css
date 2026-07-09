@@ -427,10 +427,13 @@
 	color: #4ea1ff;
 }
 
-/* Conversation History dropdown, same disclosure pattern as .llm-logs-details
-   above. Each conversation renders as its own card (not a table row) since a
-   row's fixed columns don't leave room for the preview text block + a
-   Load/Delete action row the way a card's natural vertical stacking does. */
+/* History dropdown, same disclosure pattern as .llm-logs-details above.
+   Conversations render as a vertical timeline (dot + connecting line per
+   entry, via .llm-history-item's ::before/::after below) rather than a
+   table row or boxed card -- a row's fixed columns don't leave room for the
+   preview text block + a Load/Delete action row the way a timeline entry's
+   natural vertical stacking does, and the dot/line reads as "these are
+   entries in a sequence" more directly than a stack of identical boxes. */
 .llm-history-details {
 	font-size: 0.9em;
 }
@@ -448,25 +451,126 @@
 
 /* Fixed (not min-) height, in em so it scales with this element's own
    font-size -- content scrolls within it rather than growing the box, same
-   technique as .llm-logs-body. Cards stack vertically with a visible gap
-   rather than touching edge-to-edge. */
+   technique as .llm-logs-body. No gap here (unlike a boxed-card layout) --
+   .llm-history-item's own padding-bottom provides the vertical spacing
+   between entries, since the connecting line (::after below) needs to span
+   that space too, continuously, to read as one line rather than segments. */
 .llm-history-scroll {
 	height: 16em;
 	overflow-y: auto;
 	box-sizing: border-box;
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
 }
 
-.llm-history-card {
-	border: 1px solid ThreeDShadow;
-	border-radius: 4px;
-	padding: 6px 8px;
+/* One timeline entry. .llm-history-date (a real element, since it holds
+   variable-length text, unlike the dot/line below) and the dot/line
+   (::before/::after decoration, no DOM node needed for either) are all
+   positioned absolutely within the space padding-left reserves, so the
+   actual content (header/preview/actions) just flows normally to the right
+   of them, unaffected by exactly how wide the date text renders. */
+.llm-history-item {
+	position: relative;
+	padding: 0 0 14px 164px;
+}
+
+.llm-history-item:last-child {
+	/* No trailing space (or line -- see below) after the last entry. */
+	padding-bottom: 0;
+}
+
+/* Sits to the left of the dot, right-aligned so its edge closest to the dot
+   lines up the same way regardless of the date string's actual length --
+   width is a generous overestimate of how wide "dd/mm/yyyy - hh:mm:ss" (or
+   "UNKNOWN") actually renders, with overflow: hidden as a hard backstop:
+   confirmed concretely that a too-narrow box here doesn't wrap or clip the
+   text, it lets it overflow RIGHTWARD past the box (regardless of
+   text-align) straight into the dot and title, since plain `width` alone
+   doesn't clip -- only overflow: hidden does. */
+/* font-variant-numeric: tabular-nums forces every digit to render at the
+   same fixed width (rather than each proportional-font digit -- "1" is
+   narrower than "0"/"8" in most UI fonts -- taking only as much space as
+   its own glyph needs), so two different timestamps line up consistently
+   on their LEFT edge too, not just the right edge text-align: right pins.
+   Without it, confirmed concretely that two right-aligned timestamps whose
+   digits happen to differ (e.g. one with more "1"s than the other) render
+   with visibly different left-side indentation, purely from glyph-width
+   variance, even though both boxes are identically positioned/sized. */
+.llm-history-date {
+	position: absolute;
+	left: 0;
+	top: 3px;
+	width: 130px;
+	overflow: hidden;
+	text-align: right;
+	color: #4caf50;
+	white-space: nowrap;
+	font-size: 0.85em;
+	font-variant-numeric: tabular-nums;
+}
+
+/* Stacked directly below .llm-history-date -- same box shape/overflow
+   safety net, own (not green) color. top is one line's worth below the
+   date line (3px + ~15px line height for the 0.85em text above it). */
+.llm-history-started {
+	position: absolute;
+	left: 0;
+	top: 18px;
+	width: 130px;
+	overflow: hidden;
+	text-align: right;
+	color: GrayText;
+	white-space: nowrap;
+	font-size: 0.85em;
+	font-variant-numeric: tabular-nums;
+}
+
+/* The dot -- aligned with the first line of the header text. Same
+   mid-green fill as .llm-message-user's own role-label color (and
+   .llm-history-date above), with a darker-green border for a little depth
+   against the fill. Positioned to keep the same CENTER point as the
+   previous, larger, borderless dot (140px+12px/2, 2px+12px/2 = 146,8) --
+   box-sizing: border-box so the 1px border is included in the 6px width/
+   height rather than adding to it, keeping the on-screen size exactly
+   "half the previous radius" as asked, border included. */
+.llm-history-item::before {
+	content: "";
+	position: absolute;
+	left: 143px;
+	top: 5px;
+	width: 6px;
+	height: 6px;
 	box-sizing: border-box;
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
+	border-radius: 50%;
+	border: 1px solid #388e3c;
+	background: #4caf50;
+}
+
+/* The connecting line -- starts 3px below THIS dot's bottom edge (11px),
+   and ends 3px before the NEXT dot's own top edge, for a symmetric gap on
+   both ends. The second part needs a NEGATIVE bottom: the next dot sits
+   5px into ITS OWN item's box (its own top: 5px), which is 5px past where
+   this item's box ends -- confirmed concretely that stopping the line at
+   this item's own bottom edge (bottom: 0) or even 3px short of it
+   (bottom: 3px) left an 8px gap before the next dot (3px + that 5px inset),
+   noticeably bigger than the 3px gap below THIS dot, since bottom only
+   moves the line's end WITHIN this item's own box, not into the next one.
+   bottom: -2px lets the line extend 2px PAST this item's own bottom edge
+   (overflow: visible is the default, nothing clips it) into the next
+   item's space, landing exactly 3px before that next dot's top (item's own
+   height + 5 next-dot-top, minus item's own height + 2 line-end, = 3px).
+   left is the dot's own horizontal center (143px + 6px/2 - 2px/2 = 145px,
+   same center the dot always had) so the line hangs straight down from it. */
+.llm-history-item::after {
+	content: "";
+	position: absolute;
+	left: 145px;
+	top: 14px;
+	bottom: -2px;
+	width: 2px;
+	background: #4caf50;
+}
+
+.llm-history-item:last-child::after {
+	display: none;
 }
 
 .llm-history-header {
@@ -477,9 +581,76 @@
 	gap: 4px 12px;
 }
 
+.llm-history-title-row {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
 .llm-history-title {
 	font-weight: bold;
 	word-break: break-all;
+}
+
+/* The pencil/done_outline toggle button (see ui/conversation_history.js's
+   enterEditMode/saveTitle) -- transparent/borderless so it reads as an
+   icon-only affordance next to the title, not a normal button, until
+   hovered. color: inherit so currentColor (used by the svg path rule
+   below) resolves to the surrounding text's actual color, not some
+   button-element UA default. */
+.llm-history-edit-title {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 2px;
+	border: none;
+	background: transparent;
+	cursor: pointer;
+	border-radius: 3px;
+	flex: none;
+	color: inherit;
+}
+
+.llm-history-edit-title:hover {
+	background: rgba(255, 255, 255, 0.12);
+}
+
+/* The pencil/done_outline icon itself -- a plain <span> with NO image
+   content of its own; mask-image (set via inline style in
+   ui/conversation_history.js, toggled between editIconURL/doneIconURL)
+   uses the SVG file purely as a SHAPE (its alpha channel), and
+   background-color supplies the actual visible color. This sidesteps
+   BOTH problems the previous inline-SVG-via-innerHTML approach had:
+   the icon not rendering at all in this chrome context, and the SVG's own
+   hardcoded fill="#e3e3e3" (baked directly into the file) not being
+   overridable via a `path { fill: ... }` rule reliably. background-color:
+   currentColor means the icon always exactly matches the surrounding
+   text's color, regardless of the source file's own colors.
+   Sized in em (not a fixed px value) so it scales with the surrounding
+   title text's actual font-size instead of a guessed constant. */
+.llm-history-edit-icon {
+	display: inline-block;
+	width: 1.1em;
+	height: 1.1em;
+	background-color: currentColor;
+	mask-repeat: no-repeat;
+	mask-position: center;
+	mask-size: contain;
+	-moz-mask-repeat: no-repeat;
+	-moz-mask-position: center;
+	-moz-mask-size: contain;
+}
+
+.llm-history-title-input {
+	font-size: inherit;
+	font-weight: bold;
+	color: inherit;
+	background: -moz-Field;
+	border: 1px solid ThreeDShadow;
+	border-radius: 3px;
+	padding: 1px 4px;
+	width: 14em;
+	box-sizing: border-box;
 }
 
 .llm-history-meta {
@@ -490,12 +661,13 @@
 .llm-history-preview {
 	white-space: pre-wrap;
 	word-break: break-word;
+	margin-top: 4px;
 }
 
 .llm-history-actions {
 	display: flex;
 	gap: 6px;
-	margin-top: 2px;
+	margin-top: 4px;
 }
 
 /* Markdown output */

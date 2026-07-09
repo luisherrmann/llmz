@@ -739,7 +739,7 @@ LLMInterfaces = {
 
 	// `messages` accepts either a plain string (wrapped into a single
 	// {role: "user"} entry below, for backward compatibility with every
-	// one-off/classification-style caller -- reference-retrieval.js's
+	// one-off/classification-style caller -- tools/reference-retrieval.js's
 	// _callModel, and llm-prompt.js's several selectXWithLLM helpers --
 	// none of which are part of the visible chat conversation and
 	// shouldn't carry history or a custom system prompt) or an array of

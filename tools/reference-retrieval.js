@@ -25,6 +25,53 @@ LLMReferenceRetrieval = {
 		return (result.text || "").trim();
 	},
 
+	// Shared by detectDownloadIntent below AND tools/reference-linker.js's
+	// detectLinkIntent -- both use the exact same six-shape response format
+	// (SINGLE/DESCRIBE/LIST/RANGE/ALL/SELECT/none), just with different
+	// classify-prompt WORDING (download vs link phrasing), so the parsing
+	// side has no reason to be duplicated between them.
+	// Returns one of:
+	//   { type: "single", index }
+	//   { type: "describe", description }
+	//   { type: "list", indices: [...] }
+	//   { type: "range", from, to }
+	//   { type: "all" }
+	//   { type: "select", description }
+	//   null -- "none", or an unparseable response
+	_parseIntentResponse(text) {
+		if (!text) return null;
+		text = text.trim();
+		if (/^none$/i.test(text)) return null;
+
+		let singleMatch = text.match(/^SINGLE:\s*(\d+)/i);
+		if (singleMatch) return { type: "single", index: parseInt(singleMatch[1], 10) };
+
+		let describeMatch = text.match(/^DESCRIBE:\s*(.+)$/is);
+		if (describeMatch) return { type: "describe", description: describeMatch[1].trim() };
+
+		let listMatch = text.match(/^LIST:\s*(.+)$/is);
+		if (listMatch) {
+			let indices = (listMatch[1].match(/\d+/g) || []).map(n => parseInt(n, 10));
+			return { type: "list", indices };
+		}
+
+		let rangeMatch = text.match(/^RANGE:\s*(\d+)\s*-\s*(\d+)/i);
+		if (rangeMatch) return { type: "range", from: parseInt(rangeMatch[1], 10), to: parseInt(rangeMatch[2], 10) };
+
+		if (/^ALL\b/i.test(text)) return { type: "all" };
+
+		let selectMatch = text.match(/^SELECT:\s*(.+)$/is);
+		if (selectMatch) return { type: "select", description: selectMatch[1].trim() };
+
+		// Unrecognized format -- a bare number is treated as a single
+		// reference rather than failing closed, since that's the most
+		// common way a model deviates from the requested format.
+		let bareNumber = text.match(/^\d+$/);
+		if (bareNumber) return { type: "single", index: parseInt(bareNumber[0], 10) };
+
+		return null;
+	},
+
 	// Detects a "download reference(s)" request before the message is sent
 	// to the main chat model, in whatever phrasing the user happens to
 	// use, and classifies it into one of six shapes -- a single explicit
@@ -45,14 +92,7 @@ LLMReferenceRetrieval = {
 	// into a final index list is pure arithmetic (dedup/range-expand/enumerate-
 	// all, clamped to whichever numbers actually exist), so it's handled
 	// locally by resolveExplicitIndices instead of costing another model call.
-	// Returns one of:
-	//   { type: "single", index }
-	//   { type: "describe", description }
-	//   { type: "list", indices: [...] }
-	//   { type: "range", from, to }
-	//   { type: "all" }
-	//   { type: "select", description }
-	//   null -- not a download request at all
+	// See _parseIntentResponse for the return shape.
 	async detectDownloadIntent(prompt) {
 		let classifyPrompt = [
 			"You are detecting whether the user's message is a request to download one",
@@ -90,42 +130,14 @@ LLMReferenceRetrieval = {
 			"   SELECT: <the selection criterion, in the user's own words>",
 			"",
 			'If the message is NOT a reference-download request at all (e.g. a normal',
-			'question about the PDF\'s content), respond with exactly "none".',
+			'question about the PDF\'s content, or a request to LINK a reference to an',
+			'existing library item rather than download it), respond with exactly',
+			'"none".',
 			"",
 			`User's message: "${prompt}"`,
 		].join("\n");
 		let text = await this._callModel(classifyPrompt);
-		if (!text) return null;
-		text = text.trim();
-		if (/^none$/i.test(text)) return null;
-
-		let singleMatch = text.match(/^SINGLE:\s*(\d+)/i);
-		if (singleMatch) return { type: "single", index: parseInt(singleMatch[1], 10) };
-
-		let describeMatch = text.match(/^DESCRIBE:\s*(.+)$/is);
-		if (describeMatch) return { type: "describe", description: describeMatch[1].trim() };
-
-		let listMatch = text.match(/^LIST:\s*(.+)$/is);
-		if (listMatch) {
-			let indices = (listMatch[1].match(/\d+/g) || []).map(n => parseInt(n, 10));
-			return { type: "list", indices };
-		}
-
-		let rangeMatch = text.match(/^RANGE:\s*(\d+)\s*-\s*(\d+)/i);
-		if (rangeMatch) return { type: "range", from: parseInt(rangeMatch[1], 10), to: parseInt(rangeMatch[2], 10) };
-
-		if (/^ALL\b/i.test(text)) return { type: "all" };
-
-		let selectMatch = text.match(/^SELECT:\s*(.+)$/is);
-		if (selectMatch) return { type: "select", description: selectMatch[1].trim() };
-
-		// Unrecognized format -- a bare number is treated as a single
-		// reference rather than failing closed, since that's the most
-		// common way a model deviates from the requested format.
-		let bareNumber = text.match(/^\d+$/);
-		if (bareNumber) return { type: "single", index: parseInt(bareNumber[0], 10) };
-
-		return null;
+		return this._parseIntentResponse(text);
 	},
 
 	// Expands a LIST/RANGE/ALL intent (see detectDownloadIntent) into a

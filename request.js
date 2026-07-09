@@ -1,12 +1,13 @@
-// Executes one chat-pane request: either a short-circuited "download this
-// reference to my library" lookup, or the full normal chat flow (PDF-context
-// building, table/figure/equation/note/reference extraction+selection,
-// image handling, streaming the model's reply, citation grounding, and
-// markdown+link rendering of the result). Split out of llm-chat-pane.js's
-// submitButton click handler, which used to contain this whole flow inline
-// -- what's left there now is just reading/validating the prompt, input
-// history bookkeeping, and Submit/Stop button state, all of which are UI
-// concerns distinct from the request itself.
+// Executes one chat-pane request: a short-circuited "download this reference
+// to my library" lookup, a short-circuited "link this reference to the
+// matching library item" lookup, or (if neither intent matches) the full
+// normal chat flow (PDF-context building, table/figure/equation/note/
+// reference extraction+selection, image handling, streaming the model's
+// reply, citation grounding, and markdown+link rendering of the result).
+// Split out of llm-chat-pane.js's submitButton click handler, which used to
+// contain this whole flow inline -- what's left there now is just reading/
+// validating the prompt, input history bookkeeping, and Submit/Stop button
+// state, all of which are UI concerns distinct from the request itself.
 //
 // `chatPane` is the LLMChatPane singleton, passed in explicitly (rather than
 // this module depending on the global) so every "look at the active reader
@@ -30,18 +31,53 @@ LLMRequest = {
 		Zotero.debug("LLM Chat Pane [Request]: " + msg);
 	},
 
-	// How many references may be downloaded at once for a multi-reference
-	// request (see the intent-handling block in send() below). Bounded
-	// rather than unbounded, since "download all references" can mean 50+
-	// papers. Unlike _CANDIDATE_CONCURRENCY (where launching MORE than
-	// needed to reach the winning candidate's rank is pure waste -- see
-	// reference-retrieval.js), there's no early-stop dynamic here: every
-	// requested reference has to be downloaded regardless, so raising this
-	// doesn't have that same "overshoot" downside -- the tradeoff is purely
-	// local resource pressure, since each reference's own pipeline can spin
-	// up to _CANDIDATE_CONCURRENCY HiddenBrowser instances of its own (worst
-	// case _REFERENCE_CONCURRENCY * _CANDIDATE_CONCURRENCY at once).
+	// How many references may be downloaded (or linked) at once for a multi-
+	// reference request (see the intent-handling blocks in send() below).
+	// Bounded rather than unbounded, since "download/link all references"
+	// can mean 50+ papers. Unlike _CANDIDATE_CONCURRENCY (where launching
+	// MORE than needed to reach the winning candidate's rank is pure waste
+	// -- see tools/reference-retrieval.js), there's no early-stop dynamic here:
+	// every requested reference has to be processed regardless, so raising
+	// this doesn't have that same "overshoot" downside -- the tradeoff is
+	// purely local resource pressure, since each reference's own download
+	// pipeline can spin up to _CANDIDATE_CONCURRENCY HiddenBrowser instances
+	// of its own (worst case _REFERENCE_CONCURRENCY * _CANDIDATE_CONCURRENCY
+	// at once). Linking has no such per-reference fan-out (just one LLM call
+	// + one local DB search each), so this bound is more conservative than
+	// linking strictly needs, but shared for simplicity.
 	_REFERENCE_CONCURRENCY: 8,
+
+	// Resolves `intent` (see LLMReferenceRetrieval.detectDownloadIntent/
+	// tools/reference-linker.js's detectLinkIntent -- both return the same
+	// six-shape intent object) down to a concrete list of reference numbers,
+	// against `pdfItem`'s own bibliography. Shared between the download and
+	// link flows in send() below, since this resolution step is completely
+	// identical either way -- only what's DONE with the resulting indices
+	// differs (see downloadOneReference/linkOneReference).
+	// "single"/"describe" resolve to at most one entry each; "list"/"range"/
+	// "all" are pure arithmetic against the paper's own reference list
+	// (resolveExplicitIndices, no model call); "select" (a criterion like
+	// "all papers by Kaiming He") needs a further model call to actually
+	// read the bibliography and pick matches, same as "describe" already
+	// does for a single paper -- just capped at several results instead of
+	// one (see resolveReferenceSelection).
+	async _resolveIntentIndices(intent, pdfItem) {
+		if (intent.type === "single") {
+			return [intent.index];
+		}
+		if (intent.type === "describe") {
+			let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
+			let resolved = await LLMReferenceRetrieval.resolveReferenceByDescription(referenceIndex, intent.description);
+			return resolved === null ? [] : [resolved];
+		}
+		if (intent.type === "select") {
+			let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
+			return LLMReferenceRetrieval.resolveReferenceSelection(referenceIndex, intent.description);
+		}
+		// list / range / all
+		let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
+		return LLMReferenceRetrieval.resolveExplicitIndices(intent, referenceIndex);
+	},
 
 	// Starts the request. Returns a handle:
 	//   promise    -- resolves once the request finishes (successfully,
@@ -105,39 +141,11 @@ LLMRequest = {
 						return;
 					}
 
-					// Resolves `intent` (see LLMReferenceRetrieval.detectDownloadIntent)
-					// down to a concrete list of reference numbers to download.
-					// "single"/"describe" resolve to at most one entry each;
-					// "list"/"range"/"all" are pure arithmetic against the paper's
-					// own reference list (resolveExplicitIndices, no model call);
-					// "select" (a criterion like "all papers by Kaiming He") needs a
-					// further model call to actually read the bibliography and pick
-					// matches, same as "describe" already does for a single paper --
-					// just capped at several results instead of one (see
-					// resolveReferenceSelection).
-					let indices;
-					if (intent.type === "single") {
-						indices = [intent.index];
-					}
-					else if (intent.type === "describe") {
-						let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
-						if (cancelled) return;
-						let resolved = await LLMReferenceRetrieval.resolveReferenceByDescription(referenceIndex, intent.description);
-						if (cancelled) return;
-						indices = resolved === null ? [] : [resolved];
-					}
-					else if (intent.type === "select") {
-						let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
-						if (cancelled) return;
-						indices = await LLMReferenceRetrieval.resolveReferenceSelection(referenceIndex, intent.description);
-						if (cancelled) return;
-					}
-					else {
-						// list / range / all
-						let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
-						if (cancelled) return;
-						indices = LLMReferenceRetrieval.resolveExplicitIndices(intent, referenceIndex);
-					}
+					// Resolves `intent` down to a concrete list of reference
+					// numbers to download -- see _resolveIntentIndices above,
+					// shared with the link-intent block below.
+					let indices = await this._resolveIntentIndices(intent, pdfItem);
+					if (cancelled) return;
 
 					if (!indices || !indices.length) {
 						appendMessage("System", intent.description
@@ -216,7 +224,7 @@ LLMRequest = {
 					// with no shared bottleneck to serialize on -- confirmed ~2x
 					// faster on that real test. The one shared bottleneck that DOES
 					// exist, DuckDuckGo's search endpoint (see
-					// reference-retrieval.js's _findPDFViaWebSearch), is serialized
+					// tools/reference-retrieval.js's _findPDFViaWebSearch), is serialized
 					// separately via _throttledSearchWeb, so parallelizing here
 					// doesn't make that worse. Bounded (not a free-for-all
 					// Promise.all over every index) since "download all references"
@@ -248,6 +256,105 @@ LLMRequest = {
 				if (cancelled) return;
 				this.log(`LLMReferenceRetrieval.detectDownloadIntent/downloadReferenceToLibrary failed: ${e.message}`);
 				appendMessage("System", `Reference download failed: ${e.message}`);
+				return;
+			}
+
+			// Checked SECOND, only once the download-intent check above came
+			// back null -- a "link reference N" request short-circuits the
+			// normal chat flow the same way a download request does, just
+			// linking to whatever's already in the library (see
+			// tools/reference-linker.js's LLMReferenceLinker) instead of fetching
+			// anything new. Structurally identical to the download block
+			// above (same intent-resolution helper, same per-reference
+			// worker-pool pattern), differing only in what happens with each
+			// resolved reference number.
+			try {
+				let intent = await LLMReferenceLinker.detectLinkIntent(prompt);
+				if (cancelled) return;
+				if (intent !== null) {
+					appendMessage("You", prompt);
+					let pdfItem = chatPane.getActiveReaderAttachment();
+					if (!pdfItem) {
+						appendMessage("System", "No active PDF to look up references from.");
+						return;
+					}
+
+					let indices = await this._resolveIntentIndices(intent, pdfItem);
+					if (cancelled) return;
+
+					if (!indices || !indices.length) {
+						appendMessage("System", intent.description
+							? `Could not find any references matching "${intent.description}" in this paper's bibliography.`
+							: "Could not find any matching references in this paper's bibliography.");
+						return;
+					}
+
+					if (indices.length > 1) {
+						appendMessage("System", `Found ${indices.length} matching references: ${indices.join(", ")}. Linking...`);
+					}
+
+					let linkOneReference = async (linkRefNum) => {
+						let reply = appendMessage(replyLabel, `Looking up reference ${linkRefNum}...`);
+						let onProgress = (msg) => {
+							if (cancelled) return;
+							appendMessage("System", msg);
+						};
+						let onStage = (msg) => {
+							if (cancelled) return;
+							chat.updateMessageText(reply, msg);
+						};
+						let result = await LLMReferenceLinker.linkReferenceToLibrary(linkRefNum, pdfItem, onProgress, onStage);
+						if (cancelled) return;
+						if (result.success && result.linked) {
+							let verb = result.alreadyLinked ? "is already linked to" : "linked to";
+							chat.finalizeRichMessage(reply, [
+								{ text: `"` },
+								{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+								{ text: `" ${verb} the current paper.` },
+							]);
+						}
+						else {
+							// Either the reference's title couldn't be
+							// resolved, or a title WAS resolved but nothing
+							// matching exists in the library yet (see
+							// linkReferenceToLibrary -- deliberately never
+							// downloads anything itself) -- both cases
+							// already carry a complete, user-facing message.
+							chat.updateMessageText(reply, result.message);
+						}
+					};
+
+					// Same bounded-parallel worker-pool pattern as
+					// downloadOneReference above, for the same "linking all
+					// references could mean 50+ at once" reason -- though
+					// linking itself has no per-reference network fan-out
+					// (just one LLM call + one local DB search each), so
+					// this mainly bounds simultaneous LLM calls rather than
+					// HiddenBrowser/Translate load.
+					let nextIndexPos = 0;
+					let worker = async () => {
+						while (nextIndexPos < indices.length) {
+							if (cancelled) return;
+							let linkRefNum = indices[nextIndexPos++];
+							try {
+								await linkOneReference(linkRefNum);
+							}
+							catch (e) {
+								if (cancelled) return;
+								this.log(`linkOneReference(${linkRefNum}) failed: ${e.message}`);
+								appendMessage("System", `Reference ${linkRefNum} linking failed: ${e.message}`);
+							}
+						}
+					};
+					let workerCount = Math.min(this._REFERENCE_CONCURRENCY, indices.length);
+					await Promise.all(Array.from({ length: workerCount }, () => worker()));
+					return;
+				}
+			}
+			catch (e) {
+				if (cancelled) return;
+				this.log(`LLMReferenceLinker.detectLinkIntent/linkReferenceToLibrary failed: ${e.message}`);
+				appendMessage("System", `Reference linking failed: ${e.message}`);
 				return;
 			}
 

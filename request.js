@@ -272,11 +272,20 @@ LLMRequest = {
 				chat.updateMessageText(reply, "Export cancelled.");
 			}
 			else if (result.success) {
-				chat.finalizeRichMessage(reply, [
+				let parts = [
 					{ text: `Exported ${result.count} table${result.count === 1 ? "" : "s"} to ` },
 					{ label: result.path, title: "Open containing folder", onClick: () => Zotero.File.reveal(result.path) },
 					{ text: "." },
-				]);
+				];
+				// Set alongside a normal successful path/count when SOME
+				// (not all) tables failed to write -- see
+				// exportTablesToZip's own comment -- appended rather than
+				// replacing the success message, since the export still
+				// went through for whichever tables DID write.
+				if (result.warning) {
+					parts.push({ text: ` ${result.warning}` });
+				}
+				chat.finalizeRichMessage(reply, parts);
 			}
 			else {
 				chat.updateMessageText(reply, result.message);

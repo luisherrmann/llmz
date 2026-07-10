@@ -1,7 +1,7 @@
 // The collapsible "Past Conversations" panel: a fixed-height, independently scrolling
 // list of cards, one per conversation previously saved (via Export -- see
 // export.js/conversation-history.js) for the active PDF, one .md file per
-// card under $HOME/Zotero/zllm/chats/<PDF_ID>/. Split out of
+// card under $HOME/Zotero/LLMz/chats/<PDF_ID>/. Split out of
 // llm-chat-pane.js's onRender for the same reason as the other ui/ modules.
 LLMUIConversationHistory = {
 	// `onLoad(conversation)` is called on a card's Load click -- rebuilding
@@ -168,7 +168,7 @@ LLMUIConversationHistory = {
 					// Stays in edit mode (rather than reverting) so the
 					// user can fix whatever caused the failure (e.g. a
 					// name collision) and retry without retyping.
-					Services.prompt.alert(doc.defaultView, "ZLLM", `Rename failed: ${e.message}`);
+					Services.prompt.alert(doc.defaultView, "LLMz", `Rename failed: ${e.message}`);
 				}
 				finally {
 					editButton.disabled = false;
@@ -219,7 +219,7 @@ LLMUIConversationHistory = {
 				// this pane, hence confirming at all.
 				let confirmed = Services.prompt.confirm(
 					doc.defaultView,
-					"ZLLM",
+					"LLMz",
 					`Delete this saved conversation? This cannot be undone.\n\n${conv.filename}`
 				);
 				if (!confirmed) {

@@ -1,7 +1,7 @@
 // Reads/writes the "METADATA:" block each conversation .md file carries
 // (see export.js's buildMarkdown, which embeds it directly under the title,
 // before "## Info"), and lists every conversation stored for a given PDF
-// under $HOME/Zotero/zllm/chats/<PDF_ID>/ -- the data source for
+// under $HOME/Zotero/LLMz/chats/<PDF_ID>/ -- the data source for
 // ui/past-conversations.js's card list. Lives at the plugin root (NOT
 // under ui/, despite the near-identical filename that briefly lived there
 // too) for the same reason export.js/import.js do: this is filesystem
@@ -25,12 +25,12 @@ LLMConversationHistory = {
 		Zotero.debug("LLM Chat Pane [Conversation History]: " + msg);
 	},
 
-	// $HOME/Zotero/zllm/chats/<item key>/ -- `item` is the PDF ATTACHMENT
+	// $HOME/Zotero/LLMz/chats/<item key>/ -- `item` is the PDF ATTACHMENT
 	// (the same key export.js's filenames already use), so each PDF's
 	// conversations live in their own folder instead of one flat directory
 	// shared by every paper.
 	async conversationDir(item) {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "chats", item.key);
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "chats", item.key);
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},

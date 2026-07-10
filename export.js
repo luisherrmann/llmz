@@ -124,7 +124,7 @@ LLMExport = {
 	},
 
 	// An nsIFilePicker in the given mode, filtered to *.md, defaulting to
-	// $HOME/Zotero/zllm/chats/<item key>/ (see LLMConversationHistory.
+	// $HOME/Zotero/LLMz/chats/<item key>/ (see LLMConversationHistory.
 	// conversationDir) as its initial directory -- `item` is the PDF
 	// ATTACHMENT, same as everywhere else in this file.
 	async _createFilePicker(title, mode, item) {
@@ -147,7 +147,7 @@ LLMExport = {
 		return fp;
 	},
 
-	// Shows a native save dialog (defaulting to $HOME/Zotero/zllm/chats/<item
+	// Shows a native save dialog (defaulting to $HOME/Zotero/LLMz/chats/<item
 	// key>/<ddmmyy>_<NNN>.md, editable by the user) and writes the exported
 	// markdown there. Returns { cancelled: true } if the user dismisses the
 	// dialog without saving, or { cancelled: false, path } once written.

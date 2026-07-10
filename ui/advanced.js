@@ -188,7 +188,7 @@ LLMUIAdvanced = {
 			}
 			let confirmed = Services.prompt.confirm(
 				doc.defaultView,
-				"ZLLM",
+				"LLMz",
 				`This will irrecovably delete all the selected cache files:\n\n${selected.map(c => c.label).join("\n")}`
 			);
 			if (!confirmed) {

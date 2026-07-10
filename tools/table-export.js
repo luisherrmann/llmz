@@ -326,7 +326,7 @@ LLMTableExport = {
 	},
 
 	// An nsIFilePicker in save mode, filtered to *.zip, defaulting to
-	// $HOME/Zotero/zllm/tables/ as its initial directory and "tables.zip"
+	// $HOME/Zotero/LLMz/tables/ as its initial directory and "tables.zip"
 	// as the filename -- same pattern export.js's own _createFilePicker
 	// uses for exporting a conversation, just a different default directory
 	// (tables/ instead of chats/<item key>/, since a table export isn't
@@ -341,7 +341,7 @@ LLMTableExport = {
 		fp.init(win.browsingContext, "Export Tables", Ci.nsIFilePicker.modeSave);
 		fp.appendFilter("ZIP Archive", "*.zip");
 		try {
-			let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "tables");
+			let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "tables");
 			await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 			let dirFile = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
 			dirFile.initWithPath(dir);
@@ -420,7 +420,7 @@ LLMTableExport = {
 		onProgress?.(`Formatting ${tables.length} table${tables.length === 1 ? "" : "s"} as CSV${images ? " (using each table's rendered image)" : ""}...`);
 		onStage?.("Formatting tables as CSV...");
 
-		let tmpDir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "tables", `tmp_${pdfItem.id}_${Date.now()}`);
+		let tmpDir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "tables", `tmp_${pdfItem.id}_${Date.now()}`);
 		await IOUtils.makeDirectory(tmpDir, { ignoreExisting: true, createAncestors: true });
 		try {
 			// Producer/consumer pipeline, NOT "format everything, then

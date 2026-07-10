@@ -1,5 +1,5 @@
 llm-chat-pane-header =
-    .label = ZLLM
+    .label = LLMz
 llm-chat-pane-sidenav =
-    .tooltiptext = ZLLM
-pane-llm-chat-pane-example-com-llm-chat-pane = ZLLM
+    .tooltiptext = LLMz
+pane-llm-chat-pane-example-com-llm-chat-pane = LLMz

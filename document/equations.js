@@ -55,8 +55,8 @@ LLMEquations = {
 	async _extractRaw(item) {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
-		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts", `equations_${item.id}.json`);
-		await IOUtils.makeDirectory(PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts"), { ignoreExisting: true, createAncestors: true });
+		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `equations_${item.id}.json`);
+		await IOUtils.makeDirectory(PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts"), { ignoreExisting: true, createAncestors: true });
 		await this._runNode(pdfPath, outputPath);
 		let equations = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
@@ -65,7 +65,7 @@ LLMEquations = {
 	},
 
 	async _cacheDir() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "cache", "equation");
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "equation");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},

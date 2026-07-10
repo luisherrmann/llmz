@@ -55,7 +55,7 @@ LLMReferences = {
 		let jarURI = uri.QueryInterface(Ci.nsIJARURI);
 		let xpiFile = jarURI.JARFile.QueryInterface(Ci.nsIFileURL).file;
 
-		let destDir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts", "sdt-deployed");
+		let destDir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", "sdt-deployed");
 		let markerPath = PathUtils.join(destDir, ".deployed-from");
 		let xpiStat = await IOUtils.stat(xpiFile.path);
 		let marker = `${xpiStat.size}:${xpiStat.lastModified}`;
@@ -149,8 +149,8 @@ LLMReferences = {
 	async _extractRaw(item) {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
-		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts", `references_${item.id}.json`);
-		await IOUtils.makeDirectory(PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts"), { ignoreExisting: true, createAncestors: true });
+		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `references_${item.id}.json`);
+		await IOUtils.makeDirectory(PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts"), { ignoreExisting: true, createAncestors: true });
 		await this._runNode(pdfPath, outputPath);
 		let references = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
@@ -159,7 +159,7 @@ LLMReferences = {
 	},
 
 	async _cacheDir() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "cache", "reference");
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "reference");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},

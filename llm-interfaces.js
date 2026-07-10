@@ -316,12 +316,12 @@ LLMInterfaces = {
 	// https://ollama.com/blog/tool-support and ollama-js's own
 	// examples/tools/calculator.ts, using the exact same OpenAI-shaped
 	// {type:"function", function:{name, description, parameters}} tool
-	// definitions the OpenAI-compatible providers already use. Whether the
-	// CURRENTLY SELECTED model actually honors it well is still a separate,
-	// real question -- see modelSupportsTools below (checked by callers,
-	// e.g. intent.js, before passing `tools` here at all) -- this function
-	// itself doesn't gate on that; it just forwards whatever `tools` it's
-	// given.
+	// definitions the OpenAI-compatible providers already use. intent.js
+	// (the only caller) always passes `tools` unconditionally now -- an
+	// earlier per-model capability gate was tried and removed after
+	// confirming empirically it was never once needed across every model
+	// actually used with this plugin. This function itself doesn't gate on
+	// anything either way -- it just forwards whatever `tools` it's given.
 	async streamOllama(messages, onToken, { onReady, systemPrompt, tools } = {}, images) {
 		let model = await this.getOllamaModel();
 
@@ -884,9 +884,7 @@ LLMInterfaces = {
 	// [{name, description, schema}] (schema a plain JSON Schema object),
 	// translated into each provider's own wire format by
 	// streamOpenAICompatible (OpenAI/LiteLLM/LM Studio), streamAnthropic,
-	// or streamOllama (all four support it -- see modelSupportsTools for
-	// checking whether the CURRENTLY SELECTED model actually honors it
-	// well, which this function itself doesn't gate on). Every path's
+	// or streamOllama (all four support it). Every path's
 	// result is `{model, text, toolCalls}` --
 	// `toolCalls` is `[{id, name, arguments, argumentsJSON}]`, empty unless
 	// the model actually decided to call something.
@@ -936,28 +934,6 @@ LLMInterfaces = {
 			return this.anthropicSupportsVision(model);
 		}
 		return this._visionModelNamePattern.test(model);
-	},
-
-	// Same idea as modelSupportsImages above, but for tool-calling (see
-	// intent.js's detectIntent, the only current caller -- it uses this to
-	// decide whether to route through native tool-calling at all, falling
-	// back to the older sequential prompt-based classifiers otherwise).
-	// Ollama's /api/show capabilities array reports "tools" per-model, same
-	// mechanism modelSupportsImages already uses for "vision" -- unlike
-	// vision, none of the other three providers expose an equivalent
-	// per-model capability query for tool support (LiteLLM's own
-	// /model_group/info has no supports_tools field the way it has
-	// supports_vision), so OpenAI/Anthropic/LiteLLM/LM Studio are all
-	// assumed to support it -- consistent with tools/reference-retrieval.js's/
-	// reference-linker.js's own native-tool-calling design already
-	// targeting exactly those four providers.
-	async modelSupportsTools(model) {
-		if (!model) return false;
-		if (this._provider === "ollama") {
-			let caps = await this.getOllamaModelCapabilities(model);
-			return caps.includes("tools");
-		}
-		return true;
 	},
 
 	async listModels() {

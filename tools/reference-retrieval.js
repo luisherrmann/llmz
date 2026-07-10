@@ -25,65 +25,14 @@ LLMReferenceRetrieval = {
 		return (result.text || "").trim();
 	},
 
-	// Shared by detectDownloadIntent below AND tools/reference-linker.js's
-	// detectLinkIntent -- both use the exact same six-shape response format
-	// (SINGLE/DESCRIBE/LIST/RANGE/ALL/SELECT/none), just with different
-	// classify-prompt WORDING (download vs link phrasing), so the parsing
-	// side has no reason to be duplicated between them.
-	// Returns one of:
-	//   { type: "single", index }
-	//   { type: "describe", description }
-	//   { type: "list", indices: [...] }
-	//   { type: "range", from, to }
-	//   { type: "all" }
-	//   { type: "select", description }
-	//   null -- "none", or an unparseable response
-	_parseIntentResponse(text) {
-		if (!text) return null;
-		text = text.trim();
-		if (/^none$/i.test(text)) return null;
-
-		let singleMatch = text.match(/^SINGLE:\s*(\d+)/i);
-		if (singleMatch) return { type: "single", index: parseInt(singleMatch[1], 10) };
-
-		let describeMatch = text.match(/^DESCRIBE:\s*(.+)$/is);
-		if (describeMatch) return { type: "describe", description: describeMatch[1].trim() };
-
-		let listMatch = text.match(/^LIST:\s*(.+)$/is);
-		if (listMatch) {
-			let indices = (listMatch[1].match(/\d+/g) || []).map(n => parseInt(n, 10));
-			return { type: "list", indices };
-		}
-
-		let rangeMatch = text.match(/^RANGE:\s*(\d+)\s*-\s*(\d+)/i);
-		if (rangeMatch) return { type: "range", from: parseInt(rangeMatch[1], 10), to: parseInt(rangeMatch[2], 10) };
-
-		if (/^ALL\b/i.test(text)) return { type: "all" };
-
-		let selectMatch = text.match(/^SELECT:\s*(.+)$/is);
-		if (selectMatch) return { type: "select", description: selectMatch[1].trim() };
-
-		// Unrecognized format -- a bare number is treated as a single
-		// reference rather than failing closed, since that's the most
-		// common way a model deviates from the requested format.
-		let bareNumber = text.match(/^\d+$/);
-		if (bareNumber) return { type: "single", index: parseInt(bareNumber[0], 10) };
-
-		return null;
-	},
-
 	// Native-tool-calling descriptor for this tool (see intent.js's
 	// detectIntent) -- {name, description, schema} in the shape
-	// llm-interfaces.js's streamModel `opts.tools` expects. Used for every
-	// provider EXCEPT Ollama (see streamOllama's own comment for why) --
-	// Ollama instead falls back to detectDownloadIntent's prompt-based
-	// classify call below. `schema`'s six-shape `type` enum deliberately
-	// mirrors _parseIntentResponse's SINGLE/DESCRIBE/LIST/RANGE/ALL/SELECT
-	// text format exactly -- a native tool call's already-parsed
-	// `arguments` (see llm-interfaces.js's _finalizeToolCalls) ends up the
-	// same shape _parseIntentResponse returns either way (see intent.js's
-	// _argumentsToIntent), so downstream resolution (request.js's
-	// _resolveIntentIndices) never needs to know which path produced it.
+	// llm-interfaces.js's streamModel `opts.tools` expects. `schema`'s
+	// six-shape `type` enum is what request.js's _resolveIntentIndices
+	// (via resolveExplicitIndices/resolveReferenceByDescription/
+	// resolveReferenceSelection) consumes downstream -- see intent.js's
+	// _argumentsToIntent, which coerces a tool call's parsed `arguments`
+	// (see llm-interfaces.js's _finalizeToolCalls) into that same shape.
 	intentTool: {
 		name: "download_reference",
 		description: [
@@ -121,75 +70,7 @@ LLMReferenceRetrieval = {
 		},
 	},
 
-	// Detects a "download reference(s)" request before the message is sent
-	// to the main chat model, in whatever phrasing the user happens to
-	// use, and classifies it into one of six shapes -- a single explicit
-	// number, a single paper identified by title/author/description instead
-	// (no number given), an enumerated list of numbers, a numeric range, the
-	// paper's entire bibliography, or a criterion-based selection that isn't
-	// reducible to arithmetic on numbers alone (author, year, topic, etc.).
-	// Checked via an LLM call rather than a fixed regex so reasonable
-	// rephrasings are still recognized, at the cost of one extra (fast,
-	// single-token-ish) model call per message.
-	// DESCRIBE/SELECT are deliberately left unresolved here (just the raw
-	// text) -- matching free text against 50+ citation strings needs the
-	// paper's actual reference list in front of the model, which this first,
-	// cheap classification pass skips; see resolveReferenceByDescription/
-	// resolveReferenceSelection, called afterward once the reference list has
-	// actually been fetched. LIST/RANGE/ALL, by contrast, are already fully
-	// resolved to concrete numbers by the classifier itself -- turning THOSE
-	// into a final index list is pure arithmetic (dedup/range-expand/enumerate-
-	// all, clamped to whichever numbers actually exist), so it's handled
-	// locally by resolveExplicitIndices instead of costing another model call.
-	// See _parseIntentResponse for the return shape.
-	async detectDownloadIntent(prompt) {
-		let classifyPrompt = [
-			"You are detecting whether the user's message is a request to download one",
-			"or more bibliography/reference-list entries from the current PDF into",
-			"their Zotero library. Determine which of the following forms the request",
-			"takes, and respond with EXACTLY ONE line in the corresponding format. Do",
-			"not explain.",
-			"",
-			'1. A SINGLE reference by explicit number ("download reference 15", "save',
-			'   ref 3 to my library", "grab citation 7 for me"):',
-			"   SINGLE: <number>",
-			"",
-			"2. A SINGLE reference identified by title/author/description, with NO",
-			'   number given ("download the Jumper AlphaFold paper", "save the paper by',
-			'   He et al. about masked autoencoders"):',
-			"   DESCRIBE: <the identifying text from the user's message>",
-			"",
-			'3. An ENUMERATED list of specific reference numbers ("download references',
-			'   1, 2, 45 and 46", "grab refs 3, 7, 9"):',
-			"   LIST: <comma-separated numbers>",
-			"",
-			'4. A RANGE of reference numbers ("download references 8-20", "get me',
-			'   references 10 through 15"):',
-			"   RANGE: <start>-<end>",
-			"",
-			'5. ALL references in the bibliography ("download all references", "get',
-			'   every paper from this bibliography\'s reference list"):',
-			"   ALL",
-			"",
-			"6. A SELECTION described by some CRITERION other than an explicit",
-			"   number/range/list, which requires actually reading the reference list",
-			'   to resolve ("download all papers by Kaiming He", "get every reference',
-			'   from before 2016", "grab the papers about diffusion models cited',
-			'   here"):',
-			"   SELECT: <the selection criterion, in the user's own words>",
-			"",
-			'If the message is NOT a reference-download request at all (e.g. a normal',
-			'question about the PDF\'s content, or a request to LINK a reference to an',
-			'existing library item rather than download it), respond with exactly',
-			'"none".',
-			"",
-			`User's message: "${prompt}"`,
-		].join("\n");
-		let text = await this._callModel(classifyPrompt);
-		return this._parseIntentResponse(text);
-	},
-
-	// Expands a LIST/RANGE/ALL intent (see detectDownloadIntent) into a
+	// Expands a LIST/RANGE/ALL intent (see intent.js's detectIntent) into a
 	// concrete, deduplicated, sorted list of reference numbers -- pure
 	// arithmetic against the paper's own reference list, no model call
 	// needed, since the numbers are already explicit (or trivially
@@ -252,9 +133,9 @@ LLMReferenceRetrieval = {
 	// being overzealous) could otherwise match a large fraction of a long
 	// bibliography, turning one chat message into dozens of sequential
 	// downloads. A literal "download ALL references" request doesn't go
-	// through this path at all (see detectDownloadIntent's dedicated "all"
-	// intent, resolved by resolveExplicitIndices with no cap and no model
-	// call), so this limit only ever affects the fuzzier criterion case.
+	// through this path at all (see intent.js's dedicated "all" intent,
+	// resolved by resolveExplicitIndices with no cap and no model call),
+	// so this limit only ever affects the fuzzier criterion case.
 	_MAX_SELECTION_RESULTS: 10,
 
 	// Resolves a "download <criterion>" request (e.g. "all papers by Kaiming

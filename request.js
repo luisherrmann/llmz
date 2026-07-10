@@ -1,9 +1,10 @@
 // Executes one chat-pane request: a short-circuited "download this reference
 // to my library" lookup, a short-circuited "link this reference to the
-// matching library item" lookup, or (if neither intent matches) the full
-// normal chat flow (PDF-context building, table/figure/equation/note/
-// reference extraction+selection, image handling, streaming the model's
-// reply, citation grounding, and markdown+link rendering of the result).
+// matching library item" lookup, a short-circuited "export these tables as
+// CSV" request, or (if no tool intent matches) the full normal chat flow
+// (PDF-context building, table/figure/equation/note/reference
+// extraction+selection, image handling, streaming the model's reply,
+// citation grounding, and markdown+link rendering of the result).
 // Split out of llm-chat-pane.js's submitButton click handler, which used to
 // contain this whole flow inline -- what's left there now is just reading/
 // validating the prompt, input history bookkeeping, and Submit/Stop button
@@ -47,36 +48,59 @@ LLMRequest = {
 	// linking strictly needs, but shared for simplicity.
 	_REFERENCE_CONCURRENCY: 8,
 
-	// Resolves `intent` (see intent.js's detectIntent, which returns the
-	// same six-shape intent object regardless of which tool matched or
-	// which detection path produced it) down to a concrete list of
-	// reference numbers, against `pdfItem`'s own bibliography. Shared
-	// between the download and link cases in send() below, since this
-	// resolution step is completely identical either way -- only what's
-	// DONE with the resulting indices differs (see processOneReference).
+	// One entry per tool key (see intent.js's _toolKeys) -- each bundles the
+	// four functions _resolveIntentIndices below needs to resolve that
+	// tool's own six-shape intent against ITS OWN index (the paper's
+	// bibliography for download/link, its extracted tables for tables).
+	// "download" and "link" share one bundle -- both resolve against the
+	// exact same reference list/methods, only diverging in what happens
+	// with the resolved numbers afterward (see send()'s processOneReference
+	// vs the "tables" branch's single combined call).
+	_intentResolvers: {
+		get download() { return this.link; },
+		link: {
+			getIndex: pdfItem => LLMReferences.getReferenceIndex(pdfItem),
+			explicit: (intent, index) => LLMReferenceRetrieval.resolveExplicitIndices(intent, index),
+			byDescription: (index, description) => LLMReferenceRetrieval.resolveReferenceByDescription(index, description),
+			selection: (index, description) => LLMReferenceRetrieval.resolveReferenceSelection(index, description),
+		},
+		tables: {
+			getIndex: pdfItem => LLMTables.getTableIndex(pdfItem),
+			explicit: (intent, index) => LLMTableExport.resolveExplicitIndices(intent, index),
+			byDescription: (index, description) => LLMTableExport.resolveTableByDescription(index, description),
+			selection: (index, description) => LLMTableExport.resolveTableSelection(index, description),
+		},
+	},
+
+	// Resolves `intent` (see intent.js's detectIntent) down to a concrete
+	// list of numbers, against whichever index `tool`'s own resolver bundle
+	// (see _intentResolvers above) operates on. Shared across every tool,
+	// since this resolution step is structurally identical for all of them
+	// -- only which INDEX it resolves against, and what's DONE with the
+	// resulting numbers afterward, differs per tool.
 	// "single"/"describe" resolve to at most one entry each; "list"/"range"/
-	// "all" are pure arithmetic against the paper's own reference list
-	// (resolveExplicitIndices, no model call); "select" (a criterion like
-	// "all papers by Kaiming He") needs a further model call to actually
-	// read the bibliography and pick matches, same as "describe" already
-	// does for a single paper -- just capped at several results instead of
-	// one (see resolveReferenceSelection).
-	async _resolveIntentIndices(intent, pdfItem) {
+	// "all" are pure arithmetic against the paper's own index (explicit, no
+	// model call); "select" (a criterion like "all papers by Kaiming He",
+	// "every table about latency") needs a further model call to actually
+	// read the index and pick matches, same as "describe" already does for
+	// a single entry -- just capped at several results instead of one.
+	async _resolveIntentIndices(tool, intent, pdfItem) {
+		let resolver = this._intentResolvers[tool];
 		if (intent.type === "single") {
 			return [intent.index];
 		}
 		if (intent.type === "describe") {
-			let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
-			let resolved = await LLMReferenceRetrieval.resolveReferenceByDescription(referenceIndex, intent.description);
+			let index = await resolver.getIndex(pdfItem);
+			let resolved = await resolver.byDescription(index, intent.description);
 			return resolved === null ? [] : [resolved];
 		}
 		if (intent.type === "select") {
-			let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
-			return LLMReferenceRetrieval.resolveReferenceSelection(referenceIndex, intent.description);
+			let index = await resolver.getIndex(pdfItem);
+			return resolver.selection(index, intent.description);
 		}
 		// list / range / all
-		let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
-		return LLMReferenceRetrieval.resolveExplicitIndices(intent, referenceIndex);
+		let index = await resolver.getIndex(pdfItem);
+		return resolver.explicit(intent, index);
 	},
 
 	// Starts the request. Returns a handle:
@@ -128,18 +152,13 @@ LLMRequest = {
 
 			// Checked FIRST, before building the (comparatively expensive)
 			// full PDF-context prompt -- a "download reference N"/"link
-			// reference N" request short-circuits the normal chat flow
-			// entirely, since the main model has nothing useful to add to a
-			// request this specific. LLMIntent.detectIntent (see intent.js)
-			// owns deciding WHICH of the two tools (if either) applies --
-			// native tool-calling for models that support it, or
-			// LLMReferenceRetrieval.detectDownloadIntent/
-			// LLMReferenceLinker.detectLinkIntent run sequentially otherwise
-			// (currently only reachable for a non-tool-capable Ollama model)
-			// -- so this block doesn't need to know or care which path
-			// actually ran.
+			// reference N"/"export table N as CSV" request short-circuits
+			// the normal chat flow entirely, since the main model has
+			// nothing useful to add to a request this specific.
+			// LLMIntent.detectIntent (see intent.js) owns deciding WHICH of
+			// the three tools (if any) applies, via native tool-calling.
 			try {
-				let detected = await LLMIntent.detectIntent(prompt, currentModel, (msg) => {
+				let detected = await LLMIntent.detectIntent(prompt, (msg) => {
 					if (cancelled) return;
 					appendMessage("System", msg);
 				});
@@ -153,16 +172,61 @@ LLMRequest = {
 						return;
 					}
 
-					// Resolves `intent` down to a concrete list of reference
-					// numbers -- see _resolveIntentIndices above, shared
-					// regardless of which tool matched.
-					let indices = await this._resolveIntentIndices(intent, pdfItem);
+					// Resolves `intent` down to a concrete list of numbers --
+					// see _resolveIntentIndices above, shared regardless of
+					// which tool matched (against the bibliography for
+					// download/link, the extracted tables for tables).
+					let indices = await this._resolveIntentIndices(tool, intent, pdfItem);
 					if (cancelled) return;
 
+					let noun = tool === "tables" ? "tables" : "references";
 					if (!indices || !indices.length) {
 						appendMessage("System", intent.description
-							? `Could not find any references matching "${intent.description}" in this paper's bibliography.`
-							: "Could not find any matching references in this paper's bibliography.");
+							? `Could not find any ${noun} matching "${intent.description}" in this paper.`
+							: `Could not find any matching ${noun} in this paper.`);
+						return;
+					}
+
+					// "tables" is a single combined operation over ALL
+					// resolved numbers at once (one CSV-formatting prompt
+					// covering every requested table -- see
+					// tools/table-export.js's exportTablesToZip), unlike
+					// download/link's per-reference pipeline below, so it's
+					// handled entirely separately, before the per-reference
+					// reply-bubble/worker-pool machinery that only applies
+					// to those two.
+					if (tool === "tables") {
+						let reply = appendMessage(replyLabel, `Exporting ${indices.length} table${indices.length === 1 ? "" : "s"}...`);
+						let onProgress = (msg) => {
+							if (cancelled) return;
+							appendMessage("System", msg);
+						};
+						let onStage = (msg) => {
+							if (cancelled) return;
+							chat.updateMessageText(reply, msg);
+						};
+						try {
+							let result = await LLMTableExport.exportTablesToZip(indices, pdfItem, onProgress, onStage);
+							if (cancelled) return;
+							if (result.cancelled) {
+								chat.updateMessageText(reply, "Export cancelled.");
+							}
+							else if (result.success) {
+								chat.finalizeRichMessage(reply, [
+									{ text: `Exported ${result.count} table${result.count === 1 ? "" : "s"} to ` },
+									{ label: result.path, title: "Open containing folder", onClick: () => Zotero.File.reveal(result.path) },
+									{ text: "." },
+								]);
+							}
+							else {
+								chat.updateMessageText(reply, result.message);
+							}
+						}
+						catch (e) {
+							if (cancelled) return;
+							this.log(`exportTablesToZip failed: ${e.message}`);
+							chat.updateMessageText(reply, `Table export failed: ${e.message}`);
+						}
 						return;
 					}
 
@@ -292,7 +356,7 @@ LLMRequest = {
 			catch (e) {
 				if (cancelled) return;
 				this.log(`LLMIntent.detectIntent failed: ${e.message}`);
-				appendMessage("System", `Reference lookup failed: ${e.message}`);
+				appendMessage("System", `Tool lookup failed: ${e.message}`);
 				return;
 			}
 

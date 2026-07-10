@@ -2,13 +2,13 @@
 // to whatever matching item ALREADY exists in the user's Zotero library, and
 // links the two items together via Zotero's own "Related" relation. Sibling
 // to tools/reference-retrieval.js (LLMReferenceRetrieval), which this module
-// deliberately reuses the intent-classification parsing and citation/title
-// helpers from ( _parseIntentResponse, _callModel, _extractCitationMetadata,
-// _findExistingItem) rather than duplicating them -- the two modules solve
-// almost the same problem (resolve a bibliography entry to a real paper),
-// just differing in what happens once a match is found: retrieval downloads
-// a NEW copy from the web, this module only ever links to something the
-// user ALREADY has. No web search/download logic lives here at all.
+// deliberately reuses the citation/title helpers from ( _callModel,
+// _extractCitationMetadata, _findExistingItem) rather than duplicating them
+// -- the two modules solve almost the same problem (resolve a bibliography
+// entry to a real paper), just differing in what happens once a match is
+// found: retrieval downloads a NEW copy from the web, this module only ever
+// links to something the user ALREADY has. No web search/download logic
+// lives here at all.
 LLMReferenceLinker = {
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Reference Linker]: " + msg);
@@ -16,9 +16,7 @@ LLMReferenceLinker = {
 
 	// Native-tool-calling descriptor for this tool (see intent.js's
 	// detectIntent) -- same shape/rationale as
-	// LLMReferenceRetrieval.intentTool, see its own comment. Used for every
-	// provider except Ollama, which falls back to detectLinkIntent below
-	// instead.
+	// LLMReferenceRetrieval.intentTool, see its own comment.
 	intentTool: {
 		name: "link_reference",
 		description: [
@@ -55,76 +53,6 @@ LLMReferenceLinker = {
 			},
 			required: ["type"],
 		},
-	},
-
-	// Same six-shape classification as LLMReferenceRetrieval.
-	// detectDownloadIntent, but for a "link reference(s) to the existing
-	// library item" request instead of a download -- e.g. "link reference
-	// 12 to my library", "relate the He et al. paper to this one". Shares
-	// _parseIntentResponse with detectDownloadIntent (identical response
-	// format, just different classify-prompt wording) rather than
-	// duplicating that parsing logic. Explicitly excludes download phrasing
-	// in its own "none" case (and vice versa in detectDownloadIntent) so a
-	// single message reliably matches at most one of the two -- still
-	// relevant for the Ollama fallback path (see intent.js), which runs
-	// both classifiers sequentially exactly as before; providers with
-	// native tool-calling support see both tools in the SAME call instead
-	// (see intentTool above), where this disambiguation is handled by the
-	// model picking at most one tool rather than by two independent "none"
-	// checks.
-	// Returns one of:
-	//   { type: "single", index }
-	//   { type: "describe", description }
-	//   { type: "list", indices: [...] }
-	//   { type: "range", from, to }
-	//   { type: "all" }
-	//   { type: "select", description }
-	//   null -- not a link request at all
-	async detectLinkIntent(prompt) {
-		let classifyPrompt = [
-			"You are detecting whether the user's message is a request to LINK one or",
-			"more bibliography/reference-list entries from the current PDF to the",
-			"matching item ALREADY in their Zotero library (creating a \"Related\"",
-			"relation between the current paper and that reference) -- NOT a request",
-			"to download, save, or search the web for anything. Determine which of the",
-			"following forms the request takes, and respond with EXACTLY ONE line in",
-			"the corresponding format. Do not explain.",
-			"",
-			'1. A SINGLE reference by explicit number ("link reference 15", "relate ref',
-			'   3 to this paper", "connect citation 7 to the library item"):',
-			"   SINGLE: <number>",
-			"",
-			"2. A SINGLE reference identified by title/author/description, with NO",
-			'   number given ("link the Jumper AlphaFold paper", "relate the paper by',
-			'   He et al. about masked autoencoders"):',
-			"   DESCRIBE: <the identifying text from the user's message>",
-			"",
-			'3. An ENUMERATED list of specific reference numbers ("link references 1, 2,',
-			'   45 and 46", "relate refs 3, 7, 9"):',
-			"   LIST: <comma-separated numbers>",
-			"",
-			'4. A RANGE of reference numbers ("link references 8-20", "relate references',
-			'   10 through 15"):',
-			"   RANGE: <start>-<end>",
-			"",
-			'5. ALL references in the bibliography ("link all references", "relate every',
-			'   paper from this bibliography\'s reference list"):',
-			"   ALL",
-			"",
-			"6. A SELECTION described by some CRITERION other than an explicit",
-			"   number/range/list, which requires actually reading the reference list",
-			'   to resolve ("link all papers by Kaiming He", "relate every reference',
-			'   from before 2016"):',
-			"   SELECT: <the selection criterion, in the user's own words>",
-			"",
-			'If the message is NOT a reference-link request at all (e.g. a normal',
-			'question about the PDF\'s content, or a request to DOWNLOAD a reference',
-			'rather than link it), respond with exactly "none".',
-			"",
-			`User's message: "${prompt}"`,
-		].join("\n");
-		let text = await LLMReferenceRetrieval._callModel(classifyPrompt);
-		return LLMReferenceRetrieval._parseIntentResponse(text);
 	},
 
 	// Resolves a bibliography entry (by its own reference number) to

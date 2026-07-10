@@ -21,6 +21,7 @@ var LLMEquations;
 var LLMNotes;
 var LLMReferenceRetrieval;
 var LLMReferenceLinker;
+var LLMTableExport;
 var LLMInterfaces;
 var LLMIntent;
 var LLMPrompt;
@@ -46,6 +47,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "document/notes.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/reference-retrieval.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/reference-linker.js");
+	Services.scriptloader.loadSubScript(rootURI + "tools/table-export.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-interfaces.js");
 	Services.scriptloader.loadSubScript(rootURI + "intent.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-prompt.js");

@@ -1,7 +1,17 @@
 LLMTables = {
 	_scriptName: "extract_tables.py",
 	_embedScriptName: "embed_tables.py",
-	_cacheVersion: 2, // bump when the cached index schema changes (JS-side, not just Python scripts)
+	// Experimental SDT-only detection (see scripts/extract_tables_sdt.js) --
+	// bypasses extract_tables.py/embed_tables.py entirely for now, to check
+	// how well SDT alone handles tables the caption-anchored PyMuPDF
+	// pipeline structurally can't find (no caption at all, or an
+	// appendix-lettered one like "Table D.1"). Reuses LLMReferences's
+	// deployed sdt/ copy and Node-running infra (_extensionRoot/_nodePath/
+	// _pdfjsSetupPath), the same way LLMEquations already does, rather than
+	// deploying a second copy of sdt/ itself -- see LLMReferences'
+	// _siblingScriptNames.
+	_sdtScriptName: "extract_tables_sdt.js",
+	_cacheVersion: 3, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_indexCache: new Map(),
 
 	log(msg) {
@@ -69,6 +79,38 @@ LLMTables = {
 		}
 	},
 
+	_sdtScriptPath() {
+		return PathUtils.join(LLMReferences._extensionRoot, "scripts", this._sdtScriptName);
+	},
+
+	// Same shape as LLMEquations._runNode -- reuses LLMReferences's deployed
+	// sdt/ copy and node/pdfjs-setup infra rather than duplicating it.
+	async _runNode(...scriptArgs) {
+		if (!LLMReferences._extensionRoot) {
+			throw new Error("Extension root path unavailable; cannot run SDT-based extraction");
+		}
+		let nodePath = await LLMReferences._nodePath();
+		let scriptPath = this._sdtScriptPath();
+		let setupPath = LLMReferences._pdfjsSetupPath();
+		let stderrPath = scriptArgs[scriptArgs.length - 1] + ".err";
+		let quotedArgs = scriptArgs.map(a => JSON.stringify(a)).join(" ");
+		let cmd = `${JSON.stringify(nodePath)} --import ${JSON.stringify(setupPath)} ${JSON.stringify(scriptPath)} ${quotedArgs} 2>${JSON.stringify(stderrPath)}`;
+
+		this.log(`_runNode: ${this._sdtScriptName}`);
+		let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
+		let proc = await Subprocess.call({ command: "/bin/sh", arguments: ["-c", cmd] });
+		let { exitCode } = await proc.wait();
+
+		let stderr = "";
+		try { stderr = (await IOUtils.readUTF8(stderrPath)).trim(); } catch (e) {}
+		IOUtils.remove(stderrPath).catch(() => {});
+		if (stderr) this.log(`${this._sdtScriptName} stderr: ${stderr}`);
+
+		if (exitCode !== 0) {
+			throw new Error(`${this._sdtScriptName} failed (exit ${exitCode}): ${stderr || "(no stderr)"}`);
+		}
+	},
+
 	async _cacheDir() {
 		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "table");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
@@ -77,12 +119,12 @@ LLMTables = {
 
 	async _scriptFingerprint() {
 		try {
-			let parts = [`v${this._cacheVersion}`];
-			for (let name of [this._scriptName, this._embedScriptName]) {
-				let stat = await IOUtils.stat(this._scriptPath(name));
-				parts.push(`${stat.size}:${stat.lastModified}`);
-			}
-			return parts.join("|");
+			// Only the SDT script matters while the Python path is bypassed
+			// (see _extractRaw/getTableIndex) -- extract_tables.py/
+			// embed_tables.py aren't invoked right now, so their own
+			// mtimes shouldn't affect cache validity.
+			let stat = await IOUtils.stat(this._sdtScriptPath());
+			return `v${this._cacheVersion}|${stat.size}:${stat.lastModified}`;
 		}
 		catch (e) {
 			return null;
@@ -122,7 +164,9 @@ LLMTables = {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
 		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `tables_${item.id}.json`);
-		await this._runPython(this._scriptName, pdfPath, outputPath);
+		// Bypasses extract_tables.py (see _sdtScriptName's own comment) --
+		// SDT-only detection via _runNode, not _runPython.
+		await this._runNode(pdfPath, outputPath);
 		let tables = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
 		this.log(`_extractRaw: extracted ${tables.length} tables`);
@@ -185,9 +229,14 @@ LLMTables = {
 		}
 
 		let tables = await this._extractRaw(item);
-		let embedded = tables.length ? await this._embedRaw(item, tables) : [];
-		embedded = await this._addTextEmbeddings(embedded);
-		let index = { tables: embedded, scriptFingerprint: await this._scriptFingerprint() };
+		// _embedRaw/_addTextEmbeddings skipped while the Python path is
+		// bypassed (see _sdtScriptName's own comment) -- image_data is
+		// always null from the SDT-only script (no PyMuPDF rendering), so
+		// _embedRaw would have nothing real to embed, and neither embedding
+		// is on the live selection path anyway (selectTablesWithLLM doesn't
+		// use them -- see llm-prompt.js; getBestMatchingTableByImage/
+		// ByTextMax, which do, aren't called from request.js).
+		let index = { tables, scriptFingerprint: await this._scriptFingerprint() };
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
 		return index;

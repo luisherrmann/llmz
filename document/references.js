@@ -13,10 +13,11 @@
 LLMReferences = {
 	_scriptName: "extract_references.js",
 	// Other node/document-worker-based scripts that share this same deployed
-	// sdt/ copy (see _deployFromPackedXPI below) -- currently just
-	// LLMEquations, which reuses this module's _extensionRoot/_nodePath/
-	// _pdfjsSetupPath rather than deploying a second copy of sdt/ itself.
-	_siblingScriptNames: ["extract_equations.js"],
+	// sdt/ copy (see _deployFromPackedXPI below) -- LLMEquations and (as of
+	// the experimental SDT-only table detection) LLMTables, both of which
+	// reuse this module's _extensionRoot/_nodePath/_pdfjsSetupPath rather
+	// than deploying a second copy of sdt/ themselves.
+	_siblingScriptNames: ["extract_equations.js", "extract_tables_sdt.js"],
 	_cacheVersion: 1, // bump when the cached index schema changes (JS-side, not just the script/model)
 	_indexCache: new Map(),
 	_extensionRoot: null,

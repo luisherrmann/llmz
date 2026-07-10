@@ -356,6 +356,7 @@ LLMChatPane = {
 	// identical to citation links -- blue, underlined):
 	//   [label](<find:query>)      -- citation: text-search navigation
 	//   [label](<ref:table:N>) /
+	//   [label](<ref:tableExtra:N>) /
 	//   [label](<ref:figure:N>) /
 	//   [label](<ref:equation:N>) /
 	//   [label](<ref:note:KEY>)    -- table/figure/equation/note mention: looked

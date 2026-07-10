@@ -26,10 +26,10 @@
 - Zotero 7.
 - A running LLM backend: [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) locally, a [LiteLLM](https://www.litellm.ai) proxy, or an OpenAI/Anthropic API key.
 - Node.js, for the bundled document-structure pipeline (`sdt/document-worker/`) used to extract equations, references, and notes.
-- A Python 3 virtual environment at `~/Zotero/LLMz/venv` with `pymupdf`, `transformers`, `torch`, `Pillow`, and `einops`, used to extract and crop tables and figures:
+- A Python 3 virtual environment at `~/Zotero/LLMz/venv`, used to extract and crop tables and figures, with dependencies from [`requirements.txt`](requirements.txt):
   ```bash
   python3 -m venv ~/Zotero/LLMz/venv
-  ~/Zotero/LLMz/venv/bin/pip install pymupdf transformers torch Pillow einops
+  ~/Zotero/LLMz/venv/bin/pip install -r requirements.txt
   ```
 
 ## Installation

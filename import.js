@@ -12,21 +12,21 @@ LLMImport = {
 		Zotero.debug("LLM Chat Pane [Import]: " + msg);
 	},
 
-	// $HOME/Zotero/zllm/chats/ itself, with no per-PDF subfolder -- used
+	// $HOME/Zotero/LLMz/chats/ itself, with no per-PDF subfolder -- used
 	// only as a fallback in _createFilePicker when there's no active PDF to
 	// scope the default directory to (import isn't tied to "the current
 	// paper" the way export is; the user can browse to any PDF's folder, or
 	// anywhere else, from here regardless).
 	async _defaultDir() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "chats");
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "chats");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},
 
 	// An nsIFilePicker in the given mode, filtered to *.md, defaulting to
-	// $HOME/Zotero/zllm/chats/<item key>/ (see LLMConversationHistory.
+	// $HOME/Zotero/LLMz/chats/<item key>/ (see LLMConversationHistory.
 	// conversationDir) if `item` (the active PDF attachment) is given, or
-	// plain $HOME/Zotero/zllm/chats/ (see _defaultDir) otherwise. Mirrors
+	// plain $HOME/Zotero/LLMz/chats/ (see _defaultDir) otherwise. Mirrors
 	// export.js's LLMExport._createFilePicker -- kept as each module's own
 	// copy rather than shared, same rationale as e.g. document/tables.js and
 	// document/figures.js each having their own log()/cacheDir().
@@ -91,7 +91,7 @@ LLMImport = {
 		return transcript;
 	},
 
-	// Shows a native open dialog (defaulting to $HOME/Zotero/zllm/chats/<item
+	// Shows a native open dialog (defaulting to $HOME/Zotero/LLMz/chats/<item
 	// key>/ if `item` -- the active PDF attachment -- is given, filtered to
 	// *.md) and parses the selected file's conversation back out (see
 	// parseConversation). Returns null if the user cancels, otherwise

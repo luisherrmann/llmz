@@ -9,16 +9,16 @@ LLMTables = {
 	},
 
 	_pythonPath() {
-		return PathUtils.join(Zotero.DataDirectory.dir, "zllm", "venv", "bin", "python3");
+		return PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "venv", "bin", "python3");
 	},
 
 	_scriptPath(name) {
-		return PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts", name);
+		return PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", name);
 	},
 
 	async init(rootURI) {
 		try {
-			let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts");
+			let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
 			await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 			for (let name of [this._scriptName, this._embedScriptName]) {
 				let src = await Zotero.File.getContentsFromURL(rootURI + "scripts/" + name);
@@ -70,7 +70,7 @@ LLMTables = {
 	},
 
 	async _cacheDir() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "cache", "table");
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "table");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},
@@ -121,7 +121,7 @@ LLMTables = {
 	async _extractRaw(item) {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
-		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts", `tables_${item.id}.json`);
+		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `tables_${item.id}.json`);
 		await this._runPython(this._scriptName, pdfPath, outputPath);
 		let tables = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
@@ -131,7 +131,7 @@ LLMTables = {
 
 	// Embeds each table's cropped image using nomic-embed-vision (image embedding).
 	async _embedRaw(item, tables) {
-		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "scripts");
+		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
 		let inputPath = PathUtils.join(scriptsDir, `embed_in_${item.id}.json`);
 		let outputPath = PathUtils.join(scriptsDir, `embed_out_${item.id}.json`);
 		await IOUtils.writeUTF8(inputPath, JSON.stringify(tables));

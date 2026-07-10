@@ -66,7 +66,7 @@ LLMCitation = {
 	},
 
 	async _cacheDir() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "zllm", "cache", "citation");
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "citation");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},

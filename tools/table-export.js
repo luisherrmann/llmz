@@ -32,8 +32,10 @@ LLMTableExport = {
 	},
 
 	// Native-tool-calling descriptor for this tool (see intent.js's
-	// detectIntent) -- same shape/rationale as
-	// LLMReferenceRetrieval.intentTool, see its own comment.
+	// detectIntent/_registry) -- same shape/rationale as
+	// LLMReferenceRetrieval.intentTool, see its own comment, including
+	// `resolver` bundling the four functions request.js's
+	// _resolveIntentIndices needs.
 	intentTool: {
 		name: "export_tables",
 		description: [
@@ -65,6 +67,12 @@ LLMTableExport = {
 				to: { type: "integer", description: "Required when type is 'range' -- the end of the range." },
 			},
 			required: ["type"],
+		},
+		resolver: {
+			getIndex: pdfItem => LLMTables.getTableIndex(pdfItem),
+			explicit: (intent, index) => LLMTableExport.resolveExplicitIndices(intent, index),
+			byDescription: (index, description) => LLMTableExport.resolveTableByDescription(index, description),
+			selection: (index, description) => LLMTableExport.resolveTableSelection(index, description),
 		},
 	},
 

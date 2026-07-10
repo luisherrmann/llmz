@@ -5,14 +5,15 @@
 // (PDF-context building, table/figure/equation/note/reference
 // extraction+selection, image handling, streaming the model's reply,
 // citation grounding, and markdown+link rendering of the result). Each of
-// these four intents is handled by its own method (_handleDownloadOrLink/
-// _handleTableExport/_handleNormalChat) -- send() itself is just a thin
-// orchestrator: set up cancellation state, detect which intent applies (see
-// intent.js's detectIntent), and dispatch to the matching handler. Split out
-// of llm-chat-pane.js's submitButton click handler, which used to contain
-// this whole flow inline -- what's left there now is just reading/
-// validating the prompt, input history bookkeeping, and Submit/Stop button
-// state, all of which are UI concerns distinct from the request itself.
+// these four intents is handled by its own method (_handleDownload/
+// _handleLink/_handleTableExport/_handleNormalChat) -- send() itself is
+// just a thin orchestrator: set up cancellation state, detect which intent
+// applies (see intent.js's detectIntent), and dispatch to the matching
+// handler. Split out of llm-chat-pane.js's submitButton click handler,
+// which used to contain this whole flow inline -- what's left there now is
+// just reading/validating the prompt, input history bookkeeping, and
+// Submit/Stop button state, all of which are UI concerns distinct from the
+// request itself.
 //
 // `chatPane` is the LLMChatPane singleton, passed explicitly to every
 // handler below (rather than any of them depending on the global) so every
@@ -52,7 +53,7 @@ LLMRequest = {
 	},
 
 	// How many references may be downloaded (or linked) at once for a multi-
-	// reference request (see _handleDownloadOrLink below). Bounded rather
+	// reference request (see _runReferenceWorkerPool below). Bounded rather
 	// than unbounded, since "download/link all references" can mean 50+
 	// papers. Unlike _CANDIDATE_CONCURRENCY (where launching MORE than
 	// needed to reach the winning candidate's rank is pure waste -- see
@@ -67,36 +68,15 @@ LLMRequest = {
 	// linking strictly needs, but shared for simplicity.
 	_REFERENCE_CONCURRENCY: 8,
 
-	// One entry per tool key (see intent.js's _toolKeys) -- each bundles the
-	// four functions _resolveIntentIndices below needs to resolve that
-	// tool's own six-shape intent against ITS OWN index (the paper's
-	// bibliography for download/link, its extracted tables for tables).
-	// "download" and "link" share one bundle -- both resolve against the
-	// exact same reference list/methods, only diverging in what happens
-	// with the resolved numbers afterward (see _handleDownloadOrLink vs
-	// _handleTableExport).
-	_intentResolvers: {
-		get download() { return this.link; },
-		link: {
-			getIndex: pdfItem => LLMReferences.getReferenceIndex(pdfItem),
-			explicit: (intent, index) => LLMReferenceRetrieval.resolveExplicitIndices(intent, index),
-			byDescription: (index, description) => LLMReferenceRetrieval.resolveReferenceByDescription(index, description),
-			selection: (index, description) => LLMReferenceRetrieval.resolveReferenceSelection(index, description),
-		},
-		tables: {
-			getIndex: pdfItem => LLMTables.getTableIndex(pdfItem),
-			explicit: (intent, index) => LLMTableExport.resolveExplicitIndices(intent, index),
-			byDescription: (index, description) => LLMTableExport.resolveTableByDescription(index, description),
-			selection: (index, description) => LLMTableExport.resolveTableSelection(index, description),
-		},
-	},
-
 	// Resolves `intent` (see intent.js's detectIntent) down to a concrete
 	// list of numbers, against whichever index `tool`'s own resolver bundle
-	// (see _intentResolvers above) operates on. Shared across every tool,
-	// since this resolution step is structurally identical for all of them
-	// -- only which INDEX it resolves against, and what's DONE with the
-	// resulting numbers afterward, differs per tool.
+	// (see intent.js's getResolver -- each tool's intentTool.resolver,
+	// registered alongside its name/description/schema in intent.js's
+	// _registry, rather than a second per-tool map kept here) operates on.
+	// Shared across every tool, since this resolution step is structurally
+	// identical for all of them -- only which INDEX it resolves against,
+	// and what's DONE with the resulting numbers afterward, differs per
+	// tool.
 	// "single"/"describe" resolve to at most one entry each; "list"/"range"/
 	// "all" are pure arithmetic against the paper's own index (explicit, no
 	// model call); "select" (a criterion like "all papers by Kaiming He",
@@ -104,7 +84,7 @@ LLMRequest = {
 	// read the index and pick matches, same as "describe" already does for
 	// a single entry -- just capped at several results instead of one.
 	async _resolveIntentIndices(tool, intent, pdfItem) {
-		let resolver = this._intentResolvers[tool];
+		let resolver = LLMIntent.getResolver(tool);
 		if (intent.type === "single") {
 			return [intent.index];
 		}
@@ -122,127 +102,75 @@ LLMRequest = {
 		return resolver.explicit(intent, index);
 	},
 
-	// Handles a resolved "download"/"link" tool intent -- one reply bubble
-	// per reference number, run in parallel (bounded by
-	// _REFERENCE_CONCURRENCY). See the module-level comment for `ctx`.
-	async _handleDownloadOrLink(tool, indices, pdfItem, chatPane, ctx) {
+	// Builds a placeholder reply bubble for one reference, plus the
+	// onProgress/onStage callback pair downloadReferenceToLibrary/
+	// linkReferenceToLibrary both take -- shared boilerplate between
+	// _handleDownload's/_handleLink's own per-reference work, split out
+	// since it's identical either way. Visible placeholder, shown
+	// immediately (rather than only once the whole, potentially slow,
+	// multi-stage lookup finishes) and updated live as it proceeds -- via
+	// onStage, kept separate from onProgress (full step-by-step detail,
+	// Logs panel only) since the bubble only wants a few coarse, general
+	// status lines, not every query/candidate onProgress reports.
+	_createReferenceReply(refNum, ctx) {
 		let { appendMessage, chat, replyLabel, isCancelled } = ctx;
+		let reply = appendMessage(replyLabel, `Looking up reference ${refNum}...`);
+		let onProgress = (msg) => {
+			if (isCancelled()) return;
+			appendMessage("System", msg);
+		};
+		let onStage = (msg) => {
+			if (isCancelled()) return;
+			chat.updateMessageText(reply, msg);
+		};
+		return { reply, onProgress, onStage };
+	},
+
+	// Runs `processOne(refNum)` -- _handleDownload's/_handleLink's own
+	// per-reference work -- across every entry in `indices`, in parallel
+	// (bounded by _REFERENCE_CONCURRENCY). Shared between the two since
+	// this scheduling/error-handling shell is identical either way; only
+	// what `processOne` actually does differs. `progressVerb` ("Downloading"/
+	// "Linking") is used in the "Found N matching references..." message
+	// for a multi-reference request; `failureNoun` ("download"/"linking")
+	// in the per-reference failure message.
+	//
+	// Parallel across references, not sequential -- benchmarked concretely
+	// (4 real references, 2 fast + 2 slow) that running references one at
+	// a time makes total wall-clock time the SUM of every reference's own
+	// time, while running them in parallel collapses it toward the
+	// SLOWEST single reference instead, since each one mostly hits
+	// different hosts (arXiv, Semantic Scholar, OpenReview, etc.) with no
+	// shared bottleneck to serialize on -- confirmed ~2x faster on that
+	// real test. The one shared bottleneck that DOES exist, DuckDuckGo's
+	// search endpoint (see tools/reference-retrieval.js's
+	// _findPDFViaWebSearch), is serialized separately via
+	// _throttledSearchWeb, so parallelizing here doesn't make that worse.
+	// Bounded (not a free-for-all Promise.all over every index) since
+	// "download/link all references" can mean 50+ papers at once -- an
+	// unbounded fan-out would mean that many simultaneous HiddenBrowser
+	// instances/Translate calls (download) or LLM calls (link). A single
+	// reference throwing (e.g. a network error) is caught per-reference so
+	// it doesn't abort the rest of the batch.
+	async _runReferenceWorkerPool(indices, ctx, progressVerb, failureNoun, processOne) {
+		let { appendMessage, isCancelled } = ctx;
 
 		if (indices.length > 1) {
-			appendMessage("System", `Found ${indices.length} matching references: ${indices.join(", ")}. ${tool === "download" ? "Downloading" : "Linking"}...`);
+			appendMessage("System", `Found ${indices.length} matching references: ${indices.join(", ")}. ${progressVerb}...`);
 		}
 
-		// One reply bubble per reference, even for a multi-reference
-		// request -- so each result (and its own clickable library/
-		// source links) reads as its own distinct outcome instead of
-		// being squashed into a single giant summary message.
-		// Visible placeholder, shown immediately (rather than only
-		// once the whole, potentially slow, multi-stage lookup
-		// finishes) and updated live as it proceeds -- via onStage
-		// below, kept separate from onProgress (full step-by-step
-		// detail, Logs panel only) since the bubble only wants a
-		// few coarse, general status lines, not every query/
-		// candidate onProgress reports. Branches on `tool` for
-		// both the actual call (downloadReferenceToLibrary vs
-		// linkReferenceToLibrary) and how its result renders --
-		// the two results carry different shapes (alreadyInLibrary/
-		// hasPDF/sourceURL vs linked/alreadyLinked).
-		let processOneReference = async (refNum) => {
-			let reply = appendMessage(replyLabel, `Looking up reference ${refNum}...`);
-			let onProgress = (msg) => {
-				if (isCancelled()) return;
-				appendMessage("System", msg);
-			};
-			let onStage = (msg) => {
-				if (isCancelled()) return;
-				chat.updateMessageText(reply, msg);
-			};
-			if (tool === "download") {
-				let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(refNum, pdfItem, onProgress, onStage);
-				if (isCancelled()) return;
-				if (result.alreadyInLibrary) {
-					chat.finalizeRichMessage(reply, [
-						{ text: "The paper is already included in your Zotero library: " },
-						{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-						{ text: "." },
-					]);
-				}
-				else if (result.success) {
-					let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
-					let parts = [
-						{ text: `Added "` },
-						{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-						{ text: `"${statusText}` },
-					];
-					if (result.sourceURL) {
-						parts.push(
-							{ text: " (source: " },
-							{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
-							{ text: ")" }
-						);
-					}
-					parts.push({ text: "." });
-					chat.finalizeRichMessage(reply, parts);
-				}
-				else {
-					chat.updateMessageText(reply, result.message);
-				}
-			}
-			else {
-				let result = await LLMReferenceLinker.linkReferenceToLibrary(refNum, pdfItem, onProgress, onStage);
-				if (isCancelled()) return;
-				if (result.success && result.linked) {
-					let verb = result.alreadyLinked ? "is already linked to" : "linked to";
-					chat.finalizeRichMessage(reply, [
-						{ text: `"` },
-						{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-						{ text: `" ${verb} the current paper.` },
-					]);
-				}
-				else {
-					// Either the reference's title couldn't be
-					// resolved, or a title WAS resolved but nothing
-					// matching exists in the library yet (see
-					// linkReferenceToLibrary -- deliberately never
-					// downloads anything itself) -- both cases
-					// already carry a complete, user-facing message.
-					chat.updateMessageText(reply, result.message);
-				}
-			}
-		};
-
-		// Parallel across references (bounded by _REFERENCE_CONCURRENCY),
-		// not sequential -- benchmarked concretely (4 real references,
-		// 2 fast + 2 slow) that running references one at a time makes
-		// total wall-clock time the SUM of every reference's own time,
-		// while running them in parallel collapses it toward the
-		// SLOWEST single reference instead, since each one mostly hits
-		// different hosts (arXiv, Semantic Scholar, OpenReview, etc.)
-		// with no shared bottleneck to serialize on -- confirmed ~2x
-		// faster on that real test. The one shared bottleneck that DOES
-		// exist, DuckDuckGo's search endpoint (see
-		// tools/reference-retrieval.js's _findPDFViaWebSearch), is serialized
-		// separately via _throttledSearchWeb, so parallelizing here
-		// doesn't make that worse. Bounded (not a free-for-all
-		// Promise.all over every index) since "download/link all
-		// references" can mean 50+ papers at once -- an unbounded
-		// fan-out would mean that many simultaneous HiddenBrowser
-		// instances/Translate calls (download) or LLM calls (link).
-		// A single reference throwing (e.g. a network error) is
-		// caught per-reference so it doesn't abort the rest of the
-		// batch.
 		let nextIndexPos = 0;
 		let worker = async () => {
 			while (nextIndexPos < indices.length) {
 				if (isCancelled()) return;
 				let refNum = indices[nextIndexPos++];
 				try {
-					await processOneReference(refNum);
+					await processOne(refNum);
 				}
 				catch (e) {
 					if (isCancelled()) return;
-					this.log(`processOneReference(${refNum}) [${tool}] failed: ${e.message}`);
-					appendMessage("System", `Reference ${refNum} ${tool === "download" ? "download" : "linking"} failed: ${e.message}`);
+					this.log(`processOne(${refNum}) [${failureNoun}] failed: ${e.message}`);
+					appendMessage("System", `Reference ${refNum} ${failureNoun} failed: ${e.message}`);
 				}
 			}
 		};
@@ -250,13 +178,81 @@ LLMRequest = {
 		await Promise.all(Array.from({ length: workerCount }, () => worker()));
 	},
 
+	// Handles a resolved "download" tool intent -- see
+	// _runReferenceWorkerPool for the shared scheduling shell. See the
+	// module-level comment for `ctx`.
+	async _handleDownload(indices, pdfItem, chatPane, ctx) {
+		let { chat } = ctx;
+		await this._runReferenceWorkerPool(indices, ctx, "Downloading", "download", async (refNum) => {
+			let { reply, onProgress, onStage } = this._createReferenceReply(refNum, ctx);
+			let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(refNum, pdfItem, onProgress, onStage);
+			if (ctx.isCancelled()) return;
+			if (result.alreadyInLibrary) {
+				chat.finalizeRichMessage(reply, [
+					{ text: "The paper is already included in your Zotero library: " },
+					{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+					{ text: "." },
+				]);
+			}
+			else if (result.success) {
+				let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
+				let parts = [
+					{ text: `Added "` },
+					{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+					{ text: `"${statusText}` },
+				];
+				if (result.sourceURL) {
+					parts.push(
+						{ text: " (source: " },
+						{ label: result.sourceURL, title: "Open source in browser", onClick: () => Zotero.launchURL(result.sourceURL) },
+						{ text: ")" }
+					);
+				}
+				parts.push({ text: "." });
+				chat.finalizeRichMessage(reply, parts);
+			}
+			else {
+				chat.updateMessageText(reply, result.message);
+			}
+		});
+	},
+
+	// Handles a resolved "link" tool intent -- see _runReferenceWorkerPool
+	// for the shared scheduling shell. See the module-level comment for
+	// `ctx`.
+	async _handleLink(indices, pdfItem, chatPane, ctx) {
+		let { chat } = ctx;
+		await this._runReferenceWorkerPool(indices, ctx, "Linking", "linking", async (refNum) => {
+			let { reply, onProgress, onStage } = this._createReferenceReply(refNum, ctx);
+			let result = await LLMReferenceLinker.linkReferenceToLibrary(refNum, pdfItem, onProgress, onStage);
+			if (ctx.isCancelled()) return;
+			if (result.success && result.linked) {
+				let verb = result.alreadyLinked ? "is already linked to" : "linked to";
+				chat.finalizeRichMessage(reply, [
+					{ text: `"` },
+					{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+					{ text: `" ${verb} the current paper.` },
+				]);
+			}
+			else {
+				// Either the reference's title couldn't be
+				// resolved, or a title WAS resolved but nothing
+				// matching exists in the library yet (see
+				// linkReferenceToLibrary -- deliberately never
+				// downloads anything itself) -- both cases
+				// already carry a complete, user-facing message.
+				chat.updateMessageText(reply, result.message);
+			}
+		});
+	},
+
 	// Handles a resolved "tables" tool intent -- a single combined
 	// operation over ALL resolved table numbers at once (one CSV-
 	// formatting prompt covering every requested table -- see
 	// tools/table-export.js's exportTablesToZip), unlike
-	// _handleDownloadOrLink's per-reference pipeline, so this gets its own
-	// small, standalone handler rather than sharing that worker-pool
-	// machinery. See the module-level comment for `ctx`.
+	// _handleDownload's/_handleLink's per-reference pipeline, so this gets
+	// its own small, standalone handler rather than sharing
+	// _runReferenceWorkerPool. See the module-level comment for `ctx`.
 	async _handleTableExport(indices, pdfItem, ctx) {
 		let { appendMessage, chat, replyLabel, isCancelled } = ctx;
 
@@ -293,17 +289,231 @@ LLMRequest = {
 		}
 	},
 
+	// Awaits `tableIndexPromise`, runs table selection against `prompt`, and
+	// reports status along the way -- split out of _handleNormalChat so
+	// each of the five context-building steps (this, equations, notes,
+	// images/figures, references) lives in its own function instead of one
+	// large inline block. Returns { index, addition } -- `index` is the
+	// raw table index (needed later for linkIndex construction), `addition`
+	// the `<TABLE_CONTEXT>...</TABLE_CONTEXT>` string to append to
+	// modelPrompt, or "" if there's nothing to add (no PDF, extraction
+	// failed/found nothing, or nothing matched the question closely
+	// enough) -- returned rather than mutating modelPrompt directly, so
+	// this function doesn't need write access to the caller's own local.
+	async _buildTableContext(tableIndexPromise, prompt, readerContext, ctx) {
+		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
+		let tableIndex = await tableIndexPromise;
+		if (isCancelled()) return { index: tableIndex, addition: "" };
+		if (tableIndex === null) {
+			appendMessage("System", "Table extraction: no PDF attached.");
+			return { index: tableIndex, addition: "" };
+		}
+		if (tableIndex.error) {
+			appendMessage("System", `Table extraction failed: ${tableIndex.error}`);
+			return { index: tableIndex, addition: "" };
+		}
+		if (!tableIndex.tables.length) {
+			appendMessage("System", "Table extraction: no tables found in PDF.");
+			return { index: tableIndex, addition: "" };
+		}
+		let selectedTables = [];
+		try {
+			selectedTables = await LLMPrompt.selectTablesWithLLM(tableIndex, prompt, readerContext);
+		}
+		catch (e) {
+			this.log(`selectTablesWithLLM failed: ${e.message}`);
+		}
+		if (isCancelled()) return { index: tableIndex, addition: "" };
+		if (!selectedTables.length) {
+			appendMessage("System", `Extracted ${tableIndex.tables.length} table${tableIndex.tables.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
+			return { index: tableIndex, addition: "" };
+		}
+		let tableBlock = selectedTables.map(t => LLMPrompt._formatTableMarkdown(t)).join("\n\n");
+		let addition = `\n\n<TABLE_CONTEXT>\n${tableBlock}\n</TABLE_CONTEXT>`;
+		let labels = selectedTables.map(t => t.label).join(", ");
+		let msg = appendMessage("System", `Including ${selectedTables.length} table${selectedTables.length === 1 ? "" : "s"} as context (out of ${tableIndex.tables.length} extracted): ${labels}. Click to jump to the first one.`);
+		makeMessageClickable(msg, selectedTables[0]);
+		return { index: tableIndex, addition };
+	},
+
+	// Same shape/rationale as _buildTableContext above, for equations.
+	// Unlike tables (present in most papers), the large majority of PDFs
+	// have zero *numbered* equations at all -- so, unlike the table
+	// version, this stays silent for the "none found"/"none matched" cases
+	// rather than announcing an absence that's the overwhelmingly common
+	// case and not something the user asked about.
+	async _buildEquationContext(equationIndexPromise, prompt, readerContext, ctx) {
+		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
+		let equationIndex = await equationIndexPromise;
+		if (isCancelled()) return { index: equationIndex, addition: "" };
+		if (equationIndex?.error) {
+			appendMessage("System", `Equation extraction failed: ${equationIndex.error}`);
+			return { index: equationIndex, addition: "" };
+		}
+		if (!equationIndex?.equations?.length) {
+			return { index: equationIndex, addition: "" };
+		}
+		let selectedEquations = [];
+		try {
+			selectedEquations = await LLMPrompt.selectEquationsWithLLM(equationIndex, prompt, readerContext);
+		}
+		catch (e) {
+			this.log(`selectEquationsWithLLM failed: ${e.message}`);
+		}
+		if (isCancelled()) return { index: equationIndex, addition: "" };
+		if (!selectedEquations.length) {
+			return { index: equationIndex, addition: "" };
+		}
+		let eqBlock = selectedEquations.map(eq => LLMPrompt._formatEquationText(eq)).join("\n\n");
+		let addition = `\n\n<EQUATION_CONTEXT>\n${eqBlock}\n</EQUATION_CONTEXT>`;
+		let labels = selectedEquations.map(eq => eq.label).join(", ");
+		let msg = appendMessage("System", `Including ${selectedEquations.length} equation${selectedEquations.length === 1 ? "" : "s"} as equation context (out of ${equationIndex.equations.length} extracted): ${labels}. Click to jump to the first one.`);
+		// caption fallback mirrors linkIndex's equation entries elsewhere --
+		// selectedEquations entries have no `caption` field, only `text`.
+		makeMessageClickable(msg, {
+			position: selectedEquations[0].position,
+			caption: selectedEquations[0].text.split(/\s+/).slice(0, 8).join(" "),
+		});
+		return { index: equationIndex, addition };
+	},
+
+	// Same shape/rationale as _buildTableContext above, for notes. Always
+	// announced, even on the "found none"/"none matched" paths -- unlike
+	// the equation version, this stays visible (matching the table
+	// version's style) since it's useful for debugging whether annotations
+	// are being picked up as expected. Returns `notes` (the selected ones,
+	// possibly empty) alongside `addition` -- unlike the other four
+	// context builders, the caller needs this back too, for
+	// linkIndex's ref:note:KEY resolution.
+	async _buildNoteContext(notesPromise, prompt, readerContext, ctx) {
+		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
+		let notes = await notesPromise;
+		if (isCancelled()) return { notes: [], addition: "" };
+		if (!notes.length) {
+			appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
+			return { notes: [], addition: "" };
+		}
+		let selectedNotes = [];
+		try {
+			selectedNotes = await LLMPrompt.selectNotesWithLLM(notes, prompt, readerContext);
+		}
+		catch (e) {
+			this.log(`selectNotesWithLLM failed: ${e.message}`);
+		}
+		if (isCancelled()) return { notes: selectedNotes, addition: "" };
+		if (!selectedNotes.length) {
+			appendMessage("System", `Extracted ${notes.length} note${notes.length === 1 ? "" : "s"}/highlight${notes.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
+			return { notes: selectedNotes, addition: "" };
+		}
+		let noteBlock = selectedNotes.map((n, i) => LLMPrompt._formatNoteContext(n, i + 1)).join("\n\n");
+		let addition = `\n\n<NOTE_CONTEXT>\n${noteBlock}\n</NOTE_CONTEXT>`;
+		let titles = selectedNotes.map(n => n.title).join(", ");
+		let msg = appendMessage("System", `Including ${selectedNotes.length} note${selectedNotes.length === 1 ? "" : "s"} as context (out of ${notes.length} extracted): ${titles}. Click to jump to the first one.`);
+		// Whole-message click only jumps to the first selected note --
+		// makeMessageClickable is a single click target, not one per
+		// note -- good enough as a quick way in, the rest are visible in
+		// the model's own answer either way (each individually
+		// clickable via its own [Note N](<ref:note:KEY>) link, if the
+		// model includes one).
+		makeMessageClickable(msg, selectedNotes[0]);
+		return { notes: selectedNotes, addition };
+	},
+
+	// Gathers `images` for this turn -- the user's own pasted image(s), if
+	// the current model supports image input, plus (only when the user
+	// DIDN'T paste any themselves) the best-matching figure(s) for `prompt`,
+	// if any have their own image data and the model supports vision.
+	// Unlike the other four context builders, this doesn't return a
+	// modelPrompt `addition` (images aren't injected as prompt TEXT) --
+	// just `images` (the data URIs to actually send) and `index` (the raw
+	// figure index, needed later for linkIndex's citation-link resolution
+	// on figures the model's text mentions, regardless of whether any of
+	// them ended up attached as images here).
+	async _buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, ctx) {
+		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
+		let images = [];
+		let figureIndex = await figureIndexPromise;
+		if (isCancelled()) return { index: figureIndex, images };
+		try {
+			let currentModel = await LLMInterfaces.getCurrentModel();
+			let supportsImages = await LLMInterfaces.modelSupportsImages(currentModel);
+			// pastedImageDataUris was already snapshotted by the caller
+			// (before this request's async work began), so a mid-request
+			// removal via the thumbnail's "x" doesn't retroactively change
+			// what's sent for a request already in flight.
+			if (pastedImageDataUris.length) {
+				if (supportsImages) {
+					images.push(...pastedImageDataUris);
+				}
+				else {
+					appendMessage("System", `${currentModel} doesn't support image input -- the ${pastedImageDataUris.length} attached image${pastedImageDataUris.length === 1 ? "" : "s"} won't be sent.`);
+				}
+			}
+			// Skipped when the user already attached image(s) themselves --
+			// no need to spend an extra LLM call hunting for a figure to use
+			// as image context when image context has already been provided.
+			// figureIndex itself is still fetched above regardless (used by
+			// the caller for citation-link resolution on figures the
+			// model's text mentions).
+			if (figureIndex?.figures?.length && supportsImages && !pastedImageDataUris.length) {
+				let bestFigures = await LLMPrompt.selectFiguresWithLLM(figureIndex, prompt, readerContext);
+				if (isCancelled()) return { index: figureIndex, images };
+				let figuresWithImages = bestFigures.filter(f => f.image_data);
+				if (figuresWithImages.length) {
+					images.push(...figuresWithImages.map(f => f.image_data));
+					let labels = figuresWithImages.map(f => f.label || `figure ${f.figure_num}`).join(", ");
+					let msg = appendMessage("System", `Including ${figuresWithImages.length} figure${figuresWithImages.length === 1 ? "" : "s"} as image context (best match for your question, ${currentModel} supports vision): ${labels}. Click to jump to the first one.`);
+					makeMessageClickable(msg, figuresWithImages[0]);
+				}
+			}
+		}
+		catch (e) {
+			if (!isCancelled()) this.log(`Image context setup failed: ${e.message}`);
+		}
+		return { index: figureIndex, images };
+	},
+
+	// Same shape/rationale as _buildTableContext above, for the
+	// bibliography -- inclusion here is an LLM judgment call
+	// (shouldIncludeReferencesWithLLM), not a top-K selection like the
+	// other four, since a whole bibliography is either worth including in
+	// full or not at all (there's no sensible "some of the references").
+	async _buildReferenceContext(referenceIndexPromise, prompt, readerContext, ctx) {
+		let { appendMessage, isCancelled } = ctx;
+		let referenceIndex = await referenceIndexPromise;
+		if (isCancelled()) return { index: referenceIndex, addition: "" };
+		if (!referenceIndex?.references?.length) {
+			return { index: referenceIndex, addition: "" };
+		}
+		let includeReferences = false;
+		try {
+			includeReferences = await LLMPrompt.shouldIncludeReferencesWithLLM(referenceIndex, prompt, readerContext);
+		}
+		catch (e) {
+			this.log(`shouldIncludeReferencesWithLLM failed: ${e.message}`);
+		}
+		if (isCancelled()) return { index: referenceIndex, addition: "" };
+		if (!includeReferences) {
+			appendMessage("System", `Extracted ${referenceIndex.references.length} reference${referenceIndex.references.length === 1 ? "" : "s"} from bibliography; not relevant enough to include.`);
+			return { index: referenceIndex, addition: "" };
+		}
+		let addition = `\n\n<REFERENCE_CONTEXT>\n${LLMPrompt._formatReferenceContext(referenceIndex.references)}\n</REFERENCE_CONTEXT>`;
+		appendMessage("System", `Including bibliography (${referenceIndex.references.length} references) as context.`);
+		return { index: referenceIndex, addition };
+	},
+
 	// Handles the "no tool intent matched" case -- the full normal chat
 	// flow: PDF-context building, table/figure/equation/note/reference
-	// extraction+selection, image handling, streaming the model's reply,
-	// citation grounding, and markdown+link rendering of the result. See
-	// the module-level comment for `ctx`. Owns its own try/catch (unlike
-	// _handleDownloadOrLink/_handleTableExport, whose caller wraps the
-	// intent-detection step that leads to them in one shared try/catch)
-	// since this is the fallback path once tool-intent detection has
-	// already fully finished.
+	// extraction+selection (see the five _buildXContext methods above),
+	// image handling, streaming the model's reply, citation grounding, and
+	// markdown+link rendering of the result. See the module-level comment
+	// for `ctx`. Owns its own try/catch (unlike _handleDownload/
+	// _handleLink/_handleTableExport, whose caller wraps the intent-
+	// detection step that leads to them in one shared try/catch) since
+	// this is the fallback path once tool-intent detection has already
+	// fully finished.
 	async _handleNormalChat(prompt, chatPane, ctx) {
-		let { doc, appendMessage, makeMessageClickable, chat, imagePaste, takeCapturedSelection, replyLabel, providerLabel, isCancelled, setCancelStream } = ctx;
+		let { doc, appendMessage, chat, imagePaste, takeCapturedSelection, replyLabel, providerLabel, isCancelled, setCancelStream } = ctx;
 
 		try {
 			// Snapshotted BEFORE this turn's own "You" bubble (and reply
@@ -406,170 +616,36 @@ LLMRequest = {
 				appendMessage("System", "No active PDF reader tab found. Asking without PDF context.");
 			}
 
-			let tableIndex = await tableIndexPromise;
+			// Each of these five awaits its own index promise and reports
+			// its own status messages -- see each _buildXContext method
+			// above for what it does. Run sequentially (not
+			// Promise.all'd) since their onProgress-style System messages
+			// are meant to appear in the same fixed order every time
+			// (table, equation, note, image, reference), for a
+			// predictable Logs panel read -- the underlying index
+			// promises themselves were already all kicked off in parallel
+			// above, so this doesn't serialize the actual extraction
+			// work, just the (cheap, already-settled-or-nearly-so)
+			// awaiting of it.
+			let tableResult = await this._buildTableContext(tableIndexPromise, prompt, readerContext, ctx);
 			if (isCancelled()) return;
-			if (tableIndex === null) {
-				appendMessage("System", "Table extraction: no PDF attached.");
-			}
-			else if (tableIndex.error) {
-				appendMessage("System", `Table extraction failed: ${tableIndex.error}`);
-			}
-			else if (!tableIndex.tables.length) {
-				appendMessage("System", "Table extraction: no tables found in PDF.");
-			}
-			else {
-				let selectedTables = [];
-				try {
-					selectedTables = await LLMPrompt.selectTablesWithLLM(tableIndex, prompt, readerContext);
-				}
-				catch (e) {
-					this.log(`selectTablesWithLLM failed: ${e.message}`);
-				}
-				if (isCancelled()) return;
-				if (selectedTables.length) {
-					let tableBlock = selectedTables.map(t => LLMPrompt._formatTableMarkdown(t)).join("\n\n");
-					modelPrompt += `\n\n<TABLE_CONTEXT>\n${tableBlock}\n</TABLE_CONTEXT>`;
-					let labels = selectedTables.map(t => t.label).join(", ");
-					let msg = appendMessage("System", `Including ${selectedTables.length} table${selectedTables.length === 1 ? "" : "s"} as context (out of ${tableIndex.tables.length} extracted): ${labels}. Click to jump to the first one.`);
-					makeMessageClickable(msg, selectedTables[0]);
-				}
-				else {
-					appendMessage("System", `Extracted ${tableIndex.tables.length} table${tableIndex.tables.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
-				}
-			}
+			modelPrompt += tableResult.addition;
 
-			// Unlike tables (present in most papers), the large majority of
-			// PDFs have zero *numbered* equations at all -- so, unlike the
-			// table block above, this stays silent for the "none found" and
-			// "none matched" cases rather than announcing an absence that's
-			// the overwhelmingly common case and not something the user asked
-			// about.
-			let equationIndex = await equationIndexPromise;
+			let equationResult = await this._buildEquationContext(equationIndexPromise, prompt, readerContext, ctx);
 			if (isCancelled()) return;
-			if (equationIndex?.error) {
-				appendMessage("System", `Equation extraction failed: ${equationIndex.error}`);
-			}
-			else if (equationIndex?.equations?.length) {
-				let selectedEquations = [];
-				try {
-					selectedEquations = await LLMPrompt.selectEquationsWithLLM(equationIndex, prompt, readerContext);
-				}
-				catch (e) {
-					this.log(`selectEquationsWithLLM failed: ${e.message}`);
-				}
-				if (isCancelled()) return;
-				if (selectedEquations.length) {
-					let eqBlock = selectedEquations.map(eq => LLMPrompt._formatEquationText(eq)).join("\n\n");
-					modelPrompt += `\n\n<EQUATION_CONTEXT>\n${eqBlock}\n</EQUATION_CONTEXT>`;
-					let labels = selectedEquations.map(eq => eq.label).join(", ");
-					let msg = appendMessage("System", `Including ${selectedEquations.length} equation${selectedEquations.length === 1 ? "" : "s"} as equation context (out of ${equationIndex.equations.length} extracted): ${labels}. Click to jump to the first one.`);
-					// caption fallback mirrors linkIndex's equation entries below --
-					// selectedEquations entries have no `caption` field, only `text`.
-					makeMessageClickable(msg, {
-						position: selectedEquations[0].position,
-						caption: selectedEquations[0].text.split(/\s+/).slice(0, 8).join(" "),
-					});
-				}
-			}
+			modelPrompt += equationResult.addition;
 
-			// Always announced, even on the "found none"/"none matched"
-			// paths -- unlike the equation block above, this stays
-			// visible (matching the table block's style) since it's
-			// useful for debugging whether annotations are being picked
-			// up as expected.
-			let notes = await notesPromise;
+			let noteResult = await this._buildNoteContext(notesPromise, prompt, readerContext, ctx);
 			if (isCancelled()) return;
-			// Hoisted above the if/else so it's still in scope down at
-			// linkIndex construction below, for ref:note:KEY resolution.
-			let selectedNotes = [];
-			if (!notes.length) {
-				appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
-			}
-			else {
-				try {
-					selectedNotes = await LLMPrompt.selectNotesWithLLM(notes, prompt, readerContext);
-				}
-				catch (e) {
-					this.log(`selectNotesWithLLM failed: ${e.message}`);
-				}
-				if (isCancelled()) return;
-				if (selectedNotes.length) {
-					let noteBlock = selectedNotes.map((n, i) => LLMPrompt._formatNoteContext(n, i + 1)).join("\n\n");
-					modelPrompt += `\n\n<NOTE_CONTEXT>\n${noteBlock}\n</NOTE_CONTEXT>`;
-					let titles = selectedNotes.map(n => n.title).join(", ");
-					let msg = appendMessage("System", `Including ${selectedNotes.length} note${selectedNotes.length === 1 ? "" : "s"} as context (out of ${notes.length} extracted): ${titles}. Click to jump to the first one.`);
-					// Whole-message click only jumps to the first selected note --
-					// makeMessageClickable is a single click target, not one per
-					// note -- good enough as a quick way in, the rest are visible in
-					// the model's own answer either way (each individually
-					// clickable via its own [Note N](<ref:note:KEY>) link, if the
-					// model includes one).
-					makeMessageClickable(msg, selectedNotes[0]);
-				}
-				else {
-					appendMessage("System", `Extracted ${notes.length} note${notes.length === 1 ? "" : "s"}/highlight${notes.length === 1 ? "" : "s"} from PDF; none matched your question closely enough to include.`);
-				}
-			}
+			modelPrompt += noteResult.addition;
 
-			let images = [];
-			let figureIndex = await figureIndexPromise;
+			let imageResult = await this._buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, ctx);
 			if (isCancelled()) return;
-			try {
-				let currentModel = await LLMInterfaces.getCurrentModel();
-				let supportsImages = await LLMInterfaces.modelSupportsImages(currentModel);
-				// pastedImageDataUris was already snapshotted above (before this
-				// request's async work began), so a mid-request removal via the
-				// thumbnail's "x" doesn't retroactively change what's sent for a
-				// request already in flight.
-				if (pastedImageDataUris.length) {
-					if (supportsImages) {
-						images.push(...pastedImageDataUris);
-					}
-					else {
-						appendMessage("System", `${currentModel} doesn't support image input -- the ${pastedImageDataUris.length} attached image${pastedImageDataUris.length === 1 ? "" : "s"} won't be sent.`);
-					}
-				}
-				// Skipped when the user already attached image(s) themselves --
-				// no need to spend an extra LLM call hunting for a figure to use
-				// as image context when image context has already been provided.
-				// figureIndex itself is still fetched above regardless (used below
-				// for citation-link resolution on figures the model's text mentions).
-				if (figureIndex?.figures?.length && supportsImages && !pastedImageDataUris.length) {
-					let bestFigures = await LLMPrompt.selectFiguresWithLLM(figureIndex, prompt, readerContext);
-					if (isCancelled()) return;
-					let figuresWithImages = bestFigures.filter(f => f.image_data);
-					if (figuresWithImages.length) {
-						images.push(...figuresWithImages.map(f => f.image_data));
-						let labels = figuresWithImages.map(f => f.label || `figure ${f.figure_num}`).join(", ");
-						let msg = appendMessage("System", `Including ${figuresWithImages.length} figure${figuresWithImages.length === 1 ? "" : "s"} as image context (best match for your question, ${currentModel} supports vision): ${labels}. Click to jump to the first one.`);
-						makeMessageClickable(msg, figuresWithImages[0]);
-					}
-				}
-			}
-			catch (e) {
-				if (isCancelled()) return;
-				this.log(`Image context setup failed: ${e.message}`);
-			}
+			let images = imageResult.images;
 
-			let referenceIndex = await referenceIndexPromise;
+			let referenceResult = await this._buildReferenceContext(referenceIndexPromise, prompt, readerContext, ctx);
 			if (isCancelled()) return;
-			if (referenceIndex?.references?.length) {
-				let includeReferences = false;
-				try {
-					includeReferences = await LLMPrompt.shouldIncludeReferencesWithLLM(referenceIndex, prompt, readerContext);
-				}
-				catch (e) {
-					this.log(`shouldIncludeReferencesWithLLM failed: ${e.message}`);
-				}
-				if (isCancelled()) return;
-				if (includeReferences) {
-					modelPrompt += `\n\n<REFERENCE_CONTEXT>\n${LLMPrompt._formatReferenceContext(referenceIndex.references)}\n</REFERENCE_CONTEXT>`;
-					appendMessage("System", `Including bibliography (${referenceIndex.references.length} references) as context.`);
-				}
-				else {
-					appendMessage("System", `Extracted ${referenceIndex.references.length} reference${referenceIndex.references.length === 1 ? "" : "s"} from bibliography; not relevant enough to include.`);
-				}
-			}
+			modelPrompt += referenceResult.addition;
 
 			// Lets the model's own text mentions of any extracted table/figure/
 			// reference/equation/note (not just the one injected as full context)
@@ -581,7 +657,13 @@ LLMRequest = {
 			// for a historical message too, from the same PDF's cached
 			// indexes (and, for notes, its still-existing annotations) --
 			// see buildLinkIndex's own comment for how.
-			let linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes: selectedNotes });
+			let linkIndex = LLMPrompt.buildLinkIndex({
+				tableIndex: tableResult.index,
+				figureIndex: imageResult.index,
+				referenceIndex: referenceResult.index,
+				equationIndex: equationResult.index,
+				notes: noteResult.notes,
+			});
 
 			// `reply` was already created (as "Building context...") right
 			// after the "You" bubble above -- just update it now that
@@ -806,8 +888,11 @@ LLMRequest = {
 					if (tool === "tables") {
 						await this._handleTableExport(indices, pdfItem, ctx);
 					}
+					else if (tool === "download") {
+						await this._handleDownload(indices, pdfItem, chatPane, ctx);
+					}
 					else {
-						await this._handleDownloadOrLink(tool, indices, pdfItem, chatPane, ctx);
+						await this._handleLink(indices, pdfItem, chatPane, ctx);
 					}
 					return;
 				}

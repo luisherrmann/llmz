@@ -15,8 +15,15 @@ LLMReferenceLinker = {
 	},
 
 	// Native-tool-calling descriptor for this tool (see intent.js's
-	// detectIntent) -- same shape/rationale as
-	// LLMReferenceRetrieval.intentTool, see its own comment.
+	// detectIntent/_registry) -- same shape/rationale as
+	// LLMReferenceRetrieval.intentTool, see its own comment. `resolver` is
+	// the EXACT SAME object as LLMReferenceRetrieval.intentTool's own (not
+	// a copy) -- safe to reference directly here since
+	// tools/reference-retrieval.js is loaded first (see bootstrap.js) and
+	// is therefore already fully defined by the time this object literal
+	// is constructed. Both tools resolve against the identical reference
+	// index/methods, only diverging in what happens with the resolved
+	// numbers afterward (see request.js's _handleDownloadOrLink).
 	intentTool: {
 		name: "link_reference",
 		description: [
@@ -53,6 +60,7 @@ LLMReferenceLinker = {
 			},
 			required: ["type"],
 		},
+		resolver: LLMReferenceRetrieval.intentTool.resolver,
 	},
 
 	// Resolves a bibliography entry (by its own reference number) to

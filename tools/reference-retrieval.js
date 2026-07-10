@@ -26,13 +26,22 @@ LLMReferenceRetrieval = {
 	},
 
 	// Native-tool-calling descriptor for this tool (see intent.js's
-	// detectIntent) -- {name, description, schema} in the shape
-	// llm-interfaces.js's streamModel `opts.tools` expects. `schema`'s
-	// six-shape `type` enum is what request.js's _resolveIntentIndices
-	// (via resolveExplicitIndices/resolveReferenceByDescription/
-	// resolveReferenceSelection) consumes downstream -- see intent.js's
-	// _argumentsToIntent, which coerces a tool call's parsed `arguments`
-	// (see llm-interfaces.js's _finalizeToolCalls) into that same shape.
+	// detectIntent/_registry) -- {name, description, schema, resolver} in
+	// the shape intent.js's registry expects: name/description/schema are
+	// llm-interfaces.js's streamModel `opts.tools` shape; `resolver`
+	// bundles the four functions request.js's _resolveIntentIndices needs
+	// to turn a resolved intent into concrete reference numbers, so
+	// everything about this tool -- including how to resolve it, not just
+	// how to detect it -- lives in one place instead of being split across
+	// this file and a second per-tool registry elsewhere. "download" and
+	// "link" (tools/reference-linker.js) share this exact resolver object
+	// (not a copy) -- both operate on the identical reference index/
+	// methods, only diverging in what happens with the resolved numbers
+	// afterward.
+	// `schema`'s six-shape `type` enum is what `resolver` and
+	// downstream request.js consume -- see intent.js's _argumentsToIntent,
+	// which coerces a tool call's parsed `arguments` (see
+	// llm-interfaces.js's _finalizeToolCalls) into that same shape.
 	intentTool: {
 		name: "download_reference",
 		description: [
@@ -67,6 +76,12 @@ LLMReferenceRetrieval = {
 				to: { type: "integer", description: "Required when type is 'range' -- the end of the range." },
 			},
 			required: ["type"],
+		},
+		resolver: {
+			getIndex: pdfItem => LLMReferences.getReferenceIndex(pdfItem),
+			explicit: (intent, index) => LLMReferenceRetrieval.resolveExplicitIndices(intent, index),
+			byDescription: (index, description) => LLMReferenceRetrieval.resolveReferenceByDescription(index, description),
+			selection: (index, description) => LLMReferenceRetrieval.resolveReferenceSelection(index, description),
 		},
 	},
 

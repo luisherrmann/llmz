@@ -10,24 +10,46 @@ LLMIntent = {
 		Zotero.debug("LLM Chat Pane [Intent]: " + msg);
 	},
 
-	// Every registered tool's own {name, description, schema} descriptor
-	// (see tools/reference-retrieval.js's/tools/reference-linker.js's/
-	// tools/table-export.js's own intentTool). Listed explicitly here,
-	// rather than discovered automatically by scanning globals, so
-	// registration is obvious at a glance and doesn't depend on
-	// bootstrap.js's load order.
+	// One entry per registered tool -- the short key request.js switches on
+	// (its own internal vocabulary), paired with that tool's own
+	// {name, description, schema, resolver} descriptor (see
+	// tools/reference-retrieval.js's/tools/reference-linker.js's/
+	// tools/table-export.js's own intentTool -- `resolver` bundles the
+	// four functions request.js's _resolveIntentIndices needs to turn a
+	// resolved intent into concrete numbers). THE single registry for
+	// "what tools exist" -- request.js used to keep its own second,
+	// separate per-tool map (keyed by these same short keys) just for
+	// resolvers, which had to be updated by hand in lockstep with this one
+	// every time a tool was added; now request.js reads resolvers from
+	// here instead (see getResolver below), so there's exactly one place
+	// to register a new tool. Listed explicitly here, rather than
+	// discovered automatically by scanning globals, so registration is
+	// obvious at a glance and doesn't depend on bootstrap.js's load order.
+	_registry: [
+		{ key: "download", tool: LLMReferenceRetrieval.intentTool },
+		{ key: "link", tool: LLMReferenceLinker.intentTool },
+		{ key: "tables", tool: LLMTableExport.intentTool },
+	],
+
+	// Every registered tool's own {name, description, schema} descriptor,
+	// in the shape llm-interfaces.js's streamModel `opts.tools` expects
+	// (resolver isn't part of the wire format -- only detectIntent/
+	// getResolver below read it, streamModel never sees it).
 	_tools() {
-		return [LLMReferenceRetrieval.intentTool, LLMReferenceLinker.intentTool, LLMTableExport.intentTool];
+		return this._registry.map(r => r.tool);
 	},
 
 	// Maps a tool's own API-level `name` (what the model actually sees)
-	// back to the short key request.js switches on -- kept as a separate
-	// lookup rather than baking request.js's own vocabulary into the tool
-	// name itself.
-	_toolKeys: {
-		download_reference: "download",
-		link_reference: "link",
-		export_tables: "tables",
+	// back to the short key request.js switches on.
+	_keyForName(name) {
+		return this._registry.find(r => r.tool.name === name)?.key ?? null;
+	},
+
+	// Returns the resolver bundle (see each intentTool's own `resolver`)
+	// for the tool request.js is currently handling, keyed by the same
+	// short key detectIntent returns as `tool`.
+	getResolver(key) {
+		return this._registry.find(r => r.key === key)?.tool.resolver ?? null;
 	},
 
 	// Detects which tool (if any) `prompt` is asking for -- a single
@@ -57,7 +79,7 @@ LLMIntent = {
 			onProgress?.("Intent detection: no tool called.");
 			return null;
 		}
-		let toolKey = this._toolKeys[call.name];
+		let toolKey = this._keyForName(call.name);
 		if (!toolKey) {
 			this.log(`detectIntent: unrecognized tool "${call.name}"`);
 			return null;

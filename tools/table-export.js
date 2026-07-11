@@ -81,7 +81,10 @@ LLMTableExport = {
 						"explicitly the same way as 'single' (set indices). range: a numeric",
 						"range of table ids (set from/to). all: every table in the paper (no",
 						"other fields needed). select: a criterion other than an explicit",
-						"name/range/list, e.g. \"every table about latency\" (set description).",
+						"name/range/list, e.g. \"every table about latency\" or \"every table on",
+						"pages 7 and 11\" (set description) -- also use this for a request naming",
+						"PDF page numbers rather than table ids/labels, since a page number is",
+						"not itself a valid 'index'/'indices' value.",
 					].join(" "),
 				},
 				index: { type: "string", description: "Required when type is 'single' -- the table exactly as the user named it (e.g. '3', 'D.1', 'D2') -- copy their own wording, do not invent or guess a different form of it." },
@@ -102,11 +105,11 @@ LLMTableExport = {
 			// so a name like "D.2" can only be resolved against it in a
 			// second call, not assumed to already be — or even
 			// correctly convertible to — a table_id.
-			single: (intent, index) => LLMTableExport.resolveTableByDescription(index, intent.index),
-			list: (intent, index) => LLMTableExport.resolveTableTerms(intent.indices, index),
+			single: (intent, index, pageNum) => LLMTableExport.resolveTableByDescription(index, intent.index, pageNum),
+			list: (intent, index, pageNum) => LLMTableExport.resolveTableTerms(intent.indices, index, pageNum),
 			explicit: (intent, index) => LLMTableExport.resolveExplicitIndices(intent, index),
-			byDescription: (index, description) => LLMTableExport.resolveTableByDescription(index, description),
-			selection: (index, description) => LLMTableExport.resolveTableSelection(index, description),
+			byDescription: (index, description, pageNum) => LLMTableExport.resolveTableByDescription(index, description, pageNum),
+			selection: (index, description, pageNum) => LLMTableExport.resolveTableSelection(index, description, pageNum),
 		},
 	},
 
@@ -145,12 +148,22 @@ LLMTableExport = {
 	// citations there. Asks for the table_id, not the label -- the model
 	// never has to reproduce a label string at all, just copy the small
 	// integer already shown next to the table it picked.
-	async resolveTableByDescription(tableIndex, description) {
+	//
+	// `pageNum`, if given, adds the same "user is currently viewing page N"
+	// reader-context line llm-prompt.js's selectXWithLLM family already
+	// shows (reused directly via LLMPrompt._buildReaderContextLines, rather
+	// than duplicating that phrasing here), and each table's own page
+	// number is shown alongside its listing entry -- together these let a
+	// page-scoped request ("export the table on this page") resolve
+	// correctly instead of having nothing to match against.
+	async resolveTableByDescription(tableIndex, description, pageNum) {
 		let tables = tableIndex?.tables || [];
 		if (!tables.length) return null;
-		let listing = tables.map(t => `[${t.table_id}] ${t.label}: ${t.caption}`).join("\n");
+		let listing = tables.map(t => `[${t.table_id}] (p.${t.page_num}) ${t.label}: ${t.caption}`).join("\n");
 		let prompt = [
-			"Below is a list of tables from a paper, by id, label, and caption.",
+			"Below is a list of tables from a paper, by id, page number, label, and",
+			"caption.",
+			...LLMPrompt._buildReaderContextLines({ pageNum }),
 			"Identify which table (if any) matches the following description of a",
 			'table the user wants to export. Respond with ONLY the table id number.',
 			'If no entry is a confident match, respond with exactly "none". Do not',
@@ -176,8 +189,8 @@ LLMTableExport = {
 	// terms that don't resolve to anything are just dropped, same
 	// "whatever matched" tolerance resolveExplicitIndices' own "list" case
 	// already has for invalid entries.
-	async resolveTableTerms(terms, tableIndex) {
-		let resolved = await Promise.all(terms.map(term => this.resolveTableByDescription(tableIndex, String(term))));
+	async resolveTableTerms(terms, tableIndex, pageNum) {
+		let resolved = await Promise.all(terms.map(term => this.resolveTableByDescription(tableIndex, String(term), pageNum)));
 		let seen = new Set();
 		let result = [];
 		for (let id of resolved) {
@@ -200,14 +213,17 @@ LLMTableExport = {
 	// model is answering with table_id (a plain integer) rather than a
 	// label string, which could itself contain a comma for a synthetic
 	// section-derived label (e.g. "Appendix B. FSQ codebook, Unlabelled
-	// Table 1") and would fragment a comma-separated response.
-	async resolveTableSelection(tableIndex, description) {
+	// Table 1") and would fragment a comma-separated response. `pageNum`
+	// -- see resolveTableByDescription's own comment.
+	async resolveTableSelection(tableIndex, description, pageNum) {
 		let tables = tableIndex?.tables || [];
 		if (!tables.length) return [];
-		let listing = tables.map(t => `[${t.table_id}] ${t.label}: ${t.caption}`).join("\n");
+		let listing = tables.map(t => `[${t.table_id}] (p.${t.page_num}) ${t.label}: ${t.caption}`).join("\n");
 		let prompt = [
-			"Below is a list of tables from a paper, by id, label, and caption. Identify",
-			"every table that matches the following selection criterion, up to a",
+			"Below is a list of tables from a paper, by id, page number, label, and",
+			"caption.",
+			...LLMPrompt._buildReaderContextLines({ pageNum }),
+			"Identify every table that matches the following selection criterion, up to a",
 			`maximum of ${this._MAX_SELECTION_RESULTS} entries (if more than`,
 			`${this._MAX_SELECTION_RESULTS} match, pick the best/most confident`,
 			'matches). Respond with ONLY a comma-separated list of table ids (e.g.',

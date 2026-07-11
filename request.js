@@ -98,28 +98,38 @@ LLMRequest = {
 	// paper's actual table list at intent-detection time, so a name like
 	// "D.2" needs a further table-listing-aware call to resolve, exactly
 	// like "describe" already does.
-	async _resolveIntentIndices(tool, intent, pdfItem) {
+	//
+	// `pageNum` (the user's own current reader page, from send()'s own
+	// getReaderPageText() call) is passed through to every resolver call
+	// that involves an actual model lookup against the paper's index
+	// (single/describe/select/list -- NOT explicit, which is pure
+	// arithmetic with no model call), so a page-scoped table request
+	// ("export the table on this page") has something to match against --
+	// same reader-context signal llm-prompt.js's selectXWithLLM family
+	// already gets. References/etc. simply ignore the extra argument (a
+	// bibliography entry has no page of its own).
+	async _resolveIntentIndices(tool, intent, pdfItem, pageNum) {
 		let resolver = LLMIntent.getResolver(tool);
 		if (intent.type === "single") {
 			if (resolver.single) {
 				let index = await resolver.getIndex(pdfItem);
-				let resolved = await resolver.single(intent, index);
+				let resolved = await resolver.single(intent, index, pageNum);
 				return resolved === null ? [] : [resolved];
 			}
 			return [intent.index];
 		}
 		if (intent.type === "describe") {
 			let index = await resolver.getIndex(pdfItem);
-			let resolved = await resolver.byDescription(index, intent.description);
+			let resolved = await resolver.byDescription(index, intent.description, pageNum);
 			return resolved === null ? [] : [resolved];
 		}
 		if (intent.type === "select") {
 			let index = await resolver.getIndex(pdfItem);
-			return resolver.selection(index, intent.description);
+			return resolver.selection(index, intent.description, pageNum);
 		}
 		if (intent.type === "list" && resolver.list) {
 			let index = await resolver.getIndex(pdfItem);
-			return resolver.list(intent, index);
+			return resolver.list(intent, index, pageNum);
 		}
 		// list (references/etc, which have no resolver.list) / range / all
 		let index = await resolver.getIndex(pdfItem);
@@ -949,11 +959,21 @@ LLMRequest = {
 						return;
 					}
 
+					// The user's own current reader page -- see
+					// _resolveIntentIndices' own comment for why. Fetched
+					// here rather than reusing _handleNormalChat's own
+					// getReaderPageText() call, since the two paths are
+					// mutually exclusive per request (a tool-intent match
+					// returns before _handleNormalChat would ever run), so
+					// there's no actual double-fetch in practice.
+					let { pageNum } = await chatPane.getReaderPageText();
+					if (cancelled) return;
+
 					// Resolves `intent` down to a concrete list of numbers --
 					// see _resolveIntentIndices above, shared regardless of
 					// which tool matched (against the bibliography for
 					// download/link, the extracted tables for tables).
-					let indices = await this._resolveIntentIndices(tool, intent, pdfItem);
+					let indices = await this._resolveIntentIndices(tool, intent, pdfItem, pageNum);
 					if (cancelled) return;
 
 					let noun = tool === "tables" ? "tables" : "references";

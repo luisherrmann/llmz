@@ -167,6 +167,55 @@
    default text color rather than the role label's green/red (see
    .llm-message-user/.llm-message-assistant .llm-message-label above). */
 
+/* Plain text button ("RAW"), no icon -- pushed to the right end of
+   labelRow via margin-left: auto (labelRow itself is display: flex, see
+   .llm-message-label-row above), rather than sitting immediately next to
+   the timestamp. Dim by default so it doesn't compete with the label/time,
+   full opacity on hover/while active (raw view currently showing -- see
+   ui/chat.js's appendShell, which toggles this class on .llm-message).
+   Selector is `.llm-body button.llm-message-raw-toggle`, not just
+   `.llm-message-raw-toggle` alone -- .llm-body button above (1 class + 1
+   element = higher specificity than a single class) sets its own solid
+   background-color unconditionally, which otherwise wins over this rule's
+   transparent background regardless of source order, leaving the button
+   looking solid no matter what background value is set here. */
+.llm-body button.llm-message-raw-toggle {
+	/* Native button chrome in this XUL/Gecko context isn't actually removed
+	   by background: none alone -- appearance: none is what strips the
+	   platform's own default button background/border rendering, leaving
+	   only what's declared below. */
+	-moz-appearance: none;
+	appearance: none;
+	margin-left: auto;
+	padding: 1px 6px;
+	background: none;
+	background-color: transparent;
+	cursor: pointer;
+	color: inherit;
+	font-size: 0.8em;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	opacity: 0.5;
+}
+
+.llm-body button.llm-message-raw-toggle:hover {
+	background-color: transparent;
+	filter: none;
+	opacity: 1;
+}
+
+.llm-message-raw-view .llm-body button.llm-message-raw-toggle {
+	opacity: 1;
+	color: #e74c3c; /* same red as .llm-message-assistant .llm-message-label */
+}
+
+/* The raw <pre> swapped in by the toggle above -- smaller/monospace so it
+   visibly reads as "source", distinct from the normal rendered message. */
+.llm-message-raw {
+	font-family: monospace;
+	font-size: 0.85em;
+}
+
 .llm-message-content {
 	margin: 0;
 	padding: 1em;

@@ -261,6 +261,46 @@ LLMUIChat = {
 			transcript.push(entry);
 			transcriptByContent.set(content, entry);
 			timeElByContent.set(content, timeEl);
+
+			// Raw-output toggle -- model messages only ("You" is already raw
+			// plain text, nothing to compare against). Plain text button
+			// ("RAW"), not an icon -- pushed to the right end of labelRow via
+			// margin-left: auto (see style.css). Looks up the CURRENT content
+			// node via message.querySelector rather than closing over
+			// `content` directly, since a reply's content element gets
+			// swapped out from under this (request.js's own reply.replaceWith,
+			// or renderMarkdownMessage below) once rendering finishes --
+			// every version (streaming <pre>, rendered <div>, this toggle's
+			// own raw <pre>) keeps the shared .llm-message-content class, so
+			// the lookup always finds whatever's actually showing right now.
+			// `entry` itself (closed over directly, not re-fetched from
+			// transcriptByContent) always holds the latest raw text, since
+			// setMessageText/updateMessageText mutate it in place.
+			if (role !== "You") {
+				let rawToggle = doc.createElement("button");
+				rawToggle.className = "llm-message-raw-toggle";
+				rawToggle.title = "Show raw, unrendered output";
+				rawToggle.textContent = "RAW";
+				rawToggle.addEventListener("click", () => {
+					let current = message.querySelector(".llm-message-content");
+					if (message.classList.contains("llm-message-raw-view")) {
+						if (message._renderedContent) current.replaceWith(message._renderedContent);
+						message.classList.remove("llm-message-raw-view");
+						return;
+					}
+					// Nothing rendered yet to show "unrendered" against --
+					// the streaming/plain <pre> already IS the raw text.
+					if (!current.classList.contains("llm-markdown")) return;
+					message._renderedContent = current;
+					let rawEl = doc.createElement("pre");
+					rawEl.className = "llm-message-content llm-message-raw";
+					rawEl.textContent = entry.text;
+					current.replaceWith(rawEl);
+					message.classList.add("llm-message-raw-view");
+				});
+				labelRow.appendChild(rawToggle);
+			}
+
 			return content;
 		};
 

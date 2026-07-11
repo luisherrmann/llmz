@@ -24,6 +24,17 @@ LLMCitation = {
 		return paragraphs;
 	},
 
+	// Plain-text progress bar for a Logs entry (see request.js's
+	// onEmbeddingStart) -- e.g. "[████████░░░░░░░░░░░░] 42/120 (35%)". Just
+	// arithmetic + two Unicode block characters, not worth pulling in a
+	// library for. Shared with document/figures.js's own embedding loop.
+	_formatProgressBar(current, total, width = 20) {
+		let ratio = total > 0 ? current / total : 0;
+		let filled = Math.round(ratio * width);
+		let bar = "█".repeat(filled) + "░".repeat(width - filled);
+		return `[${bar}] ${current}/${total} (${Math.round(ratio * 100)}%)`;
+	},
+
 	cosineSimilarity(a, b) {
 		let dot = 0, normA = 0, normB = 0;
 		for (let i = 0; i < a.length; i++) {
@@ -34,31 +45,23 @@ LLMCitation = {
 		return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 	},
 
+	// Thin wrappers over LLMInterfaces' own embedding-provider dispatch (see
+	// its own comments) -- this module owns citation-index building/caching
+	// and cosine-similarity search, not provider/model selection itself
+	// (that's shared with ui/advanced.js's Embeddings section). Kept as
+	// methods here (rather than every call site below switching to
+	// LLMInterfaces directly) so _getIndex/getRelevantChunks/groundCitations
+	// don't need to change their own call shape.
 	async getEmbeddingModel() {
-		let response = await Zotero.HTTP.request("GET", `${LLMInterfaces.ollamaBaseURL}/api/tags`, {
-			timeout: 10000,
-		});
-		let data = JSON.parse(response.responseText);
-		let embedModel = (data.models || []).find(m => /embed/i.test(m.name))?.name;
-		if (!embedModel) {
-			throw new Error("No embedding model found. Pull one with `ollama pull nomic-embed-text`.");
-		}
-		return embedModel;
+		return LLMInterfaces.getCurrentEmbeddingModel();
 	},
 
-	async getEmbedding(text, model) {
-		this.log(`getEmbedding: model=${model} textLen=${text.length}`);
-		let response = await fetch(`${LLMInterfaces.ollamaBaseURL}/api/embed`, {
-			method: "POST",
-			body: JSON.stringify({ model, input: text }),
-			headers: { "Content-Type": "application/json" },
-		});
-		if (!response.ok) {
-			let body = await response.text().catch(() => "(unreadable)");
-			throw new Error(`Embedding request failed: HTTP ${response.status} — ${body}`);
-		}
-		let data = await response.json();
-		return data.embeddings[0];
+	// `model`/`provider`, if given, override the current selection -- see
+	// LLMInterfaces.getEmbedding's own comment for why (re-embedding a query
+	// against whatever an already-built index was actually embedded with,
+	// not necessarily the user's current selection).
+	async getEmbedding(text, model, provider) {
+		return LLMInterfaces.getEmbedding(text, model, provider);
 	},
 
 	_textFingerprint(text) {
@@ -71,15 +74,20 @@ LLMCitation = {
 		return dir;
 	},
 
-	async _loadDiskCache(item, fingerprint, model, kind) {
+	// `provider` is checked alongside `model` -- a stale cache built under a
+	// DIFFERENT embedding provider (but coincidentally the same model name)
+	// must still be invalidated, since embeddings from two different
+	// providers/backends aren't comparable via cosine similarity even if
+	// the model name happens to match (see _getIndex's own comment).
+	async _loadDiskCache(item, fingerprint, model, provider, kind) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}-${kind}.json`);
 			if (!await IOUtils.exists(path)) return null;
 			let raw = await IOUtils.readUTF8(path);
 			let cached = JSON.parse(raw);
-			if (cached.fingerprint !== fingerprint || cached.model !== model) return null;
+			if (cached.fingerprint !== fingerprint || cached.model !== model || cached.provider !== provider) return null;
 			this.log(`_loadDiskCache(${kind}): loaded ${cached.sentences.length} chunks for item ${item.id}`);
-			return { sentences: cached.sentences, embeddings: cached.embeddings, model: cached.model };
+			return { sentences: cached.sentences, embeddings: cached.embeddings, model: cached.model, provider: cached.provider };
 		}
 		catch (e) {
 			this.log(`_loadDiskCache(${kind}): failed for item ${item.id}: ${e.message}`);
@@ -93,6 +101,7 @@ LLMCitation = {
 			await IOUtils.writeUTF8(path, JSON.stringify({
 				fingerprint,
 				model: index.model,
+				provider: index.provider,
 				sentences: index.sentences,
 				embeddings: index.embeddings,
 			}));
@@ -103,15 +112,31 @@ LLMCitation = {
 		}
 	},
 
-	async _getIndex(item, text, kind, chunkFn) {
+	// `onEmbeddingStart(provider, model)`, if given, is called ONLY when a
+	// cache miss/staleness (see _loadDiskCache) actually forces a real
+	// recompute -- not on every call -- and may return a value (e.g. a Logs
+	// entry's content element) that gets passed to onEmbeddingDone below so
+	// the caller can update the SAME message in place with a completion
+	// line, rather than the two ever appearing as separate messages.
+	async _getIndex(item, text, kind, chunkFn, onEmbeddingStart) {
 		let cacheKey = `${item.id}:${kind}`;
-		let cached = this._citationIndexCache.get(cacheKey);
-		if (cached) return cached;
 
+		// Captured alongside the model, not just the model name alone --
+		// see _loadDiskCache's own comment. Resolved BEFORE the memory-cache
+		// check below (not just passed to _loadDiskCache further down) --
+		// switching provider/model mid-session must invalidate an
+		// already-loaded memory-cached index too, since that check would
+		// otherwise never even run (the disk cache is only consulted on a
+		// memory-cache MISS).
+		let provider = LLMInterfaces._embeddingProvider;
 		let model = await this.getEmbeddingModel();
+
+		let cached = this._citationIndexCache.get(cacheKey);
+		if (cached && cached.provider === provider && cached.model === model) return cached;
+
 		let fingerprint = this._textFingerprint(text);
 
-		let diskCached = await this._loadDiskCache(item, fingerprint, model, kind);
+		let diskCached = await this._loadDiskCache(item, fingerprint, model, provider, kind);
 		if (diskCached) {
 			this._citationIndexCache.set(cacheKey, diskCached);
 			return diskCached;
@@ -120,24 +145,27 @@ LLMCitation = {
 		let sentences = chunkFn(text);
 		if (!sentences.length) return null;
 
-		this.log(`_getIndex(${kind}): embedding ${sentences.length} chunks with ${model}`);
+		let progress = onEmbeddingStart?.(provider, model);
+		this.log(`_getIndex(${kind}): embedding ${sentences.length} chunks with ${provider}/${model}`);
 		let embeddings = [];
-		for (let sentence of sentences) {
-			embeddings.push(await this.getEmbedding(sentence, model));
+		for (let i = 0; i < sentences.length; i++) {
+			embeddings.push(await this.getEmbedding(sentences[i], model, provider));
+			progress?.setProgress?.(i + 1, sentences.length);
 		}
+		if (progress) progress.textContent = `Recomputed ${embeddings.length} ${kind} embedding${embeddings.length === 1 ? "" : "s"} using ${provider} ${model}.`;
 
-		let index = { sentences, embeddings, model };
+		let index = { sentences, embeddings, model, provider };
 		this._citationIndexCache.set(cacheKey, index);
 		await this._saveDiskCache(item, fingerprint, index, kind);
 		return index;
 	},
 
-	async getCitationIndex(item, text) {
-		return this._getIndex(item, text, "sentence", t => this.splitIntoSentences(t));
+	async getCitationIndex(item, text, onEmbeddingStart) {
+		return this._getIndex(item, text, "sentence", t => this.splitIntoSentences(t), onEmbeddingStart);
 	},
 
-	async getParagraphIndex(item, text) {
-		return this._getIndex(item, text, "paragraph", t => this.splitIntoParagraphs(t));
+	async getParagraphIndex(item, text, onEmbeddingStart) {
+		return this._getIndex(item, text, "paragraph", t => this.splitIntoParagraphs(t), onEmbeddingStart);
 	},
 
 	// Debug affordance ("Clear Cache" in Advanced) -- drops both the memory
@@ -161,7 +189,7 @@ LLMCitation = {
 	},
 
 	async getRelevantChunks(index, query, topK) {
-		let queryEmbedding = await this.getEmbedding(query, index.model);
+		let queryEmbedding = await this.getEmbedding(query, index.model, index.provider);
 		let scored = index.embeddings.map((embedding, i) => ({
 			i,
 			score: this.cosineSimilarity(queryEmbedding, embedding),
@@ -191,7 +219,7 @@ LLMCitation = {
 			let searchPhrase = phrase;
 			if (index) {
 				try {
-					let queryEmbedding = await this.getEmbedding(phrase, index.model);
+					let queryEmbedding = await this.getEmbedding(phrase, index.model, index.provider);
 					let bestScore = -Infinity, bestIdx = -1;
 					for (let i = 0; i < index.embeddings.length; i++) {
 						let score = this.cosineSimilarity(queryEmbedding, index.embeddings[i]);

@@ -601,7 +601,71 @@ LLMRequest = {
 				? LLMNotes.formatAnnotation(selectedAnnotationItem)
 				: null;
 			let readerContext = { pageNum, selectedText, selectedAnnotationNote };
-			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem, citationIndex } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText);
+
+			// Created here -- BEFORE embedding recompute/context-building --
+			// rather than after, so onEmbeddingStart below has a reply
+			// bubble to update. Order relative to each other matters (see
+			// ui/chat.js's list.prepend -- each new message ends up ABOVE
+			// the previous one, so creating userReply first/reply second
+			// preserves the existing visual order: reply above userReply).
+			let userReply = appendMessage("You", prompt, submissionTime);
+			// A visual record of what was actually attached to this
+			// specific message -- imagePaste's own list keeps accumulating
+			// across turns (see ui/image-paste.js), so this snapshot is what
+			// distinguishes "attached to THIS message" from "currently
+			// sitting in the attach tray for the next one".
+			let pastedImageDataUris = imagePaste.getDataUris();
+			if (pastedImageDataUris.length) {
+				chat.appendImages(userReply, pastedImageDataUris);
+			}
+
+			// Visible placeholder, shown immediately -- BEFORE context-building
+			// (table/figure/equation/note/reference extraction+selection, or
+			// even the embedding recompute below, all of which can take a
+			// while) rather than only once it finishes -- updated to
+			// "Waiting for ..." right before the actual model call starts
+			// (see below), then filled with streamed tokens once the reply
+			// actually begins. Created with an empty timestamp (see
+			// ui/chat.js's appendMessage/setMessageTime) -- set to the real
+			// completion time only once the full response has actually
+			// streamed in below, not here, so the bubble doesn't show a
+			// misleadingly-early time for a reply that can take several
+			// seconds to finish.
+			let reply = appendMessage(replyLabel, "Building context...", "");
+
+			// Posted (to Logs, since role "System" routes there -- see
+			// appendMessage below) AND mirrored onto the reply bubble itself
+			// (so a slow embedding recompute is visible in the actual
+			// conversation, not just the Logs panel) -- only when a cache
+			// miss/staleness actually forces embeddings to be recomputed
+			// (e.g. after switching providers in Advanced settings), not on
+			// every request -- see llm-citation.js's _getIndex/
+			// document/figures.js's getFigureIndex, which both only call
+			// this on that path. `setProgress(current, total)` is called
+			// once per item as recomputation runs -- the Logs line gets the
+			// full "[bar] current/total (pct%)" (see LLMCitation.
+			// _formatProgressBar), but the reply bubble gets just the bare
+			// percentage, since a full text progress bar reads poorly
+			// inside a chat message. `textContent` (get/set) is for the
+			// start/completion lines, which are identical in both places.
+			let onEmbeddingStart = (provider, model) => {
+				let baseText = `Recomputing embeddings using ${provider} ${model}...`;
+				let logEl = appendMessage("System", baseText);
+				chat.updateMessageText(reply, baseText);
+				return {
+					get textContent() { return logEl.textContent; },
+					set textContent(text) {
+						logEl.textContent = text;
+						chat.updateMessageText(reply, text);
+					},
+					setProgress(current, total) {
+						let pct = total > 0 ? Math.round((current / total) * 100) : 0;
+						logEl.textContent = `${baseText} ${LLMCitation._formatProgressBar(current, total)}`;
+						chat.updateMessageText(reply, `${baseText} ${pct}%`);
+					},
+				};
+			};
+			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem, citationIndex } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText, onEmbeddingStart);
 			if (isCancelled()) return;
 			let tableIndexPromise = pdfItem
 				? LLMTables.getTableIndex(pdfItem).catch((e) => {
@@ -610,7 +674,7 @@ LLMRequest = {
 				})
 				: Promise.resolve(null);
 			let figureIndexPromise = pdfItem
-				? LLMFigures.getFigureIndex(pdfItem).catch((e) => {
+				? LLMFigures.getFigureIndex(pdfItem, onEmbeddingStart).catch((e) => {
 					this.log(`getFigureIndex failed: ${e.message}`);
 					return null;
 				})
@@ -645,29 +709,6 @@ LLMRequest = {
 				? `Page Context: page ${pageNum}`
 				: `Page Context: (none — ${pageInfo})`);
 			appendMessage("System", contextInfo ? `PDF: ${contextInfo.title}` : "PDF: (none)");
-			let userReply = appendMessage("You", prompt, submissionTime);
-			// A visual record of what was actually attached to this
-			// specific message -- imagePaste's own list keeps accumulating
-			// across turns (see ui/image-paste.js), so this snapshot is what
-			// distinguishes "attached to THIS message" from "currently
-			// sitting in the attach tray for the next one".
-			let pastedImageDataUris = imagePaste.getDataUris();
-			if (pastedImageDataUris.length) {
-				chat.appendImages(userReply, pastedImageDataUris);
-			}
-
-			// Visible placeholder, shown immediately rather than only once
-			// context-building (table/figure/equation/note/reference
-			// extraction+selection below, which can itself take a while)
-			// finishes -- updated to "Waiting for ..." right before the
-			// actual model call starts (see below), then filled with
-			// streamed tokens once the reply actually begins. Created with
-			// an empty timestamp (see ui/chat.js's appendMessage/
-			// setMessageTime) -- set to the real completion time only once
-			// the full response has actually streamed in below, not here,
-			// so the bubble doesn't show a misleadingly-early time for a
-			// reply that can take several seconds to finish.
-			let reply = appendMessage(replyLabel, "Building context...", "");
 
 			if (contextInfo?.missingText) {
 				appendMessage("System", `No extracted text was available for "${contextInfo.title}". Asking without PDF context.`);

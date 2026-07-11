@@ -166,14 +166,14 @@ LLMTableExport = {
 	// output, just the [NEXT_TABLE] separator and matching order.
 	// `withImages` adds a paragraph telling the model each table's own
 	// cropped rendering is attached, in the SAME order as the tuples below
-	// -- see exportTablesToZip, which actually attaches
-	// tab.image_data (the bounding-box crop extract_tables.py already
-	// produces and caches, same source LLMTables' own image-embedding
-	// pipeline uses) as `images` on this same streamModel call. The raw
-	// extracted `contentText` can be messy (merged cells, multi-row
-	// headers, OCR-like artifacts from pdfplumber's table detection) --
-	// the actual rendered image is the more reliable ground truth for
-	// resolving that, so the model's told explicitly to prefer it.
+	// -- see exportTablesToZip, which actually attaches tab.image_data (the
+	// bounding-box crop, rendered lazily on demand via
+	// LLMTables.renderMissingImages against SDT's own detected bbox -- see
+	// document/tables.js) as `images` on this same streamModel call. The raw
+	// extracted `contentText` can be messy (SDT's table content is often an
+	// unstructured flattened-text fallback rather than a real grid) -- the
+	// actual rendered image is the more reliable ground truth for resolving
+	// that, so the model's told explicitly to prefer it.
 	_buildCSVPrompt(tables, withImages) {
 		let tuples = tables.map((t, i) =>
 			`${i + 1}. (number=${t.table_num}, caption="${t.caption}")\n${t.contentText}`
@@ -391,30 +391,44 @@ LLMTableExport = {
 			return { success: false, message: `None of the requested table(s) (${tableNums.join(", ")}) were found in this paper.` };
 		}
 
-		// Attaches each table's own cropped rendering (tab.image_data --
-		// see extract_tables.py's own doc comment: a base64 JPEG of the
-		// bounding box extract_tables.py found for the table, caption
-		// included -- cached alongside everything else getTableIndex
-		// returns, preserved as-is by embed_tables.py) as `images`, in the
-		// SAME order as the tuples in the prompt, so the model can use the
-		// actual rendered table (a much more reliable source of truth than
-		// the programmatically-extracted `contentText`, which can have
-		// merged cells/misaligned columns/OCR-like artifacts) to produce a
-		// more accurate CSV. Only attempted if EVERY requested table
-		// actually has an image (a partial set would misalign the "first
-		// image = first table" correspondence the prompt promises) and the
-		// current model supports image input at all -- falls back to
-		// text-only otherwise, same degraded-but-working behavior as
-		// before this was added.
-		let images = tables.every(t => t.image_data) ? tables.map(t => t.image_data) : null;
-		if (images) {
-			let model = await LLMInterfaces.getCurrentModel().catch(() => null);
-			let supportsImages = model ? await LLMInterfaces.modelSupportsImages(model).catch(() => false) : false;
-			if (!supportsImages) {
-				this.log("exportTablesToZip: current model has no image support -- formatting from extracted text only");
-				onProgress?.("Current model has no image support -- formatting tables from extracted text only.");
-				images = null;
+		// Attaches each table's own cropped rendering (tab.image_data) as
+		// `images`, in the SAME order as the tuples in the prompt, so the
+		// model can use the actual rendered table (a much more reliable
+		// source of truth than the programmatically-extracted `contentText`,
+		// which can have merged cells/misaligned columns/OCR-like
+		// artifacts) to produce a more accurate CSV. Only attempted if
+		// EVERY requested table actually has an image (a partial set would
+		// misalign the "first image = first table" correspondence the
+		// prompt promises) and the current model supports image input at
+		// all -- falls back to text-only otherwise, same degraded-but-
+		// working behavior as before this was added.
+		//
+		// Checked BEFORE rendering (not after) so a model with no image
+		// support skips rendering entirely, rather than paying for it and
+		// throwing the result away. image_data itself is no longer
+		// guaranteed to already be cached -- the SDT-only detection pipeline
+		// (see document/tables.js/scripts/extract_tables_sdt.js) only
+		// caches each table's bounding box, not a rendering of it, so
+		// renderMissingImages lazily renders (and caches back) whichever of
+		// `tables` don't have one yet, against that cached bbox.
+		let images = null;
+		let model = await LLMInterfaces.getCurrentModel().catch(() => null);
+		let supportsImages = model ? await LLMInterfaces.modelSupportsImages(model).catch(() => false) : false;
+		if (!supportsImages) {
+			this.log("exportTablesToZip: current model has no image support -- formatting from extracted text only");
+			onProgress?.("Current model has no image support -- formatting tables from extracted text only.");
+		}
+		else {
+			if (tables.some(t => !t.image_data)) {
+				onProgress?.("Rendering table image(s)...");
+				try {
+					await LLMTables.renderMissingImages(pdfItem, tables);
+				}
+				catch (e) {
+					this.log(`exportTablesToZip: renderMissingImages failed: ${e.message}`);
+				}
 			}
+			images = tables.every(t => t.image_data) ? tables.map(t => t.image_data) : null;
 		}
 
 		onProgress?.(`Formatting ${tables.length} table${tables.length === 1 ? "" : "s"} as CSV${images ? " (using each table's rendered image)" : ""}...`);

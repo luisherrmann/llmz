@@ -1,11 +1,12 @@
 // Extracts tables using ONLY Zotero's document-worker structure pipeline
 // (ML-based PDF layout classification, vendored under ../sdt/document-worker/)
-// -- no PyMuPDF/Python involved. Experimental bypass of extract_tables.py's
-// caption-anchored approach, which structurally cannot find tables with no
-// caption at all (e.g. an "Appendix B. <title>" heading directly followed by
-// a table, no "Table B.1:" line anywhere) or appendix-lettered captions
-// ("Table D.1:") -- see document/tables.js's own comments for the fuller
-// rationale and the empirical comparison against PyMuPDF this replaces for now.
+// -- no PyMuPDF/Python involved. Replaced the old caption-anchored approach
+// (extract_tables.py, since removed), which structurally could not find
+// tables with no caption at all (e.g. an "Appendix B. <title>" heading
+// directly followed by a table, no "Table B.1:" line anywhere) or
+// appendix-lettered captions ("Table D.1:") -- see document/tables.js's own
+// comments for the fuller rationale and the empirical comparison that led
+// to this replacement.
 //
 // Pipeline (validated against several real papers before being wired in):
 //   1. Collect every `type: 'table'` block (body) and `type: 'caption'` block

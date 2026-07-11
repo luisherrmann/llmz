@@ -118,11 +118,15 @@ LLMPrompt = {
 		if (!figures?.length) return [];
 
 		const MAX_SELECTED_FIGURES = 10;
-		let captionList = figures.map(f => `${f.label}: ${f.caption}`).join("\n");
+		// Page number included alongside the reader-context lines above
+		// (the user's OWN current page) so the model can correlate a
+		// page-scoped question ("the figure on this page") against each
+		// candidate's actual location, not just its caption text.
+		let captionList = figures.map(f => `(p.${f.page_num}) ${f.label}: ${f.caption}`).join("\n");
 		let selectionPrompt = [
 			"You are choosing which figures (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant figures -- include all of them, not just the single best one.",
 			...this._buildReaderContextLines(readerContext),
-			"Here are the figures in this paper:",
+			"Here are the figures in this paper, each preceded by its page number:",
 			captionList,
 			"",
 			`User's question: "${query}"`,
@@ -220,11 +224,14 @@ LLMPrompt = {
 		if (!equations?.length) return [];
 
 		const MAX_SELECTED_EQUATIONS = 10;
-		let equationContext = equations.map(eq => `${eq.label}: ${eq.text}`).join("\n");
+		// Page number included alongside the reader-context lines above
+		// (the user's OWN current page) so the model can correlate a
+		// page-scoped question against each candidate's actual location.
+		let equationContext = equations.map(eq => `(p.${eq.page_num}) ${eq.label}: ${eq.text}`).join("\n");
 		let selectionPrompt = [
 			"You are choosing which equations (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant equations -- include all of them, not just the single best one.",
 			...this._buildReaderContextLines(readerContext),
-			"Here are the equations in this paper, each preceded by its exact label:",
+			"Here are the equations in this paper, each preceded by its page number and exact label:",
 			"",
 			equationContext,
 			"",
@@ -282,11 +289,14 @@ LLMPrompt = {
 		if (!tables?.length) return [];
 
 		const MAX_SELECTED_TABLES = 10;
-		let tableContext = tables.map(t => `[${t.table_id}] ${t.label}: ${t.caption}\n${LLMTables._flattenTableData(t.data)}`).join("\n\n");
+		// Page number included alongside the reader-context lines above
+		// (the user's OWN current page) so the model can correlate a
+		// page-scoped question against each candidate's actual location.
+		let tableContext = tables.map(t => `[${t.table_id}] (p.${t.page_num}) ${t.label}: ${t.caption}\n${LLMTables._flattenTableData(t.data)}`).join("\n\n");
 		let selectionPrompt = [
 			"You are choosing which tables (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant tables -- include all of them, not just the single best one.",
 			...this._buildReaderContextLines(readerContext),
-			"Here are the tables in this paper, each preceded by its id, label, and caption:",
+			"Here are the tables in this paper, each preceded by its id, page number, and label:",
 			"",
 			tableContext,
 			"",

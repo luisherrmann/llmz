@@ -16,7 +16,10 @@
 // model to cite them by -- see llm-chat-pane.js's ref:formula:N handling.
 //
 // Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_equations.js <pdf_path> <output_json_path>
-// Output: JSON array of { equation_num, formula_num, label, text, position }.
+// Output: JSON array of { page_num, equation_num, formula_num, label, text,
+//   position }. page_num is the plain 1-indexed page number (null if this
+//   block had no anchor at all), same convention/field name
+//   extract_tables_sdt.js/extract_figures_sdt.js already use.
 
 import fs from 'fs';
 import { dirname, resolve } from 'path';
@@ -79,10 +82,18 @@ function getEquations(structure) {
 		let position = pageRect
 			? { pageIndex: pageRect[0], rects: [pageRect.slice(1)] }
 			: null;
+		// Plain 1-indexed page number, same top-level field (and convention)
+		// extract_tables_sdt.js/extract_figures_sdt.js already expose as
+		// `page_num` -- previously only reachable indirectly via
+		// position.pageIndex (0-indexed, and buried one level down), which
+		// meant every caller needing an equation's page had to know that
+		// derivation itself rather than just reading a field.
+		let page_num = pageRect ? pageRect[0] + 1 : null;
 
 		if (numberByBlockRef.has(i)) {
 			let equationNum = numberByBlockRef.get(i);
 			equations.push({
+				page_num,
 				equation_num: equationNum,
 				formula_num: null,
 				label: `Equation ${equationNum}`,
@@ -93,6 +104,7 @@ function getEquations(structure) {
 		else {
 			formulaCount++;
 			equations.push({
+				page_num,
 				equation_num: null,
 				formula_num: formulaCount,
 				label: `Formula ${formulaCount}`,

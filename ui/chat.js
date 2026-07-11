@@ -23,7 +23,16 @@ LLMUIChat = {
 	//                                         historical timestamp (e.g. when
 	//                                         rebuilding from an imported
 	//                                         conversation, see
-	//                                         llm-chat-pane.js's onImport).
+	//                                         llm-chat-pane.js's onImport),
+	//                                         to capture the EXACT moment of
+	//                                         submission for a "You" message
+	//                                         rather than whenever this call
+	//                                         happens to run (which can be
+	//                                         noticeably later -- see
+	//                                         request.js's own submissionTime),
+	//                                         or "" for a reply bubble that
+	//                                         shouldn't show a timestamp yet
+	//                                         (see setMessageTime below).
 	//                                         Returns the content <pre>,
 	//                                         ready for either further
 	//                                         plain-text updates (streaming
@@ -84,6 +93,30 @@ LLMUIChat = {
 	//                                         caller) or a final result
 	//                                         (setMessageText/
 	//                                         finalizeRichMessage).
+	//   setMessageTime(contentEl, time)   -- sets a message's timestamp
+	//                                         after the fact -- for a reply
+	//                                         bubble created with time ""
+	//                                         (see appendMessage above), so
+	//                                         it shows no timestamp until
+	//                                         the reply is actually
+	//                                         complete (request.js calls
+	//                                         this once streaming finishes),
+	//                                         rather than when it merely
+	//                                         started.
+	//   formatTimestamp()                 -- returns the current time in
+	//                                         this module's own "dd/mm/yyyy
+	//                                         - hh:mm:ss" format, for a
+	//                                         caller that needs to capture
+	//                                         a timestamp itself (e.g.
+	//                                         request.js snapshotting the
+	//                                         exact moment of submission,
+	//                                         before any async work, to
+	//                                         pass into appendMessage's own
+	//                                         `time` later) rather than
+	//                                         relying on appendMessage's
+	//                                         default (which captures
+	//                                         "now" whenever THAT call
+	//                                         happens to run instead).
 	//   finalizeRichMessage(contentEl,
 	//     parts)                          -- appendRichMessage's content-
 	//                                         filling logic, but applied to
@@ -151,6 +184,16 @@ LLMUIChat = {
 		// markdown export.js actually wants.
 		let transcript = [];
 		let transcriptByContent = new WeakMap();
+		// contentEl -> its own labelRow's timeEl, for setMessageTime below --
+		// separate from transcriptByContent since `entry` there is spread
+		// into plain objects by exportTranscript() (a live DOM node has no
+		// business ending up in an export), and separate from `content`
+		// itself since timeEl lives in the sibling labelRow, not inside
+		// content, so it survives a later content swap (e.g. reply.replaceWith
+		// in request.js, once a streamed reply finishes and gets swapped from
+		// its plain-text <pre> to rendered markdown <div> -- the OLD content
+		// element is still a valid WeakMap key even after being detached).
+		let timeElByContent = new WeakMap();
 
 		// A single dummy element shown in place of real messages whenever
 		// the list is empty (fresh render with no conversation yet, or
@@ -217,6 +260,7 @@ LLMUIChat = {
 			let entry = { role, time, text: "" };
 			transcript.push(entry);
 			transcriptByContent.set(content, entry);
+			timeElByContent.set(content, timeEl);
 			return content;
 		};
 
@@ -283,6 +327,25 @@ LLMUIChat = {
 			setMessageText(contentEl, text);
 		};
 
+		// Sets a message's timestamp AFTER the fact -- for a reply bubble
+		// created with an empty `time` (see appendMessage's own doc comment),
+		// so it displays no timestamp until request.js calls this once the
+		// reply is actually complete, rather than showing when the reply
+		// merely STARTED (misleading for a response that streams over
+		// several seconds). Updates both the visible time label and the
+		// transcript entry, same split as updateMessageText/setMessageText.
+		// Still works on a contentEl that's since been replaceWith'd out of
+		// the DOM (e.g. the streamed <pre> swapped for rendered markdown) --
+		// timeEl itself lives in the sibling labelRow, untouched by that
+		// swap, and WeakMap lookups don't care whether contentEl is still
+		// attached.
+		let setMessageTime = (contentEl, time) => {
+			let entry = transcriptByContent.get(contentEl);
+			if (entry) entry.time = time;
+			let timeEl = timeElByContent.get(contentEl);
+			if (timeEl) timeEl.textContent = time;
+		};
+
 		let finalizeRichMessage = (contentEl, parts) => {
 			contentEl.textContent = "";
 			setMessageText(contentEl, fillRichParts(contentEl, parts));
@@ -341,6 +404,6 @@ LLMUIChat = {
 			return rendered;
 		};
 
-		return { label, list, appendMessage, appendRichMessage, appendImages, setMessageText, updateMessageText, finalizeRichMessage, exportTranscript, clear, renderMarkdownMessage };
+		return { label, list, appendMessage, appendRichMessage, appendImages, setMessageText, updateMessageText, setMessageTime, finalizeRichMessage, exportTranscript, clear, renderMarkdownMessage, formatTimestamp };
 	},
 };

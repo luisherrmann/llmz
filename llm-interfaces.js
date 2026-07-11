@@ -1117,16 +1117,27 @@ LLMInterfaces = {
 		return this.getOllamaEmbeddingModel();
 	},
 
-	// Computes one embedding vector for `text`. `model`/`provider`, if
-	// given, override the CURRENT embedding selection -- needed by
-	// llm-citation.js to re-embed a query against whichever provider+model
-	// an already-built citation index was actually embedded with (see its
-	// own comment), since embeddings from two different models (or the same
-	// model name under two different providers) aren't comparable via
-	// cosine similarity, and the user may have switched their embedding
-	// selection since that index was built. Defaults to the CURRENT
-	// selection (resolving the model via getCurrentEmbeddingModel) when
-	// building a NEW index instead.
+	// Computes one embedding vector per entry of `texts`, IN ORDER, using a
+	// single request -- both embedding endpoints below accept a batched
+	// `input` (a string OR an array of strings), not just one text at a
+	// time, so batching multiple chunks into one request is both faster
+	// (one round trip instead of N) and cheaper than embedding one at a
+	// time. See LLMCitation.embedBatched for the concurrency-limited
+	// batch-splitting/dispatch built on top of this (used by llm-citation.js/
+	// document/figures.js's own embedding loops) -- this method itself does
+	// NOT cap how many texts it sends in one request, so callers are
+	// responsible for keeping batches within whatever size a given
+	// provider/model can actually handle in one request.
+	//
+	// `model`/`provider`, if given, override the CURRENT embedding
+	// selection -- needed by llm-citation.js to re-embed a query against
+	// whichever provider+model an already-built citation index was actually
+	// embedded with (see its own comment), since embeddings from two
+	// different models (or the same model name under two different
+	// providers) aren't comparable via cosine similarity, and the user may
+	// have switched their embedding selection since that index was built.
+	// Defaults to the CURRENT selection (resolving the model via
+	// getCurrentEmbeddingModel) when building a NEW index instead.
 	//
 	// Ollama uses its own native /api/embed (confirmed working already --
 	// see this plugin's prior Ollama-only implementation); LM Studio/
@@ -1134,8 +1145,9 @@ LLMInterfaces = {
 	// {baseURL}/embeddings endpoint ({model, input} -> {data:
 	// [{embedding, index}]}), the same compatibility this plugin already
 	// relies on for their /chat/completions endpoints.
-	async getEmbedding(text, model, provider) {
+	async getEmbeddings(texts, model, provider) {
 		provider = provider || this._embeddingProvider;
+		if (!texts.length) return [];
 		if (!model) {
 			let saved = this._embeddingProvider;
 			this._embeddingProvider = provider;
@@ -1148,10 +1160,10 @@ LLMInterfaces = {
 		}
 
 		if (provider === "ollama") {
-			this.log(`getEmbedding: provider=ollama model=${model} textLen=${text.length}`);
+			this.log(`getEmbeddings: provider=ollama model=${model} count=${texts.length}`);
 			let response = await fetch(`${this.ollamaBaseURL}/api/embed`, {
 				method: "POST",
-				body: JSON.stringify({ model, input: text }),
+				body: JSON.stringify({ model, input: texts }),
 				headers: { "Content-Type": "application/json" },
 			});
 			if (!response.ok) {
@@ -1159,7 +1171,7 @@ LLMInterfaces = {
 				throw new Error(`Embedding request failed: HTTP ${response.status} — ${body}`);
 			}
 			let data = await response.json();
-			return data.embeddings[0];
+			return data.embeddings;
 		}
 
 		if (provider === "anthropic") {
@@ -1172,12 +1184,12 @@ LLMInterfaces = {
 		let apiKey = provider === "litellm" ? this._apiKeys.litellm
 			: provider === "openai" ? this._apiKeys.openai
 			: null;
-		this.log(`getEmbedding: provider=${provider} model=${model} textLen=${text.length}`);
+		this.log(`getEmbeddings: provider=${provider} model=${model} count=${texts.length}`);
 		let headers = { "Content-Type": "application/json" };
 		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 		let response = await fetch(`${baseURL}/embeddings`, {
 			method: "POST",
-			body: JSON.stringify({ model, input: text }),
+			body: JSON.stringify({ model, input: texts }),
 			headers,
 		});
 		if (!response.ok) {
@@ -1185,6 +1197,14 @@ LLMInterfaces = {
 			throw new Error(`Embedding request failed: HTTP ${response.status} — ${body}`);
 		}
 		let data = await response.json();
-		return data.data[0].embedding;
+		// Sorted by `index` -- not every OpenAI-compatible backend is
+		// guaranteed to return entries in request order.
+		return data.data.sort((a, b) => a.index - b.index).map(d => d.embedding);
+	},
+
+	// Single-text convenience wrapper over getEmbeddings above.
+	async getEmbedding(text, model, provider) {
+		let [embedding] = await this.getEmbeddings([text], model, provider);
+		return embedding;
 	},
 };

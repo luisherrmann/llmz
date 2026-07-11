@@ -57,6 +57,22 @@ LLMUIAdvanced = {
 		return tr;
 	},
 
+	// Same row layout as _makeIntegerSettingRow/_makeCheckboxSettingRow
+	// above, but for an arbitrary pre-built element (e.g.
+	// LLMUIProviderModelSelect.create's row) instead of building an input
+	// itself -- for a setting whose control isn't a plain number/checkbox.
+	_makeElementRow(doc, labelText, contentEl) {
+		let tr = doc.createElement("tr");
+		let labelTd = doc.createElement("td");
+		labelTd.className = "llm-advanced-field-label";
+		labelTd.textContent = labelText;
+		let contentTd = doc.createElement("td");
+		contentTd.className = "llm-advanced-field-input";
+		contentTd.appendChild(contentEl);
+		tr.append(labelTd, contentTd);
+		return tr;
+	},
+
 	// One subsection within "Advanced" -- a header (flush left, same
 	// baseline as "Advanced" itself) followed by a padded wrapper (see
 	// style.css's .llm-advanced-section-body, the same 1em padding
@@ -155,7 +171,38 @@ LLMUIAdvanced = {
 			saveSelectedModel: (provider, model) => LLMInterfaces.saveSelectedEmbeddingModel(provider, model),
 			listModels: () => LLMInterfaces.listEmbeddingModels(),
 		});
-		embeddingsBody.appendChild(embeddingProviderModelSelect.element);
+		let embeddingModelTable = doc.createElement("table");
+		embeddingModelTable.className = "llm-advanced-table";
+		let embeddingModelTbody = doc.createElement("tbody");
+		embeddingModelTbody.append(this._makeElementRow(doc, "Model", embeddingProviderModelSelect.element));
+		embeddingModelTable.appendChild(embeddingModelTbody);
+		embeddingsBody.appendChild(embeddingModelTable);
+		let embeddingModelHint = doc.createElement("div");
+		embeddingModelHint.className = "llm-advanced-field-hint";
+		embeddingModelHint.append(
+			doc.createTextNode("The model to use for generating textual embeddings. The embeddings are used for semantic search of your documents and for building the context provided to the LLM."),
+			doc.createElement("br"),
+			doc.createTextNode("NOTE: Changing the model will force recomputation of embeddings for the document on the next user prompt.")
+		);
+		embeddingsBody.appendChild(embeddingModelHint);
+
+		let embeddingsTable = doc.createElement("table");
+		embeddingsTable.className = "llm-advanced-table";
+		let embeddingsTbody = doc.createElement("tbody");
+		embeddingsTbody.append(
+			this._makeIntegerSettingRow(
+				doc,
+				"Batch size",
+				() => LLMCitation.embedBatchSize,
+				(value) => { LLMCitation.embedBatchSize = value; }
+			)
+		);
+		embeddingsTable.appendChild(embeddingsTbody);
+		embeddingsBody.appendChild(embeddingsTable);
+		let embeddingsHint = doc.createElement("div");
+		embeddingsHint.className = "llm-advanced-field-hint";
+		embeddingsHint.textContent = "The number of embeddings to send to the embedding endpoint in one batch.";
+		embeddingsBody.appendChild(embeddingsHint);
 
 		// --- Cache ---
 		// Debug affordance: drops the memory+disk cache for whichever of

@@ -633,6 +633,18 @@ LLMRequest = {
 			// seconds to finish.
 			let reply = appendMessage(replyLabel, "Building context...", "");
 
+			// Jump to the next event loop step for UI updates -- without
+			// this, the two DOM appends above don't actually paint until
+			// something ELSE yields long enough for a repaint, which (once
+			// context-building/embedding recompute is largely local
+			// microtask work) can end up being the first streamed token
+			// from the model, making the "You" bubble appear to sit there
+			// un-rendered for the whole request. Same idiom Zotero core
+			// itself uses for this (see e.g. integration.js's own "Jump to
+			// next event loop step for UI updates" comments).
+			await Zotero.Promise.delay();
+			if (isCancelled()) return;
+
 			// Posted (to Logs, since role "System" routes there -- see
 			// appendMessage below) AND mirrored onto the reply bubble itself
 			// (so a slow embedding recompute is visible in the actual

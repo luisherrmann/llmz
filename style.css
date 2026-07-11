@@ -468,6 +468,14 @@
 	width: 1px;
 }
 
+/* Explanatory text below a setting row (e.g. ui/advanced.js's Embeddings
+   "Batch size") -- muted/smaller so it reads as a caption, not another
+   setting label. */
+.llm-advanced-field-hint {
+	color: GrayText;
+	font-size: 0.85em;
+}
+
 .llm-advanced-input {
 	width: 90px;
 	box-sizing: border-box;

@@ -220,7 +220,7 @@ LLMFigures = {
 		let figures = await this._extractRaw(item);
 		let embedded = figures.length ? await this._embedRaw(item, figures) : [];
 		let progress = embedded.length ? onEmbeddingStart?.(embeddingProvider, embeddingModel) : null;
-		embedded = await this._addCaptionEmbeddings(embedded, embeddingModel, progress);
+		embedded = await this._addCaptionEmbeddings(embedded, embeddingModel, progress, embeddingProvider);
 		if (progress) progress.textContent = `Recomputed ${embedded.length} figure caption embedding${embedded.length === 1 ? "" : "s"} using ${embeddingProvider} ${embeddingModel}.`;
 		let index = { figures: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);
@@ -250,23 +250,26 @@ LLMFigures = {
 	// discriminatively (0.5-0.87 vs. 0.04-0.08) and, unlike image similarity,
 	// correctly handles explicit "figure N" references, since the caption text
 	// itself starts with "Figure N:".
-	// `progress`, if given, has its setProgress(current, total) called after
-	// each figure -- same in-place progress reporting llm-citation.js's
+	// `progress`, if given, has its setProgress(current, total) called as
+	// batches complete -- same in-place progress reporting llm-citation.js's
 	// _getIndex does for its own embedding loop (see request.js's
 	// onEmbeddingStart for what setProgress actually does to the Logs/reply
-	// bubble).
-	async _addCaptionEmbeddings(figures, textModel, progress) {
+	// bubble). Batched+concurrency-limited via LLMCitation.embedBatched
+	// rather than one request per figure -- see its own comment.
+	async _addCaptionEmbeddings(figures, textModel, progress, provider) {
 		if (!figures.length) return figures;
 		if (!textModel) textModel = await LLMCitation.getEmbeddingModel();
-		for (let i = 0; i < figures.length; i++) {
-			let fig = figures[i];
-			try {
-				fig.captionEmbedding = await LLMCitation.getEmbedding(`${fig.label}: ${fig.caption}`, textModel);
+		try {
+			let texts = figures.map(fig => `${fig.label}: ${fig.caption}`);
+			let embeddings = await LLMCitation.embedBatched(texts, textModel, provider, {
+				onProgress: (completed, total) => progress?.setProgress?.(completed, total),
+			});
+			for (let i = 0; i < figures.length; i++) {
+				figures[i].captionEmbedding = embeddings[i];
 			}
-			catch (e) {
-				this.log(`_addCaptionEmbeddings: failed for ${fig.label}: ${e.message}`);
-			}
-			progress?.setProgress?.(i + 1, figures.length);
+		}
+		catch (e) {
+			this.log(`_addCaptionEmbeddings: failed: ${e.message}`);
 		}
 		return figures;
 	},

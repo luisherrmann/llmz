@@ -1,5 +1,10 @@
 LLMCitation = {
 	maxCitationChunks: 1000,
+	// Default batch size for embedBatched below -- exposed as an Advanced
+	// setting (ui/advanced.js's Embeddings section), session-only like
+	// maxPDFContextChars/chunkContextTopK (llm-prompt.js) and
+	// useMessageHistory/maxHistoryMessages, not persisted via Zotero.Prefs.
+	embedBatchSize: 16,
 	_citationIndexCache: new Map(),
 
 	log(msg) {
@@ -62,6 +67,47 @@ LLMCitation = {
 	// not necessarily the user's current selection).
 	async getEmbedding(text, model, provider) {
 		return LLMInterfaces.getEmbedding(text, model, provider);
+	},
+
+	// Embeds `texts` IN ORDER, splitting into `batchSize`-sized requests
+	// (both embedding endpoints accept a batched `input` -- see
+	// LLMInterfaces.getEmbeddings) and running up to `concurrency` of those
+	// requests at once, rather than either one giant request or a fully
+	// sequential one-at-a-time loop. `batchSize` is kept modest (not e.g.
+	// hundreds) since different providers/models cap how many inputs (or
+	// how many total tokens) a single request can hold, and this plugin
+	// talks to several different backends (local and hosted) with no single
+	// reliable limit to target. `onProgress(completed, total)`, if given, is
+	// called after each batch finishes (not per-text -- batches can finish
+	// out of order under concurrency, but `completed` only ever increases).
+	async embedBatched(texts, model, provider, { batchSize = this.embedBatchSize, concurrency = 8, onProgress } = {}) {
+		if (!texts.length) return [];
+		let batches = [];
+		for (let i = 0; i < texts.length; i += batchSize) {
+			batches.push({ start: i, texts: texts.slice(i, i + batchSize) });
+		}
+		let results = new Array(texts.length);
+		let completed = 0;
+		let nextBatch = 0;
+		let worker = async () => {
+			while (nextBatch < batches.length) {
+				let batch = batches[nextBatch++];
+				let embeddings = await this.getEmbeddings(batch.texts, model, provider);
+				for (let i = 0; i < embeddings.length; i++) {
+					results[batch.start + i] = embeddings[i];
+				}
+				completed += embeddings.length;
+				onProgress?.(completed, texts.length);
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()));
+		return results;
+	},
+
+	// Thin wrapper over LLMInterfaces.getEmbeddings, same rationale as
+	// getEmbedding/getEmbeddingModel above.
+	async getEmbeddings(texts, model, provider) {
+		return LLMInterfaces.getEmbeddings(texts, model, provider);
 	},
 
 	_textFingerprint(text) {
@@ -147,11 +193,9 @@ LLMCitation = {
 
 		let progress = onEmbeddingStart?.(provider, model);
 		this.log(`_getIndex(${kind}): embedding ${sentences.length} chunks with ${provider}/${model}`);
-		let embeddings = [];
-		for (let i = 0; i < sentences.length; i++) {
-			embeddings.push(await this.getEmbedding(sentences[i], model, provider));
-			progress?.setProgress?.(i + 1, sentences.length);
-		}
+		let embeddings = await this.embedBatched(sentences, model, provider, {
+			onProgress: (completed, total) => progress?.setProgress?.(completed, total),
+		});
 		if (progress) progress.textContent = `Recomputed ${embeddings.length} ${kind} embedding${embeddings.length === 1 ? "" : "s"} using ${provider} ${model}.`;
 
 		let index = { sentences, embeddings, model, provider };

@@ -89,9 +89,23 @@ LLMRequest = {
 	// "every table about latency") needs a further model call to actually
 	// read the index and pick matches, same as "describe" already does for
 	// a single entry -- just capped at several results instead of one.
+	//
+	// "single"/"list" check for an optional resolver.single/resolver.list
+	// FIRST, before falling back to trusting intent.index/indices as
+	// literal numbers -- references/etc. don't define either (a reference's
+	// own number IS the answer, no lookup needed), but tables do (see
+	// tools/table-export.js's own comment): the model never saw this
+	// paper's actual table list at intent-detection time, so a name like
+	// "D.2" needs a further table-listing-aware call to resolve, exactly
+	// like "describe" already does.
 	async _resolveIntentIndices(tool, intent, pdfItem) {
 		let resolver = LLMIntent.getResolver(tool);
 		if (intent.type === "single") {
+			if (resolver.single) {
+				let index = await resolver.getIndex(pdfItem);
+				let resolved = await resolver.single(intent, index);
+				return resolved === null ? [] : [resolved];
+			}
 			return [intent.index];
 		}
 		if (intent.type === "describe") {
@@ -103,7 +117,11 @@ LLMRequest = {
 			let index = await resolver.getIndex(pdfItem);
 			return resolver.selection(index, intent.description);
 		}
-		// list / range / all
+		if (intent.type === "list" && resolver.list) {
+			let index = await resolver.getIndex(pdfItem);
+			return resolver.list(intent, index);
+		}
+		// list (references/etc, which have no resolver.list) / range / all
 		let index = await resolver.getIndex(pdfItem);
 		return resolver.explicit(intent, index);
 	},

@@ -25,13 +25,25 @@
 //      needs no page/coordinate math), numbered in block order per section.
 //
 // Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_tables_sdt.js <pdf_path> <output_json_path>
-// Output: JSON array of { page_num, table_num, table_extra_num, label,
-//   caption, data, image_data, position }. table_num is a plain integer only
-//   for plainly-numbered captions ("Table 3:"); table_extra_num is a
-//   separate 1..K counter for anything else (lettered-appendix or
+// Output: JSON array of { table_id, page_num, table_num, table_extra_num,
+//   label, caption, data, image_data, position }. table_num is a plain
+//   integer only for plainly-numbered captions ("Table 3:"); table_extra_num
+//   is a separate 1..K counter for anything else (lettered-appendix or
 //   synthetic-from-heading), mirroring extract_equations.js's own
 //   equation_num/formula_num split -- avoids the two ever colliding under
-//   the same key downstream (buildLinkIndex, selection matching).
+//   the same key downstream (buildLinkIndex, citation-link resolution).
+// table_id is a THIRD, distinct numbering: a plain 1..N sequential id, in
+// document (block) order, assigned to EVERY table regardless of whether it
+// has a real printed number at all -- unlike table_num/table_extra_num
+// (whose split exists for CITATION links, where the visible text needs to
+// read as an actual number the paper prints), table_id exists purely so an
+// LLM asked to pick/identify a table can answer with a small, always-
+// unambiguous integer instead of needing to reproduce a table's own label
+// text exactly (fragile -- a lettered/synthetic label can be long, and a
+// model paraphrasing or mistyping punctuation used to require a whole tier
+// of fuzzy-matching just to recover from). See document/tables.js/
+// llm-prompt.js/tools/table-export.js for where table_id is actually used;
+// this script only assigns it.
 // image_data is always null here -- no PyMuPDF, so no image rendering;
 // data is SDT's own table content (a real row/column grid when SDT's grid
 // model successfully fit one, otherwise a single-cell fallback holding its
@@ -183,6 +195,7 @@ function pairTablesWithCaptions(tables, captions) {
 	}
 
 	let matched = pairs.map(p => ({
+		blockIndex: p.table.blockIndex,
 		page_num: p.table.page_num,
 		bbox: unionRect(p.table.bbox, p.caption.bbox),
 		label: p.caption.text,
@@ -322,6 +335,7 @@ async function main() {
 			label = prefixMatch ? prefixMatch[1] : m.label;
 		}
 		output.push({
+			blockIndex: m.blockIndex,
 			page_num: m.page_num,
 			table_num,
 			table_extra_num,
@@ -346,6 +360,7 @@ async function main() {
 		list.forEach((t, i) => {
 			let label = `${sectionTitle}, Unlabelled Table ${i + 1}`;
 			output.push({
+				blockIndex: t.blockIndex,
 				page_num: t.page_num,
 				table_num: null,
 				table_extra_num: ++extraCounter,
@@ -357,6 +372,20 @@ async function main() {
 			});
 		});
 	}
+
+	// table_id: a plain 1..N sequential id in document (block) order,
+	// assigned to EVERY table regardless of numbering -- see this file's own
+	// header comment for why this is separate from table_num/table_extra_num.
+	// Sorted/assigned here (once, across BOTH groups above) rather than
+	// incrementally in either loop, since the two loops don't interleave in
+	// block order on their own (all captioned tables are pushed first, then
+	// all uncaptioned ones, regardless of where each actually falls in the
+	// document).
+	output.sort((a, b) => a.blockIndex - b.blockIndex);
+	output.forEach((t, i) => {
+		t.table_id = i + 1;
+		delete t.blockIndex;
+	});
 
 	fs.writeFileSync(outputPath, JSON.stringify(output));
 	console.error(`Extracted ${output.length} tables (${matched.length} captioned, ${output.length - matched.length} unlabelled)`);

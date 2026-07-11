@@ -263,59 +263,50 @@ LLMPrompt = {
 	// Multi-select (up to MAX_SELECTED_TABLES) in a single round-trip, same
 	// rationale as selectNotesWithLLM below.
 	//
-	// Matched against exact label text, not a bare number (unlike this
-	// function's own older scheme) -- since the experimental SDT-only
-	// detection (see document/tables.js, scripts/extract_tables_sdt.js) can
-	// produce tables with no real paper-printed number at all (an
-	// appendix-lettered caption like "Table D.1", or a synthetic
-	// heading-derived label for an uncaptioned table), table_num is null for
-	// those and only the label is guaranteed unique -- same rationale
-	// selectEquationsWithLLM already uses for Equation N vs Formula N.
+	// Matched against table_id -- a plain sequential integer assigned to
+	// EVERY table regardless of whether it has a real printed number (see
+	// scripts/extract_tables_sdt.js) -- same approach
+	// tools/table-export.js's resolveTableSelection uses and for the same
+	// reason: a table's own `label` isn't always a short, comma-free
+	// number (an appendix-lettered caption like "Table D.1", or worse, a
+	// synthetic heading-derived label for an uncaptioned table, e.g.
+	// "Appendix B. FSQ codebook, Unlabelled Table 1", CAN contain a comma
+	// itself), which used to require parsing the model's response one
+	// label per line instead of the simpler comma-separated format every
+	// other selectXWithLLM here uses. Asking for table_id sidesteps that
+	// entirely -- it's always a small integer, so a plain comma-separated
+	// response is safe again, same as selectFiguresWithLLM/
+	// selectNotesWithLLM already do.
 	async selectTablesWithLLM(tableIndex, query, readerContext = {}) {
 		let tables = tableIndex?.tables;
 		if (!tables?.length) return [];
 
 		const MAX_SELECTED_TABLES = 10;
-		let tableContext = tables.map(t => `${t.label}: ${t.caption}\n${LLMTables._flattenTableData(t.data)}`).join("\n\n");
+		let tableContext = tables.map(t => `[${t.table_id}] ${t.label}: ${t.caption}\n${LLMTables._flattenTableData(t.data)}`).join("\n\n");
 		let selectionPrompt = [
 			"You are choosing which tables (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant tables -- include all of them, not just the single best one.",
 			...this._buildReaderContextLines(readerContext),
-			"Here are the tables in this paper, each preceded by its exact label:",
+			"Here are the tables in this paper, each preceded by its id, label, and caption:",
 			"",
 			tableContext,
 			"",
 			`User's question: "${query}"`,
 			"",
-			'Respond with ONLY the exact label of every relevant table, one per line (e.g. "Table 1" on one line, "Table D.1" on the next), or "none" if no table is relevant. Do not include any other text.',
+			'Respond with ONLY a comma-separated list of the ids of every relevant table (e.g. "2, 5"), or "none" if no table is relevant. Do not include any other text.',
 		].join("\n");
 
 		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
 		let text = (result.text || "").trim();
 		if (!text || /^none$/i.test(text)) return [];
 
-		// Split on newlines, not commas -- unlike the short, comma-free
-		// labels this scheme was originally designed around ("Table 1",
-		// "Formula 8"), a section-derived synthetic label for an
-		// uncaptioned table (see scripts/extract_tables_sdt.js) can itself
-		// contain a comma (e.g. "Appendix B. FSQ codebook, Unlabelled Table
-		// 1"), which a comma-separated response format would fragment on,
-		// making such a table impossible to ever match even when the model
-		// names it correctly.
 		let seen = new Set();
 		let selected = [];
-		for (let rawLabel of text.split("\n")) {
-			// Strip a leading list marker ("1.", "-", "*", "•") in case the
-			// model formats its one-per-line answer as a list despite the
-			// "no other text" instruction, then any residual quoting.
-			let label = rawLabel.trim()
-				.replace(/^(?:\d+[.)]|[-*•])\s+/, "")
-				.replace(/^["'.]+|["'.]+$/g, "")
-				.trim()
-				.toLowerCase();
-			if (!label || seen.has(label)) continue;
-			let table = tables.find(t => t.label.toLowerCase() === label);
+		for (let match of text.matchAll(/\d+/g)) {
+			let id = parseInt(match[0], 10);
+			if (seen.has(id)) continue;
+			let table = tables.find(t => t.table_id === id);
 			if (!table) continue;
-			seen.add(label);
+			seen.add(id);
 			selected.push(table);
 			if (selected.length >= MAX_SELECTED_TABLES) break;
 		}

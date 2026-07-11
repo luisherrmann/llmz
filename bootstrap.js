@@ -77,6 +77,9 @@ async function startup({ id, version, rootURI }) {
 	// still run before main() renders the provider/model dropdowns, which
 	// read _provider/_selectedModel directly.
 	LLMInterfaces.loadSelection();
+	// Same as above, but for the separate Embeddings provider/model
+	// dropdowns in ui/advanced.js -- must run before main() renders those.
+	LLMInterfaces.loadEmbeddingSelection();
 	// Also synchronous/plain-Prefs -- must run before main() renders the
 	// Providers panel (ui/providers.js), which reads _serverSettings
 	// directly to pre-fill the Server IP/Port fields.

@@ -105,13 +105,28 @@ LLMFigures = {
 		}
 	},
 
-	async _loadDiskCache(item) {
+	// `embeddingProvider`/`embeddingModel` are resolved ONCE by the caller
+	// (getFigureIndex), not re-resolved here -- see getFigureIndex's own
+	// comment for why (the same values are also needed for the memory-cache
+	// check, which happens before this is ever called).
+	async _loadDiskCache(item, embeddingProvider, embeddingModel) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
 			if (!await IOUtils.exists(path)) return null;
 			let index = JSON.parse(await IOUtils.readUTF8(path));
 			if (index.scriptFingerprint !== await this._scriptFingerprint()) {
 				this.log(`_loadDiskCache: stale (extraction/embed scripts changed) for item ${item.id}`);
+				return null;
+			}
+			// figures.captionEmbedding was computed via LLMCitation.getEmbedding,
+			// which now routes through whichever embedding provider/model was
+			// selected AT THAT TIME (see llm-interfaces.js's getEmbedding) -- a
+			// cache built under a different provider/model is silently
+			// incompatible (not comparable via cosine similarity, even if the
+			// vector happens to be the same length), so it must invalidate here
+			// too, same as LLMCitation's own citation-index cache.
+			if (index.embeddingProvider !== embeddingProvider || index.embeddingModel !== embeddingModel) {
+				this.log(`_loadDiskCache: stale (embedding provider/model changed) for item ${item.id}`);
 				return null;
 			}
 			this.log(`_loadDiskCache: loaded ${index.figures.length} figures for item ${item.id}`);
@@ -167,7 +182,13 @@ LLMFigures = {
 
 	// Returns the figure index for an item, using memory/disk cache where possible.
 	// Index shape: { figures: [{ page_num, figure_num, label, caption, embedding }] }
-	async getFigureIndex(item) {
+	// `onEmbeddingStart(provider, model)`, if given, is called ONLY when a
+	// cache miss/staleness actually forces the caption embeddings to be
+	// recomputed (see llm-citation.js's _getIndex, same pattern) -- its
+	// return value (e.g. a Logs entry's content element) is updated in
+	// place with a completion line once recomputation finishes, rather
+	// than logging start/done as two separate messages.
+	async getFigureIndex(item, onEmbeddingStart) {
 		if (this._venvMissing) {
 			throw new Error(
 				"Python venv not found. Set it up with:\n"
@@ -176,12 +197,21 @@ LLMFigures = {
 			);
 		}
 
-		if (this._indexCache.has(item.id)) {
+		// Resolved BEFORE the memory-cache check below (not just threaded
+		// through to _loadDiskCache/the final index) -- switching
+		// provider/model mid-session must invalidate an already-loaded
+		// memory-cached index too, since _loadDiskCache's own check would
+		// otherwise never even run (only consulted on a memory-cache MISS).
+		let embeddingProvider = LLMInterfaces._embeddingProvider;
+		let embeddingModel = await LLMCitation.getEmbeddingModel();
+
+		let memoryCached = this._indexCache.get(item.id);
+		if (memoryCached && memoryCached.embeddingProvider === embeddingProvider && memoryCached.embeddingModel === embeddingModel) {
 			this.log(`getFigureIndex: memory cache hit for item ${item.id}`);
-			return this._indexCache.get(item.id);
+			return memoryCached;
 		}
 
-		let cached = await this._loadDiskCache(item);
+		let cached = await this._loadDiskCache(item, embeddingProvider, embeddingModel);
 		if (cached) {
 			this._indexCache.set(item.id, cached);
 			return cached;
@@ -189,8 +219,10 @@ LLMFigures = {
 
 		let figures = await this._extractRaw(item);
 		let embedded = figures.length ? await this._embedRaw(item, figures) : [];
-		embedded = await this._addCaptionEmbeddings(embedded);
-		let index = { figures: embedded, scriptFingerprint: await this._scriptFingerprint() };
+		let progress = embedded.length ? onEmbeddingStart?.(embeddingProvider, embeddingModel) : null;
+		embedded = await this._addCaptionEmbeddings(embedded, embeddingModel, progress);
+		if (progress) progress.textContent = `Recomputed ${embedded.length} figure caption embedding${embedded.length === 1 ? "" : "s"} using ${embeddingProvider} ${embeddingModel}.`;
+		let index = { figures: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
 		return index;
@@ -218,16 +250,23 @@ LLMFigures = {
 	// discriminatively (0.5-0.87 vs. 0.04-0.08) and, unlike image similarity,
 	// correctly handles explicit "figure N" references, since the caption text
 	// itself starts with "Figure N:".
-	async _addCaptionEmbeddings(figures) {
+	// `progress`, if given, has its setProgress(current, total) called after
+	// each figure -- same in-place progress reporting llm-citation.js's
+	// _getIndex does for its own embedding loop (see request.js's
+	// onEmbeddingStart for what setProgress actually does to the Logs/reply
+	// bubble).
+	async _addCaptionEmbeddings(figures, textModel, progress) {
 		if (!figures.length) return figures;
-		let textModel = await LLMCitation.getEmbeddingModel();
-		for (let fig of figures) {
+		if (!textModel) textModel = await LLMCitation.getEmbeddingModel();
+		for (let i = 0; i < figures.length; i++) {
+			let fig = figures[i];
 			try {
 				fig.captionEmbedding = await LLMCitation.getEmbedding(`${fig.label}: ${fig.caption}`, textModel);
 			}
 			catch (e) {
 				this.log(`_addCaptionEmbeddings: failed for ${fig.label}: ${e.message}`);
 			}
+			progress?.setProgress?.(i + 1, figures.length);
 		}
 		return figures;
 	},
@@ -237,8 +276,11 @@ LLMFigures = {
 		let figures = figureIndex?.figures;
 		if (!figures?.length) return null;
 
-		let embedModel = await LLMCitation.getEmbeddingModel();
-		let queryEmbedding = await LLMCitation.getEmbedding(query, embedModel);
+		// Re-embed with the SAME provider/model this index's captionEmbeddings
+		// were actually built with (stored on the index by getFigureIndex),
+		// not necessarily the user's current Advanced-settings selection --
+		// see _loadDiskCache's own comment.
+		let queryEmbedding = await LLMCitation.getEmbedding(query, figureIndex.embeddingModel, figureIndex.embeddingProvider);
 
 		let best = null;
 		let bestScore = -Infinity;

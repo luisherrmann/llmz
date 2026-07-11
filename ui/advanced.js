@@ -76,10 +76,10 @@ LLMUIAdvanced = {
 	// `getActiveItem()` resolves the PDF attachment to clear cache for (the
 	// caller's LLMChatPane.getActiveReaderAttachment()). `onMessage(text)` is
 	// called for user-facing status text -- routing this (e.g. to the Logs
-	// panel) is the caller's concern, not this module's. `clearCacheIconURL`
-	// is a plain file:/jar: URL (see llm-chat-pane.js's onRender, rootURI +
-	// "icons/...svg"), rendered via LLMUIIcon.create.
-	create(doc, { getActiveItem, onMessage, clearCacheIconURL } = {}) {
+	// panel) is the caller's concern, not this module's. `clearCacheIconURL`/
+	// `refreshIconURL` are plain file:/jar: URLs (see llm-chat-pane.js's
+	// onRender, rootURI + "icons/...svg"), rendered via LLMUIIcon.create.
+	create(doc, { getActiveItem, onMessage, clearCacheIconURL, refreshIconURL } = {}) {
 		let details = doc.createElement("details");
 		details.className = "llm-advanced-details";
 		let summary = doc.createElement("summary");
@@ -130,6 +130,32 @@ LLMUIAdvanced = {
 		);
 		historyTable.appendChild(historyTbody);
 		historyBody.appendChild(historyTable);
+
+		// --- Embeddings ---
+		// Same row (provider select, model select, refresh button) as the
+		// chat Settings row above, but pointed at LLMInterfaces' SEPARATE
+		// embedding-provider state -- a user may well want e.g. Anthropic
+		// for chat but Ollama for embeddings, so these are never tied
+		// together. Anthropic is excluded from providerOptions here since
+		// it has no embeddings API of its own (see LLMInterfaces.getEmbedding).
+		let { label: embeddingsLabel, sectionBody: embeddingsBody } = this._makeSection(doc, "Embeddings");
+		let embeddingProviderModelSelect = LLMUIProviderModelSelect.create(doc, {
+			refreshIconURL,
+			providerOptions: [
+				{ value: "ollama", label: "Ollama" },
+				{ value: "lmstudio", label: "LM Studio" },
+				{ value: "litellm", label: "API (LiteLLM)" },
+				{ value: "openai", label: "OpenAI" },
+			],
+			providerTitle: "Embedding provider",
+			modelTitle: "Embedding model",
+			getProvider: () => LLMInterfaces._embeddingProvider,
+			saveProvider: provider => LLMInterfaces.saveEmbeddingProvider(provider),
+			getSelectedModel: provider => LLMInterfaces._selectedEmbeddingModel[provider],
+			saveSelectedModel: (provider, model) => LLMInterfaces.saveSelectedEmbeddingModel(provider, model),
+			listModels: () => LLMInterfaces.listEmbeddingModels(),
+		});
+		embeddingsBody.appendChild(embeddingProviderModelSelect.element);
 
 		// --- Cache ---
 		// Debug affordance: drops the memory+disk cache for whichever of
@@ -199,7 +225,7 @@ LLMUIAdvanced = {
 		});
 		cacheBody.appendChild(clearCacheButton);
 
-		body.append(contextLabel, contextBody, historyLabel, historyBody, cacheLabel, cacheBody);
+		body.append(contextLabel, contextBody, historyLabel, historyBody, embeddingsLabel, embeddingsBody, cacheLabel, cacheBody);
 
 		details.append(summary, body);
 		return { element: details, clearCacheButton };

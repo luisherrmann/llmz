@@ -147,6 +147,57 @@ LLMInterfaces = {
 		}
 	},
 
+	// Same persisted-selection pattern as _provider/_selectedModel above, but
+	// for the EMBEDDING provider/model (see ui/advanced.js's "Embeddings"
+	// section) -- deliberately a separate selection, not reusing
+	// _provider/_selectedModel, since the best chat model and the best
+	// embedding model are rarely the same one, and a user may not even want
+	// them on the same provider (e.g. Anthropic for chat, since it has no
+	// embeddings API at all -- see listEmbeddingModels' own comment -- paired
+	// with Ollama for local embeddings). Anthropic is deliberately not a
+	// valid value here.
+	_embeddingProvider: "ollama",
+	_selectedEmbeddingModel: {},
+	_embeddingProviderPref: "extensions.llm-chat-pane.embeddingProvider",
+	_selectedEmbeddingModelPref: "extensions.llm-chat-pane.selectedEmbeddingModels",
+
+	loadEmbeddingSelection() {
+		try {
+			let provider = Zotero.Prefs.get(this._embeddingProviderPref, true);
+			if (provider) this._embeddingProvider = provider;
+		}
+		catch (e) {
+			this.log(`loadEmbeddingSelection: failed to read embedding provider pref: ${e.message}`);
+		}
+		try {
+			let json = Zotero.Prefs.get(this._selectedEmbeddingModelPref, true);
+			if (json) this._selectedEmbeddingModel = JSON.parse(json);
+		}
+		catch (e) {
+			this.log(`loadEmbeddingSelection: failed to read selectedEmbeddingModel pref: ${e.message}`);
+		}
+	},
+
+	saveEmbeddingProvider(provider) {
+		this._embeddingProvider = provider;
+		try {
+			Zotero.Prefs.set(this._embeddingProviderPref, provider, true);
+		}
+		catch (e) {
+			this.log(`saveEmbeddingProvider: failed to persist embedding provider: ${e.message}`);
+		}
+	},
+
+	saveSelectedEmbeddingModel(provider, model) {
+		this._selectedEmbeddingModel[provider] = model;
+		try {
+			Zotero.Prefs.set(this._selectedEmbeddingModelPref, JSON.stringify(this._selectedEmbeddingModel), true);
+		}
+		catch (e) {
+			this.log(`saveSelectedEmbeddingModel: failed to persist selected embedding model: ${e.message}`);
+		}
+	},
+
 	// Secure, persistent storage for provider API keys (LiteLLM, OpenAI,
 	// Anthropic -- LM Studio and Ollama don't need one), using the exact
 	// mechanism Zotero's own sync code uses for the Zotero Web API key
@@ -278,6 +329,28 @@ LLMInterfaces = {
 		let model = (selected && models.includes(selected)) ? selected : models[0];
 		if (!model) {
 			throw new Error("No chat model found. Pull one with `ollama pull <model>` first.");
+		}
+		return model;
+	},
+
+	// Inverse of listOllamaModels' own filter -- INCLUDES only names matching
+	// /embed/i (Ollama has no separate "type" field to key off of either, so
+	// this is the same naming-convention heuristic LLMCitation.getEmbeddingModel
+	// used before this module owned embedding-model listing).
+	async listOllamaEmbeddingModels() {
+		let response = await Zotero.HTTP.request("GET", `${this.ollamaBaseURL}/api/tags`, {
+			timeout: 10000,
+		});
+		let data = JSON.parse(response.responseText);
+		return (data.models || []).filter(m => /embed/i.test(m.name)).map(m => m.name);
+	},
+
+	async getOllamaEmbeddingModel() {
+		let models = await this.listOllamaEmbeddingModels();
+		let selected = this._selectedEmbeddingModel.ollama;
+		let model = (selected && models.includes(selected)) ? selected : models[0];
+		if (!model) {
+			throw new Error("No embedding model found. Pull one with `ollama pull nomic-embed-text`.");
 		}
 		return model;
 	},
@@ -436,6 +509,22 @@ LLMInterfaces = {
 		});
 		let data = JSON.parse(response.responseText);
 		return (data.data || []).filter(m => !/embed/i.test(m.id)).map(m => m.id);
+	},
+
+	// Inverse of listOpenAICompatibleModels' own filter -- INCLUDES only
+	// names matching /embed/i, shared by LM Studio/LiteLLM/OpenAI's own
+	// listXEmbeddingModels below the same way listOpenAICompatibleModels
+	// is already shared by their chat-model listing. Same /v1/models
+	// listing endpoint either way -- only the filter direction differs.
+	async listOpenAICompatibleEmbeddingModels(baseURL, apiKey) {
+		let headers = {};
+		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+		let response = await Zotero.HTTP.request("GET", `${baseURL}/models`, {
+			headers,
+			timeout: 10000,
+		});
+		let data = JSON.parse(response.responseText);
+		return (data.data || []).filter(m => /embed/i.test(m.id)).map(m => m.id);
 	},
 
 	// `messages` is [{role: "user"|"assistant", content: string}, ...] --
@@ -605,6 +694,20 @@ LLMInterfaces = {
 		return model;
 	},
 
+	async listLMStudioEmbeddingModels() {
+		return this.listOpenAICompatibleEmbeddingModels(this.lmStudioBaseURL, null);
+	},
+
+	async getLMStudioEmbeddingModel() {
+		let models = await this.listLMStudioEmbeddingModels();
+		let selected = this._selectedEmbeddingModel.lmstudio;
+		let model = (selected && models.includes(selected)) ? selected : models[0];
+		if (!model) {
+			throw new Error("No embedding model found. Load one in LM Studio first.");
+		}
+		return model;
+	},
+
 	async streamLMStudio(messages, onToken, opts, images) {
 		let model = await this.getLMStudioModel();
 		return this.streamOpenAICompatible(this.lmStudioBaseURL, null, model, messages, onToken, opts, images);
@@ -620,6 +723,20 @@ LLMInterfaces = {
 		let model = (selected && models.includes(selected)) ? selected : models[0];
 		if (!model) {
 			throw new Error("No chat model found. Configure a model in your LiteLLM proxy config.");
+		}
+		return model;
+	},
+
+	async listLiteLLMEmbeddingModels() {
+		return this.listOpenAICompatibleEmbeddingModels(this.liteLLMBaseURL, this._apiKeys.litellm || null);
+	},
+
+	async getLiteLLMEmbeddingModel() {
+		let models = await this.listLiteLLMEmbeddingModels();
+		let selected = this._selectedEmbeddingModel.litellm;
+		let model = (selected && models.includes(selected)) ? selected : models[0];
+		if (!model) {
+			throw new Error("No embedding model found. Configure one in your LiteLLM proxy config.");
 		}
 		return model;
 	},
@@ -670,6 +787,25 @@ LLMInterfaces = {
 		let model = (selected && models.includes(selected)) ? selected : models[0];
 		if (!model) {
 			throw new Error("No chat model found. Check your OpenAI API key.");
+		}
+		return model;
+	},
+
+	// No denylist needed here (unlike listOpenAIModels' own nonChatPattern)
+	// -- OpenAI's real embedding models (text-embedding-3-small/-large,
+	// text-embedding-ada-002) all match /embed/i cleanly, and the INCLUDE-
+	// only filter already excludes every non-embedding model family (image
+	// generation, TTS, etc.) on its own.
+	async listOpenAIEmbeddingModels() {
+		return this.listOpenAICompatibleEmbeddingModels(this.openaiBaseURL, this._apiKeys.openai || null);
+	},
+
+	async getOpenAIEmbeddingModel() {
+		let models = await this.listOpenAIEmbeddingModels();
+		let selected = this._selectedEmbeddingModel.openai;
+		let model = (selected && models.includes(selected)) ? selected : models[0];
+		if (!model) {
+			throw new Error("No embedding model found. Check your OpenAI API key.");
 		}
 		return model;
 	},
@@ -950,5 +1086,105 @@ LLMInterfaces = {
 			return this.listAnthropicModels();
 		}
 		return this.listOllamaModels();
+	},
+
+	// Same four-provider dispatch as listModels/getCurrentModel above, but
+	// against _embeddingProvider/_selectedEmbeddingModel instead of
+	// _provider/_selectedModel -- no "anthropic" case, since Anthropic has
+	// no embeddings API of its own (confirmed directly against Anthropic's
+	// own docs: they explicitly recommend a third-party provider, Voyage AI,
+	// instead -- a genuinely separate integration this doesn't cover, not
+	// just a missing case here). ui/advanced.js's Embeddings provider
+	// dropdown only ever offers the other four, so _embeddingProvider should
+	// never actually BE "anthropic" in practice.
+	async listEmbeddingModels() {
+		if (this._embeddingProvider === "lmstudio") {
+			return this.listLMStudioEmbeddingModels();
+		}
+		if (this._embeddingProvider === "litellm") {
+			return this.listLiteLLMEmbeddingModels();
+		}
+		if (this._embeddingProvider === "openai") {
+			return this.listOpenAIEmbeddingModels();
+		}
+		return this.listOllamaEmbeddingModels();
+	},
+
+	async getCurrentEmbeddingModel() {
+		if (this._embeddingProvider === "lmstudio") return this.getLMStudioEmbeddingModel();
+		if (this._embeddingProvider === "litellm") return this.getLiteLLMEmbeddingModel();
+		if (this._embeddingProvider === "openai") return this.getOpenAIEmbeddingModel();
+		return this.getOllamaEmbeddingModel();
+	},
+
+	// Computes one embedding vector for `text`. `model`/`provider`, if
+	// given, override the CURRENT embedding selection -- needed by
+	// llm-citation.js to re-embed a query against whichever provider+model
+	// an already-built citation index was actually embedded with (see its
+	// own comment), since embeddings from two different models (or the same
+	// model name under two different providers) aren't comparable via
+	// cosine similarity, and the user may have switched their embedding
+	// selection since that index was built. Defaults to the CURRENT
+	// selection (resolving the model via getCurrentEmbeddingModel) when
+	// building a NEW index instead.
+	//
+	// Ollama uses its own native /api/embed (confirmed working already --
+	// see this plugin's prior Ollama-only implementation); LM Studio/
+	// LiteLLM/OpenAI all speak the same OpenAI-compatible POST
+	// {baseURL}/embeddings endpoint ({model, input} -> {data:
+	// [{embedding, index}]}), the same compatibility this plugin already
+	// relies on for their /chat/completions endpoints.
+	async getEmbedding(text, model, provider) {
+		provider = provider || this._embeddingProvider;
+		if (!model) {
+			let saved = this._embeddingProvider;
+			this._embeddingProvider = provider;
+			try {
+				model = await this.getCurrentEmbeddingModel();
+			}
+			finally {
+				this._embeddingProvider = saved;
+			}
+		}
+
+		if (provider === "ollama") {
+			this.log(`getEmbedding: provider=ollama model=${model} textLen=${text.length}`);
+			let response = await fetch(`${this.ollamaBaseURL}/api/embed`, {
+				method: "POST",
+				body: JSON.stringify({ model, input: text }),
+				headers: { "Content-Type": "application/json" },
+			});
+			if (!response.ok) {
+				let body = await response.text().catch(() => "(unreadable)");
+				throw new Error(`Embedding request failed: HTTP ${response.status} — ${body}`);
+			}
+			let data = await response.json();
+			return data.embeddings[0];
+		}
+
+		if (provider === "anthropic") {
+			throw new Error("Anthropic has no embeddings API of its own -- choose a different Embeddings provider in Advanced settings.");
+		}
+
+		let baseURL = provider === "lmstudio" ? this.lmStudioBaseURL
+			: provider === "litellm" ? this.liteLLMBaseURL
+			: this.openaiBaseURL;
+		let apiKey = provider === "litellm" ? this._apiKeys.litellm
+			: provider === "openai" ? this._apiKeys.openai
+			: null;
+		this.log(`getEmbedding: provider=${provider} model=${model} textLen=${text.length}`);
+		let headers = { "Content-Type": "application/json" };
+		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+		let response = await fetch(`${baseURL}/embeddings`, {
+			method: "POST",
+			body: JSON.stringify({ model, input: text }),
+			headers,
+		});
+		if (!response.ok) {
+			let body = await response.text().catch(() => "(unreadable)");
+			throw new Error(`Embedding request failed: HTTP ${response.status} — ${body}`);
+		}
+		let data = await response.json();
+		return data.data[0].embedding;
 	},
 };

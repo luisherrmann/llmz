@@ -482,7 +482,7 @@ LLMPrompt = {
 	// it's naturally query-dependent (retrieved chunks, selected text,
 	// etc.) rather than something that'd make sense to send once for a
 	// whole conversation.
-	async buildPromptWithActivePDFContext(userPrompt, selectedText = null, pageText = null) {
+	async buildPromptWithActivePDFContext(userPrompt, selectedText = null, pageText = null, onEmbeddingStart = null) {
 		let item = LLMChatPane.getActiveReaderAttachment();
 
 		if (!item || !item.isPDFAttachment()) {
@@ -519,7 +519,7 @@ LLMPrompt = {
 
 		let citationIndex = null;
 		try {
-			citationIndex = await LLMCitation.getCitationIndex(item, text);
+			citationIndex = await LLMCitation.getCitationIndex(item, text, onEmbeddingStart);
 		}
 		catch (e) {
 			this.log(`getCitationIndex failed: ${e.message}`);
@@ -532,7 +532,7 @@ LLMPrompt = {
 		}
 		else {
 			try {
-				let paragraphIndex = await LLMCitation.getParagraphIndex(item, text);
+				let paragraphIndex = await LLMCitation.getParagraphIndex(item, text, onEmbeddingStart);
 				if (paragraphIndex) {
 					let chunks = await LLMCitation.getRelevantChunks(paragraphIndex, userPrompt, this.chunkContextTopK);
 					if (chunks.length) {

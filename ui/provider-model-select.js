@@ -85,6 +85,14 @@ LLMUIProviderModelSelect = {
 	// onRender, rootURI + "icons/refresh_*.svg"), rendered via the shared
 	// CSS mask-image .llm-icon class (see style.css) -- same technique as
 	// ui/past-conversations.js's edit/done_outline toggle icons.
+	// All the state hooks (`getProvider`/`saveProvider`/`getSelectedModel`/
+	// `saveSelectedModel`/`listModels`) default to LLMInterfaces' CHAT
+	// provider/model state, so existing call sites (llm-chat-pane.js's
+	// Settings row) need no changes. ui/advanced.js's Embeddings section
+	// passes the `_embeddingProvider`/`_selectedEmbeddingModel` equivalents
+	// instead, so the exact same row (options list, sorting, refresh
+	// behavior) can be reused for embedding-model selection without
+	// duplicating any of this file.
 	// Returns:
 	//   element   -- the row <div> (provider select, model select, refresh
 	//                button) to place in the pane's controls
@@ -92,28 +100,37 @@ LLMUIProviderModelSelect = {
 	//                whichever provider is currently selected (also called
 	//                once internally on creation, and again on provider
 	//                change/refresh-button click)
-	create(doc, { refreshIconURL } = {}) {
-		let providerSelect = doc.createElement("select");
-		providerSelect.className = "llm-provider-select";
-		providerSelect.title = "Model provider";
-		let providerOptions = [
+	create(doc, {
+		refreshIconURL,
+		providerOptions = [
 			{ value: "ollama", label: "Ollama" },
 			{ value: "lmstudio", label: "LM Studio" },
 			{ value: "litellm", label: "API (LiteLLM)" },
 			{ value: "openai", label: "OpenAI" },
 			{ value: "anthropic", label: "Anthropic" },
-		];
+		],
+		providerTitle = "Model provider",
+		modelTitle = "Model",
+		getProvider = () => LLMInterfaces._provider,
+		saveProvider = provider => LLMInterfaces.saveProvider(provider),
+		getSelectedModel = provider => LLMInterfaces._selectedModel[provider],
+		saveSelectedModel = (provider, model) => LLMInterfaces.saveSelectedModel(provider, model),
+		listModels = () => LLMInterfaces.listModels(),
+	} = {}) {
+		let providerSelect = doc.createElement("select");
+		providerSelect.className = "llm-provider-select";
+		providerSelect.title = providerTitle;
 		for (let { value, label } of providerOptions) {
 			let option = doc.createElement("option");
 			option.value = value;
 			option.textContent = label;
 			providerSelect.appendChild(option);
 		}
-		providerSelect.value = LLMInterfaces._provider;
+		providerSelect.value = getProvider();
 
 		let modelSelect = doc.createElement("select");
 		modelSelect.className = "llm-model-select";
-		modelSelect.title = "Model";
+		modelSelect.title = modelTitle;
 		modelSelect.disabled = true;
 
 		let modelRefreshButton = doc.createElement("button");
@@ -122,15 +139,15 @@ LLMUIProviderModelSelect = {
 		modelRefreshButton.append(LLMUIIcon.create(doc, refreshIconURL), doc.createTextNode("Refresh"));
 
 		let refreshModelOptions = async () => {
-			let provider = LLMInterfaces._provider;
+			let provider = getProvider();
 			modelSelect.disabled = true;
 			modelSelect.replaceChildren();
 			let loadingOption = doc.createElement("option");
 			loadingOption.textContent = "Loading models…";
 			modelSelect.appendChild(loadingOption);
 			try {
-				let models = await LLMInterfaces._withTimeout(LLMInterfaces.listModels(), 15000, "listModels");
-				if (provider !== LLMInterfaces._provider) return; // provider changed while fetching
+				let models = await LLMInterfaces._withTimeout(listModels(), 15000, "listModels");
+				if (provider !== getProvider()) return; // provider changed while fetching
 				modelSelect.replaceChildren();
 				if (!models.length) {
 					let emptyOption = doc.createElement("option");
@@ -139,13 +156,13 @@ LLMUIProviderModelSelect = {
 					return;
 				}
 				this._populateModelOptions(doc, modelSelect, models);
-				let selected = LLMInterfaces._selectedModel[provider];
+				let selected = getSelectedModel(provider);
 				modelSelect.value = models.includes(selected) ? selected : models[0];
-				LLMInterfaces.saveSelectedModel(provider, modelSelect.value);
+				saveSelectedModel(provider, modelSelect.value);
 				modelSelect.disabled = false;
 			}
 			catch (e) {
-				if (provider !== LLMInterfaces._provider) return;
+				if (provider !== getProvider()) return;
 				modelSelect.replaceChildren();
 				let errorOption = doc.createElement("option");
 				errorOption.textContent = "Unavailable";
@@ -155,11 +172,11 @@ LLMUIProviderModelSelect = {
 		};
 
 		providerSelect.addEventListener("change", () => {
-			LLMInterfaces.saveProvider(providerSelect.value);
+			saveProvider(providerSelect.value);
 			refreshModelOptions();
 		});
 		modelSelect.addEventListener("change", () => {
-			LLMInterfaces.saveSelectedModel(LLMInterfaces._provider, modelSelect.value);
+			saveSelectedModel(getProvider(), modelSelect.value);
 		});
 		modelRefreshButton.addEventListener("click", () => refreshModelOptions());
 		refreshModelOptions();

@@ -666,6 +666,7 @@ LLMChatPane = {
 					getActiveItem: () => this.getActiveReaderAttachment(),
 					onMessage: (text) => appendMessage("System", text),
 					clearCacheIconURL: iconURL("delete_forever"),
+					refreshIconURL: iconURL("refresh"),
 				});
 
 				// System messages (extraction/selection status, errors, etc.) render

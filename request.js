@@ -41,6 +41,12 @@
 //   replyLabel/providerLabel -- the active provider/model, resolved once up
 //     front in send() so every handler's reply bubbles/messages show the
 //     same label without each resolving it separately.
+//   submissionTime -- captured in send() before ANY async work at all (see
+//     its own comment there), so a handler's "You" bubble can show the
+//     EXACT moment of submission via appendMessage's own `time` param,
+//     rather than whenever that particular appendMessage call happens to
+//     run (which can be noticeably later, e.g. after an LLM-based
+//     detectIntent call).
 //   isCancelled()/setCancelStream(fn) -- send()'s own `cancelled` flag and
 //     `cancelStream` callback are plain closure variables there (so
 //     cancel() below can flip/read them directly), exposed to the handlers
@@ -112,9 +118,15 @@ LLMRequest = {
 	// onStage, kept separate from onProgress (full step-by-step detail,
 	// Logs panel only) since the bubble only wants a few coarse, general
 	// status lines, not every query/candidate onProgress reports.
+	//
+	// Created with an empty timestamp (see ui/chat.js's appendMessage/
+	// setMessageTime) -- _handleDownload/_handleLink set the real one once
+	// this reference's own lookup actually finishes, not here, so the
+	// bubble doesn't show a misleadingly-early time for work that can take
+	// several seconds.
 	_createReferenceReply(refNum, ctx) {
 		let { appendMessage, chat, replyLabel, isCancelled } = ctx;
-		let reply = appendMessage(replyLabel, `Looking up reference ${refNum}...`);
+		let reply = appendMessage(replyLabel, `Looking up reference ${refNum}...`, "");
 		let onProgress = (msg) => {
 			if (isCancelled()) return;
 			appendMessage("System", msg);
@@ -214,6 +226,9 @@ LLMRequest = {
 			else {
 				chat.updateMessageText(reply, result.message);
 			}
+			// Only shown once this reference's own lookup is actually done
+			// -- see _createReferenceReply's own comment.
+			chat.setMessageTime(reply, chat.formatTimestamp());
 		});
 	},
 
@@ -243,6 +258,9 @@ LLMRequest = {
 				// already carry a complete, user-facing message.
 				chat.updateMessageText(reply, result.message);
 			}
+			// Only shown once this reference's own lookup is actually done
+			// -- see _createReferenceReply's own comment.
+			chat.setMessageTime(reply, chat.formatTimestamp());
 		});
 	},
 
@@ -256,7 +274,10 @@ LLMRequest = {
 	async _handleTableExport(indices, pdfItem, ctx) {
 		let { appendMessage, chat, replyLabel, isCancelled } = ctx;
 
-		let reply = appendMessage(replyLabel, `Exporting ${indices.length} table${indices.length === 1 ? "" : "s"}...`);
+		// Empty timestamp until the export actually finishes (see the
+		// setMessageTime calls below) -- see ui/chat.js's appendMessage/
+		// setMessageTime.
+		let reply = appendMessage(replyLabel, `Exporting ${indices.length} table${indices.length === 1 ? "" : "s"}...`, "");
 		let onProgress = (msg) => {
 			if (isCancelled()) return;
 			appendMessage("System", msg);
@@ -290,11 +311,16 @@ LLMRequest = {
 			else {
 				chat.updateMessageText(reply, result.message);
 			}
+			// Only shown once this reply's own final text is actually set
+			// (see appendMessage's/setMessageTime's own doc comments in
+			// ui/chat.js) -- reply started with an empty timestamp.
+			chat.setMessageTime(reply, chat.formatTimestamp());
 		}
 		catch (e) {
 			if (isCancelled()) return;
 			this.log(`exportTablesToZip failed: ${e.message}`);
 			chat.updateMessageText(reply, `Table export failed: ${e.message}`);
+			chat.setMessageTime(reply, chat.formatTimestamp());
 		}
 	},
 
@@ -522,7 +548,7 @@ LLMRequest = {
 	// this is the fallback path once tool-intent detection has already
 	// fully finished.
 	async _handleNormalChat(prompt, chatPane, ctx) {
-		let { doc, appendMessage, chat, imagePaste, takeCapturedSelection, replyLabel, providerLabel, isCancelled, setCancelStream } = ctx;
+		let { doc, appendMessage, chat, imagePaste, takeCapturedSelection, replyLabel, providerLabel, submissionTime, isCancelled, setCancelStream } = ctx;
 
 		try {
 			// Snapshotted BEFORE this turn's own "You" bubble (and reply
@@ -591,7 +617,7 @@ LLMRequest = {
 				? `Page Context: page ${pageNum}`
 				: `Page Context: (none — ${pageInfo})`);
 			appendMessage("System", contextInfo ? `PDF: ${contextInfo.title}` : "PDF: (none)");
-			let userReply = appendMessage("You", prompt);
+			let userReply = appendMessage("You", prompt, submissionTime);
 			// A visual record of what was actually attached to this
 			// specific message -- imagePaste's own list keeps accumulating
 			// across turns (see ui/image-paste.js), so this snapshot is what
@@ -607,8 +633,13 @@ LLMRequest = {
 			// extraction+selection below, which can itself take a while)
 			// finishes -- updated to "Waiting for ..." right before the
 			// actual model call starts (see below), then filled with
-			// streamed tokens once the reply actually begins.
-			let reply = appendMessage(replyLabel, "Building context...");
+			// streamed tokens once the reply actually begins. Created with
+			// an empty timestamp (see ui/chat.js's appendMessage/
+			// setMessageTime) -- set to the real completion time only once
+			// the full response has actually streamed in below, not here,
+			// so the bubble doesn't show a misleadingly-early time for a
+			// reply that can take several seconds to finish.
+			let reply = appendMessage(replyLabel, "Building context...", "");
 
 			if (contextInfo?.missingText) {
 				appendMessage("System", `No extracted text was available for "${contextInfo.title}". Asking without PDF context.`);
@@ -777,11 +808,23 @@ LLMRequest = {
 					reply.replaceWith(rendered);
 				}
 			}
+			// Only shown once the reply is actually complete (covers both
+			// branches above) -- reply started with an empty timestamp (see
+			// its own creation comment). Still resolves correctly even
+			// after reply.replaceWith above -- see setMessageTime's own
+			// comment in ui/chat.js.
+			chat.setMessageTime(reply, chat.formatTimestamp());
 			this.log(`Received response from ${providerLabel} model ${result.model}`);
 		}
 		catch (e) {
 			if (isCancelled()) return;
 			appendMessage(providerLabel, `${providerLabel} request failed: ${e.message}`);
+			// reply itself is abandoned on this path (the error message
+			// above is a separate, new bubble) -- still give it a real
+			// timestamp rather than leaving it blank forever, since it
+			// started empty (see its own creation comment) and nothing else
+			// on this path will ever set one.
+			chat.setMessageTime(reply, chat.formatTimestamp());
 			// Only e.message was logged before -- this whole try wraps
 			// everything from PDF-context building through table/figure/
 			// equation/note extraction, streamModel, citation grounding,
@@ -823,6 +866,14 @@ LLMRequest = {
 		// as a whole, rather than needing every internal step to separately
 		// understand cancellation.
 		let work = (async () => {
+			// Captured BEFORE any async work at all (getCurrentModel,
+			// detectIntent, PDF-context building, ...) so the "You" bubble
+			// -- created further down, sometimes noticeably later, e.g.
+			// detectIntent alone is a real LLM call -- can show the EXACT
+			// moment the user actually hit submit rather than whenever its
+			// own appendMessage call happens to run.
+			let submissionTime = chat.formatTimestamp();
+
 			// Resolved up front (rather than only once the reply bubble is
 			// about to stream) so it's available immediately both for the
 			// reply bubble's title AND for every tool-intent handler's own
@@ -853,6 +904,7 @@ LLMRequest = {
 				takeCapturedSelection,
 				replyLabel,
 				providerLabel,
+				submissionTime,
 				isCancelled: () => cancelled,
 				setCancelStream: (fn) => { cancelStream = fn; },
 			};
@@ -872,7 +924,7 @@ LLMRequest = {
 				if (cancelled) return;
 				if (detected !== null) {
 					let { tool, intent } = detected;
-					appendMessage("You", prompt);
+					appendMessage("You", prompt, submissionTime);
 					let pdfItem = chatPane.getActiveReaderAttachment();
 					if (!pdfItem) {
 						appendMessage("System", "No active PDF to look up references from.");

@@ -1,23 +1,44 @@
 // Resolves a table (or several) from the paper currently open in the reader
-// -- by number, description, list, range, "all", or a criterion, same
-// six-shape intent as tools/reference-retrieval.js/tools/reference-linker.js
-// -- and exports them as CSV files bundled into a single zip archive on
-// disk. Sibling to those two modules, following the exact same
-// selection/resolution pattern (see intentTool/resolveExplicitIndices/
+// -- by id, description, list, range, "all", or a criterion, same six-shape
+// intent as tools/reference-retrieval.js/tools/reference-linker.js -- and
+// exports them as CSV files bundled into a single zip archive on disk.
+// Sibling to those two modules, following the exact same selection/
+// resolution pattern (see intentTool/resolveExplicitIndices/
 // resolveTableByDescription/resolveTableSelection below, each a close
-// mirror of the reference-retrieval.js equivalent, just keyed off a
-// table's own `table_num` instead of a reference's `index`) -- what
-// differs entirely is what happens with the resolved numbers: this module
-// pulls each table's (number, caption, content, and -- if every requested
-// table has one and the current model supports image input -- its own
-// cropped rendering) from document/tables.js's LLMTables.getTableIndex,
-// hands them to the model in ONE prompt per batch of up to _BATCH_SIZE
-// tables (not one call per table, unlike download/link's per-reference
-// pipeline -- see exportTablesToZip/_formatTablesBatch), asking it to
-// format each as a proper CSV table (using the rendered image as ground
-// truth over the programmatically-extracted content, when attached), then
-// splits each batch's response on a "[NEXT_TABLE]" separator, writes one
-// file per table, and zips them all together.
+// mirror of the reference-retrieval.js equivalent), keyed off a table's own
+// `table_id` -- a plain sequential integer assigned to EVERY table
+// regardless of whether it has a real printed number (an SDT-detected
+// appendix-lettered or uncaptioned table has no real `table_num` at all,
+// see document/tables.js/scripts/extract_tables_sdt.js).
+//
+// UNLIKE a reference's own `index` (which the user reads directly off the
+// bibliography and can name outright, e.g. "download reference 5" -> just
+// extract the digit, no lookup needed), a table's `table_id` is an internal
+// identifier the user has never seen -- LLMIntent.detectIntent (see
+// intent.js) classifies the tool call from the raw prompt text ALONE, with
+// no access to this paper's actual table list, so a user naming a table by
+// its own printed label ("D.2", "D1") can only ever be captured as a STRING
+// at that stage; resolving which table_id it actually refers to needs a
+// SECOND call that's shown the real (id, label, caption) listing -- see
+// "single"/"list" below, both routed through resolveTableByDescription
+// (already exactly this: given a listing and a description/term, ask the
+// model which table_id it means) rather than trusted as a literal id.
+// "range"/"all" don't have this problem (a range of ids, or "every table",
+// needs no string-to-id resolution at all) and stay pure table_id
+// arithmetic, no extra model call.
+//
+// What happens with the resolved ids, regardless of how they got resolved:
+// this module pulls each table's (id, label, caption, content, and -- if
+// every requested table has one and the current model supports image
+// input -- its own cropped rendering) from document/tables.js's
+// LLMTables.getTableIndex, hands them to the model in ONE prompt per batch
+// of up to _BATCH_SIZE tables (not one call per table, unlike download/
+// link's per-reference pipeline -- see exportTablesToZip/
+// _formatTablesBatch), asking it to format each as a proper CSV table
+// (using the rendered image as ground truth over the programmatically-
+// extracted content, when attached), then splits each batch's response on
+// a "[NEXT_TABLE]" separator, writes one file per table, and zips them all
+// together.
 LLMTableExport = {
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Table Export]: " + msg);
@@ -53,37 +74,54 @@ LLMTableExport = {
 					type: "string",
 					enum: ["single", "describe", "list", "range", "all", "select"],
 					description: [
-						"single: one table by explicit number (set index). describe: one table",
-						"identified by its caption/topic, no number given (set description).",
-						"list: an enumerated set of specific numbers (set indices). range: a",
-						"numeric range (set from/to). all: every table in the paper (no other",
-						"fields needed). select: a criterion other than an explicit",
-						"number/range/list, e.g. \"every table about latency\" (set description).",
+						"single: one table, named explicitly by the user's own wording -- a",
+						"number, letter, or label like '3' or 'D.1' (set index). describe: one",
+						"table identified by its caption/topic instead of a name (set",
+						"description). list: an enumerated set of specific tables, each named",
+						"explicitly the same way as 'single' (set indices). range: a numeric",
+						"range of table ids (set from/to). all: every table in the paper (no",
+						"other fields needed). select: a criterion other than an explicit",
+						"name/range/list, e.g. \"every table about latency\" (set description).",
 					].join(" "),
 				},
-				index: { type: "integer", description: "Required when type is 'single' -- the table number." },
+				index: { type: "string", description: "Required when type is 'single' -- the table exactly as the user named it (e.g. '3', 'D.1', 'D2') -- copy their own wording, do not invent or guess a different form of it." },
 				description: { type: "string", description: "Required when type is 'describe' or 'select' -- the identifying text or selection criterion, in the user's own words." },
-				indices: { type: "array", items: { type: "integer" }, description: "Required when type is 'list' -- the explicit table numbers." },
-				from: { type: "integer", description: "Required when type is 'range' -- the start of the range." },
-				to: { type: "integer", description: "Required when type is 'range' -- the end of the range." },
+				indices: { type: "array", items: { type: "string" }, description: "Required when type is 'list' -- the explicit table names, same format as 'index' above, one per table." },
+				from: { type: "integer", description: "Required when type is 'range' -- the start table id." },
+				to: { type: "integer", description: "Required when type is 'range' -- the end table id." },
 			},
 			required: ["type"],
 		},
 		resolver: {
 			getIndex: pdfItem => LLMTables.getTableIndex(pdfItem),
+			// "single"/"list" both route through resolveTableByDescription
+			// (the SAME table-listing-aware lookup "describe" already uses)
+			// rather than trusting intent.index/indices as literal ids --
+			// see this module's own header comment for why: the model never
+			// saw this paper's actual table list at intent-detection time,
+			// so a name like "D.2" can only be resolved against it in a
+			// second call, not assumed to already be — or even
+			// correctly convertible to — a table_id.
+			single: (intent, index) => LLMTableExport.resolveTableByDescription(index, intent.index),
+			list: (intent, index) => LLMTableExport.resolveTableTerms(intent.indices, index),
 			explicit: (intent, index) => LLMTableExport.resolveExplicitIndices(intent, index),
 			byDescription: (index, description) => LLMTableExport.resolveTableByDescription(index, description),
 			selection: (index, description) => LLMTableExport.resolveTableSelection(index, description),
 		},
 	},
 
-	// Same arithmetic as LLMReferenceRetrieval.resolveExplicitIndices, just
-	// against a table's own `table_num` instead of a reference's `index`.
+	// Handles "range"/"all" only -- "list" is resolved elsewhere (see
+	// resolver.list/resolveTableTerms) since its entries are user-named
+	// strings ("D.2"), not literal table_ids, unlike a reference's own
+	// `indices` (always plain numbers -- see
+	// LLMReferenceRetrieval.resolveExplicitIndices, which this otherwise
+	// mirrors). "range"/"all" don't have that problem (a range/all of ids
+	// needs no string-to-id resolution), and since table_id is assigned to
+	// EVERY table uniformly (not just plainly-numbered ones), they now
+	// naturally cover lettered/synthetic-labeled tables too, unlike the old
+	// table_num-keyed version this replaced.
 	resolveExplicitIndices(intent, tableIndex) {
-		let valid = new Set((tableIndex?.tables || []).map(t => t.table_num));
-		if (intent.type === "list") {
-			return [...new Set(intent.indices)].filter(i => valid.has(i)).sort((a, b) => a - b);
-		}
+		let valid = new Set((tableIndex?.tables || []).map(t => t.table_id));
 		if (intent.type === "range") {
 			let from = Math.min(intent.from, intent.to);
 			let to = Math.max(intent.from, intent.to);
@@ -99,21 +137,24 @@ LLMTableExport = {
 		return null;
 	},
 
-	// Same "give the LLM the short (number, caption) listing and let it
+	// Same "give the LLM the short (id, label, caption) listing and let it
 	// match loosely" approach as
 	// LLMReferenceRetrieval.resolveReferenceByDescription -- a table's
 	// caption is a much shorter, more reliable matching signal than its
 	// full cell content, same reasoning as citation titles vs full
-	// citations there.
+	// citations there. Asks for the table_id, not the label -- the model
+	// never has to reproduce a label string at all, just copy the small
+	// integer already shown next to the table it picked.
 	async resolveTableByDescription(tableIndex, description) {
 		let tables = tableIndex?.tables || [];
 		if (!tables.length) return null;
-		let listing = tables.map(t => `[${t.table_num}] ${t.caption}`).join("\n");
+		let listing = tables.map(t => `[${t.table_id}] ${t.label}: ${t.caption}`).join("\n");
 		let prompt = [
-			"Below is a list of tables from a paper, by number and caption. Identify",
-			"which table (if any) matches the following description of a table the",
-			'user wants to export. Respond with ONLY the table number. If no entry is',
-			'a confident match, respond with exactly "none". Do not explain.',
+			"Below is a list of tables from a paper, by id, label, and caption.",
+			"Identify which table (if any) matches the following description of a",
+			'table the user wants to export. Respond with ONLY the table id number.',
+			'If no entry is a confident match, respond with exactly "none". Do not',
+			"explain.",
 			"",
 			`Description: "${description}"`,
 			"",
@@ -126,22 +167,50 @@ LLMTableExport = {
 		return match ? parseInt(match[0], 10) : null;
 	},
 
+	// Resolves several EXPLICITLY-named terms (see intentTool's "list" type
+	// -- e.g. ["D1", "D.2"] for "export tables D1 and D.2") to their own
+	// table_id each, one resolveTableByDescription call per term, run in
+	// PARALLEL (each is an independent lookup against the same fixed
+	// listing, not a multi-step conversation, so there's no ordering
+	// dependency to serialize on). Deduplicates and sorts the results --
+	// terms that don't resolve to anything are just dropped, same
+	// "whatever matched" tolerance resolveExplicitIndices' own "list" case
+	// already has for invalid entries.
+	async resolveTableTerms(terms, tableIndex) {
+		let resolved = await Promise.all(terms.map(term => this.resolveTableByDescription(tableIndex, String(term))));
+		let seen = new Set();
+		let result = [];
+		for (let id of resolved) {
+			if (id !== null && !seen.has(id)) {
+				seen.add(id);
+				result.push(id);
+			}
+		}
+		return result.sort((a, b) => a - b);
+	},
+
 	// Same cap/rationale as LLMReferenceRetrieval._MAX_SELECTION_RESULTS --
 	// an overly broad criterion (or the model being overzealous) could
 	// otherwise match most of a long table list, turning one export
 	// request into a huge CSV-formatting prompt.
 	_MAX_SELECTION_RESULTS: 10,
 
+	// Same comma-separated-ids response format LLMReferenceRetrieval.
+	// resolveReferenceSelection already uses -- safe again now that the
+	// model is answering with table_id (a plain integer) rather than a
+	// label string, which could itself contain a comma for a synthetic
+	// section-derived label (e.g. "Appendix B. FSQ codebook, Unlabelled
+	// Table 1") and would fragment a comma-separated response.
 	async resolveTableSelection(tableIndex, description) {
 		let tables = tableIndex?.tables || [];
 		if (!tables.length) return [];
-		let listing = tables.map(t => `[${t.table_num}] ${t.caption}`).join("\n");
+		let listing = tables.map(t => `[${t.table_id}] ${t.label}: ${t.caption}`).join("\n");
 		let prompt = [
-			"Below is a list of tables from a paper, by number and caption. Identify",
+			"Below is a list of tables from a paper, by id, label, and caption. Identify",
 			"every table that matches the following selection criterion, up to a",
 			`maximum of ${this._MAX_SELECTION_RESULTS} entries (if more than`,
 			`${this._MAX_SELECTION_RESULTS} match, pick the best/most confident`,
-			'matches). Respond with ONLY a comma-separated list of table numbers (e.g.',
+			'matches). Respond with ONLY a comma-separated list of table ids (e.g.',
 			'"3, 7, 12"). If nothing matches, respond with exactly "none". Do not',
 			"explain.",
 			"",
@@ -152,8 +221,8 @@ LLMTableExport = {
 		].join("\n");
 		let text = await this._callModel(prompt);
 		if (!text || /^none$/i.test(text.trim())) return [];
-		let indices = [...new Set((text.match(/\d+/g) || []).map(n => parseInt(n, 10)))];
-		return indices.slice(0, this._MAX_SELECTION_RESULTS);
+		let ids = [...new Set((text.match(/\d+/g) || []).map(n => parseInt(n, 10)))];
+		return ids.slice(0, this._MAX_SELECTION_RESULTS);
 	},
 
 	// Builds the single combined prompt asking the model to turn every
@@ -176,10 +245,10 @@ LLMTableExport = {
 	// that, so the model's told explicitly to prefer it.
 	_buildCSVPrompt(tables, withImages) {
 		let tuples = tables.map((t, i) =>
-			`${i + 1}. (number=${t.table_num}, caption="${t.caption}")\n${t.contentText}`
+			`${i + 1}. (label=${t.label}, caption="${t.caption}")\n${t.contentText}`
 		).join("\n\n");
 		let lines = [
-			"Below are tables extracted from a scientific paper, given as (number,",
+			"Below are tables extracted from a scientific paper, given as (label,",
 			"caption) tuples followed by that table's own raw content, listed in",
 			"sequential order. For EACH table, produce a single, well-formed CSV",
 			"representation of its data -- reproduce the actual rows/columns given",
@@ -187,7 +256,7 @@ LLMTableExport = {
 			"ONLY the CSV tables, in the SAME order as listed below, with each one",
 			"separated from the next by a line containing EXACTLY:",
 			"[NEXT_TABLE]",
-			"Do not include the table number, caption, any explanation, or markdown",
+			"Do not include the table label, caption, any explanation, or markdown",
 			"code fences in your output -- only the raw CSV content for each table, and",
 			"the separator between them.",
 		];
@@ -263,8 +332,22 @@ LLMTableExport = {
 		};
 	},
 
+	// Filesystem-safe stand-in for a table's own `label`, used for its CSV's
+	// filename (see exportTablesToZip's queue.enqueue below) -- a label can
+	// contain spaces/commas/periods (plainly-numbered ones are simple, e.g.
+	// "3", but a lettered-appendix or section-derived synthetic one, e.g.
+	// "Appendix B. FSQ codebook, Unlabelled Table 1", isn't filesystem-safe
+	// as-is). Collapses anything outside [a-zA-Z0-9.-] to a single
+	// underscore and caps length, rather than rejecting/erroring -- the
+	// filename only needs to be valid and reasonably identifiable, not an
+	// exact copy of the label (the label itself is still shown to the user
+	// in every progress/result message).
+	_sanitizeFilename(label) {
+		return label.replace(/[^a-zA-Z0-9.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "table";
+	},
+
 	// Starts _WRITE_CONCURRENCY workers pulling jobs ({path, content,
-	// tableNum}) off `queue` (see _createWriteQueue) and writing each
+	// label}) off `queue` (see _createWriteQueue) and writing each
 	// one's `content` to its `path` via IOUtils.writeUTF8, until the
 	// queue is closed and drained. Call this BEFORE `queue` has any jobs
 	// enqueued yet, and WITHOUT awaiting it immediately -- each worker's
@@ -273,7 +356,7 @@ LLMTableExport = {
 	// async function, so the workers are already live and waiting by the
 	// time the caller's own producer loop starts enqueueing jobs; only
 	// await the returned promise once the caller is done enqueueing (see
-	// exportTablesToZip). Returns { succeededCount, failedNums } once
+	// exportTablesToZip). Returns { succeededCount, failedLabels } once
 	// every worker has stopped -- write failures are per-job (a single
 	// bad table doesn't stop the others, same tolerance
 	// Promise.allSettled gave before this pipelining was added), collected
@@ -281,7 +364,7 @@ LLMTableExport = {
 	// at the end, not an aborted operation over one bad file.
 	async _runTableWriters(queue, onProgress) {
 		let succeededCount = 0;
-		let failedNums = [];
+		let failedLabels = [];
 		let runWriter = async () => {
 			while (true) {
 				let job = await queue.dequeue();
@@ -291,15 +374,15 @@ LLMTableExport = {
 					succeededCount++;
 				}
 				catch (e) {
-					failedNums.push(job.tableNum);
-					let msg = `Failed to write table ${job.tableNum}: ${e.message}`;
+					failedLabels.push(job.label);
+					let msg = `Failed to write table ${job.label}: ${e.message}`;
 					this.log(`exportTablesToZip: ${msg}`);
 					onProgress?.(msg);
 				}
 			}
 		};
 		await Promise.all(Array.from({ length: this._WRITE_CONCURRENCY }, () => runWriter()));
-		return { succeededCount, failedNums };
+		return { succeededCount, failedLabels };
 	},
 
 	// Formats one batch's tables as CSV in a single model call (see
@@ -357,11 +440,11 @@ LLMTableExport = {
 		return fp;
 	},
 
-	// Resolves `tableNums` (already-resolved table numbers -- see
-	// request.js's _resolveIntentIndices) to their (number, caption,
-	// content) tuples, asks the model to format ALL of them as CSV in ONE
-	// call (see _buildCSVPrompt), splits the result on "[NEXT_TABLE]", and
-	// writes one table_<number>.csv per table into a temp directory before
+	// Resolves `tableIds` (already-resolved table_ids -- see request.js's
+	// _resolveIntentIndices) to their (label, caption, content) tuples,
+	// asks the model to format ALL of them as CSV in ONE call (see
+	// _buildCSVPrompt), splits the result on "[NEXT_TABLE]", and writes one
+	// <label>.csv per table into a temp directory before
 	// zipping it via Zotero.File.zipDirectory (Zotero's own zip-a-directory
 	// helper, chrome/content/zotero/xpcom/file.js -- avoids hand-rolling
 	// nsIZipWriter directly). Prompts for a save location via a native save
@@ -377,18 +460,18 @@ LLMTableExport = {
 	// goes ahead with whichever ones succeeded, rather than discarding all
 	// of them over one bad table; `message` a user-facing status string
 	// for every other (non-warning) case.
-	async exportTablesToZip(tableNums, pdfItem, onProgress, onStage) {
+	async exportTablesToZip(tableIds, pdfItem, onProgress, onStage) {
 		if (!pdfItem) {
 			return { success: false, message: "No active PDF to export tables from." };
 		}
 
-		onProgress?.(`Looking up ${tableNums.length} table${tableNums.length === 1 ? "" : "s"} in the paper...`);
+		onProgress?.(`Looking up ${tableIds.length} table${tableIds.length === 1 ? "" : "s"} in the paper...`);
 		let tableIndex = await LLMTables.getTableIndex(pdfItem);
-		let tables = tableNums
-			.map(n => tableIndex?.tables?.find(t => t.table_num === n))
+		let tables = tableIds
+			.map(id => tableIndex?.tables?.find(t => t.table_id === id))
 			.filter(Boolean);
 		if (!tables.length) {
-			return { success: false, message: `None of the requested table(s) (${tableNums.join(", ")}) were found in this paper.` };
+			return { success: false, message: `None of the requested table(s) (${tableIds.join(", ")}) were found in this paper.` };
 		}
 
 		// Attaches each table's own cropped rendering (tab.image_data) as
@@ -460,7 +543,7 @@ LLMTableExport = {
 				let batchImages = images ? images.slice(start, end) : null;
 
 				if (batchCount > 1) {
-					let msg = `Formatting batch ${b + 1}/${batchCount} (${batchTables.length} table${batchTables.length === 1 ? "" : "s"}: ${batchTables.map(t => t.table_num).join(", ")})...`;
+					let msg = `Formatting batch ${b + 1}/${batchCount} (${batchTables.length} table${batchTables.length === 1 ? "" : "s"}: ${batchTables.map(t => t.label).join(", ")})...`;
 					onProgress?.(msg);
 					onStage?.(`Formatting tables as CSV (batch ${b + 1}/${batchCount})...`);
 				}
@@ -489,14 +572,14 @@ LLMTableExport = {
 				}
 				for (let i = 0; i < Math.min(batchTables.length, batchParts.length); i++) {
 					queue.enqueue({
-						path: PathUtils.join(tmpDir, `table_${batchTables[i].table_num}.csv`),
+						path: PathUtils.join(tmpDir, `${this._sanitizeFilename(batchTables[i].label)}.csv`),
 						content: batchParts[i],
-						tableNum: batchTables[i].table_num,
+						label: batchTables[i].label,
 					});
 				}
 			}
 			queue.close();
-			let { succeededCount, failedNums } = await writersPromise;
+			let { succeededCount, failedLabels } = await writersPromise;
 
 			if (!succeededCount) {
 				return { success: false, message: "The model did not return any usable CSV output." };
@@ -515,15 +598,15 @@ LLMTableExport = {
 			// file exists there, no special-casing needed here to exclude
 			// it.
 			await Zotero.File.zipDirectory(tmpDir, fp.file.path);
-			let summary = `Wrote ${succeededCount} table(s) to ${fp.file.path}${failedNums.length ? ` (failed: ${failedNums.join(", ")})` : ""}`;
+			let summary = `Wrote ${succeededCount} table(s) to ${fp.file.path}${failedLabels.length ? ` (failed: ${failedLabels.join(", ")})` : ""}`;
 			this.log(`exportTablesToZip: ${summary}`);
 			onProgress?.(summary);
 			return {
 				success: true,
 				path: fp.file.path,
 				count: succeededCount,
-				warning: failedNums.length
-					? `Table${failedNums.length === 1 ? "" : "s"} ${failedNums.join(", ")} failed to write and ${failedNums.length === 1 ? "was" : "were"} skipped.`
+				warning: failedLabels.length
+					? `Table${failedLabels.length === 1 ? "" : "s"} ${failedLabels.join(", ")} failed to write and ${failedLabels.length === 1 ? "was" : "were"} skipped.`
 					: null,
 			};
 		}

@@ -100,14 +100,31 @@ LLMIntent = {
 	// despite the schema is exactly the kind of thing a model can still get
 	// wrong) -- returns null on anything that doesn't cleanly fit one of
 	// the six shapes.
+	//
+	// `index`/`indices` accept EITHER an integer (download/link -- a
+	// reference is always plainly numbered, and the user can name it
+	// directly, e.g. "download reference 5", so intent-detection alone can
+	// extract the real number with no further lookup, see tools/reference-
+	// retrieval.js's schema) OR a non-empty string (tables -- the user
+	// names a table by whatever label THEY know it by, e.g. "D.2", but the
+	// model has no access to this paper's actual table list at intent-
+	// detection time to convert that into the table's real `table_id`; see
+	// tools/table-export.js's schema/resolver.single/resolver.list, which
+	// resolve the raw string against the real listing in a SECOND call
+	// instead). This validator is shared across all three tools'
+	// differently-shaped `index` fields, so it has to accept both.
+	_isValidIndexToken(v) {
+		return Number.isInteger(v) || (typeof v === "string" && v.length > 0);
+	},
+
 	_argumentsToIntent(args) {
 		let { type, index, description, indices, from, to } = args;
-		if (type === "single" && Number.isInteger(index)) return { type, index };
+		if (type === "single" && this._isValidIndexToken(index)) return { type, index };
 		if ((type === "describe" || type === "select") && typeof description === "string" && description) {
 			return { type, description };
 		}
 		if (type === "list" && Array.isArray(indices)) {
-			let cleaned = indices.filter(Number.isInteger);
+			let cleaned = indices.filter(v => this._isValidIndexToken(v));
 			return cleaned.length ? { type, indices: cleaned } : null;
 		}
 		if (type === "range" && Number.isInteger(from) && Number.isInteger(to)) return { type, from, to };

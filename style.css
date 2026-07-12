@@ -891,6 +891,13 @@
 }
 .llm-markdown strong { font-weight: 700; }
 .llm-find-link { color: -moz-nativehyperlinktext; cursor: pointer; text-decoration: underline; }
+/* A [CITE] phrase that couldn't be located verbatim anywhere in the SDT
+   structure's own text (see document/citations.js's LLMCitationPosition
+   and request.js's synchronous resolvePositions call) -- possibly a
+   paraphrase, possibly hallucinated. Dashed rather than solid underline
+   (a soft "unverified" signal, not an alarming error) since clicking it
+   still falls back to a best-effort text search rather than doing nothing. */
+.llm-find-link-unverified { text-decoration: underline dashed; text-decoration-color: color-mix(in srgb, currentColor 50%, orange); }
 .llm-markdown em { font-style: italic; }
 .llm-markdown hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 0.8em 0; }
 /* Tables (the model now formats its own tables as Markdown, not a KaTeX

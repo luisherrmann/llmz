@@ -389,7 +389,20 @@ LLMChatPane = {
 	//                                  itself
 	// Done before marked parses, so spaces/special chars in the query don't
 	// break markdown link parsing.
-	_renderMarkdown(text, linkIndex) {
+	// `citationPositions`, if given, is a Map of citation phrase -> resolved
+	// { pageIndex, rects } | null (see document/citations.js's
+	// LLMCitationPosition.resolvePositions, called synchronously by
+	// request.js BEFORE rendering -- fast, in-process, no network calls,
+	// see its own comment for why). Doubles as citation VERIFICATION, not
+	// just navigation: a phrase that resolves to an actual position was
+	// found verbatim (modulo whitespace/hyphen normalization) somewhere in
+	// the PDF's real text, which is a strictly stronger signal than the
+	// embedding-similarity grounding this replaced (semantically similar
+	// isn't the same as actually present) -- one that failed to resolve is
+	// flagged in the rendered link (see the "find" branch below and
+	// style.css's .llm-find-link-unverified) rather than silently treated
+	// as equally trustworthy.
+	_renderMarkdown(text, linkIndex, citationPositions) {
 		if (typeof marked === "undefined") return null;
 		let processed = text.replace(
 			// Alternation, tried in order at each position:
@@ -442,6 +455,21 @@ LLMChatPane = {
 				if (label === undefined) return whole; // matched a math span -- leave untouched
 				if (kind === "find") {
 					let escaped = this._escapeAttr(payload);
+					// citationPositions.has(payload) but its value is null ==
+					// resolution was ATTEMPTED and found nothing verbatim in
+					// the PDF's own text -- distinct from key absent
+					// entirely (no PDF context / prefetch didn't run), which
+					// isn't a verification failure, just means we never
+					// checked.
+					if (citationPositions?.has(payload)) {
+						let position = citationPositions.get(payload);
+						if (position) {
+							let posAttr = this._escapeAttr(JSON.stringify(position));
+							return `<a class="llm-find-link" data-position="${posAttr}" data-query="${escaped}" title="${escaped}">${label}</a>`;
+						}
+						let title = this._escapeAttr(`Could not verify this citation against the PDF text: "${payload}"`);
+						return `<a class="llm-find-link llm-find-link-unverified" data-query="${escaped}" title="${title}">${label}</a>`;
+					}
 					return `<a class="llm-find-link" data-query="${escaped}" title="${escaped}">${label}</a>`;
 				}
 				let [refType, refNum] = payload.split(":");

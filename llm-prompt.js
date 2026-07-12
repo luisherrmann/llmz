@@ -156,9 +156,9 @@ LLMPrompt = {
 		"A formula INSIDE a table cell still uses inline math ($<formula>$) exactly as it would in regular text -- only the table's own row/column structure must be Markdown, not LaTeX.",
 		"When you state facts or findings from the PDF, add a citation link immediately after the claim.",
 		"Citation format: [CITE](<find:exact phrase>). Always use the literal token [CITE] — numbering is assigned automatically.",
-		"The exact phrase is 4–8 consecutive words copied verbatim from the <PDF_CONTEXT> — no paraphrasing.",
+		"The exact phrase is exactly ONE full sentence copied verbatim from the <PDF_CONTEXT> — no paraphrasing, no partial sentences, no ellipses or truncation. Pick the single sentence that most directly supports the claim.",
 		"The angle brackets around find: are mandatory.",
-		"Example: 'The mutation rate increases [CITE](<find:error-prone DNA polymerases to increase>).'",
+		"Example: 'This finding is well established [CITE](<find:Error-prone DNA polymerases have been shown to increase mutation rates under stress conditions.>).'",
 		"Whenever you mention a table (e.g. from <TABLE_CONTEXT>), a figure shown to you as an image, or a numbered equation the paper itself labels (e.g. from <EQUATION_CONTEXT>, or one you see numbered like '(3)' in the PDF text), wrap that mention in a link so the reader can jump to it.",
 		"Format: [Table N](<ref:table:N>), [Figure N](<ref:figure:N>), or [Equation N](<ref:equation:N>), where N is the table/figure/equation number.",
 		"For equations, N is the bare number the PDF prints next to the equation (e.g. for '(3)', use ref:equation:3), and only use this for equations the PDF itself numbers this way — never invent a number for an unlabeled formula.",
@@ -667,7 +667,6 @@ LLMPrompt = {
 				contextInfo: null,
 				selectedText,
 				item: null,
-				citationIndex: null,
 			};
 		}
 
@@ -682,19 +681,10 @@ LLMPrompt = {
 				},
 				selectedText,
 				item,
-				citationIndex: null,
 			};
 		}
 
 		let title = item.getField("title") || item.libraryKey;
-
-		let citationIndex = null;
-		try {
-			citationIndex = await LLMCitation.getCitationIndex(item, text, onEmbeddingStart);
-		}
-		catch (e) {
-			this.log(`getCitationIndex failed: ${e.message}`);
-		}
 
 		let context, retrieved = false, truncated = false, chunkCount = 0;
 		if (text.length <= this.maxPDFContextChars) {
@@ -749,7 +739,6 @@ LLMPrompt = {
 			},
 			selectedText,
 			item,
-			citationIndex,
 		};
 	},
 };

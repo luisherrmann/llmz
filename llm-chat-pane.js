@@ -354,8 +354,29 @@ LLMChatPane = {
 	// surrounding HTML once inserted unescaped -- this was the root cause of
 	// a "innerHTML: An invalid or illegal string was specified" crash on
 	// longer replies (more grounded citations = more chances of hitting one).
+	// Control characters in \x00-\x08/\x0B/\x0C/\x0E-\x1F (tab \x09, LF \x0A,
+	// and CR \x0D are the only C0 control characters XML 1.0 allows) are
+	// flat-out ILLEGAL in XML content, in an attribute value OR body text,
+	// even entity-escaped -- unlike "<"/"&"/etc., there's no valid escaped
+	// form of e.g. \x03 in XML at all. Found in the wild: a figure caption
+	// extracted via scripts/extract_figures.py (Python-based, a completely
+	// different pipeline than the SDT/document-worker one everything else
+	// here goes through) contained literal \x03 bytes flanking "<" signs in
+	// "p-value < 0.05"-style notation -- almost certainly a mis-decoded
+	// space/ligature character from the PDF's own font encoding. Confirmed
+	// via xmllint that this alone (independent of the "<"/">" escaping
+	// below, which only handles VALID-but-syntactically-special
+	// characters) throws "invalid character in attribute value" /
+	// "PCDATA invalid Char value 3" -- i.e. a SECOND, previously
+	// unidentified cause of the exact same "innerHTML: An invalid or
+	// illegal string was specified" crash _escapeAttr's own comment
+	// already describes fixing ONE cause of below.
+	_stripInvalidXmlChars(str) {
+		return String(str).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+	},
+
 	_escapeAttr(str) {
-		return String(str)
+		return this._stripInvalidXmlChars(str)
 			.replace(/&/g, "&amp;")
 			.replace(/"/g, "&quot;")
 			.replace(/</g, "&lt;")
@@ -404,6 +425,14 @@ LLMChatPane = {
 	// as equally trustworthy.
 	_renderMarkdown(text, linkIndex, citationPositions) {
 		if (typeof marked === "undefined") return null;
+		// Sanitized up front, not just at the attribute-value sites below
+		// (_escapeAttr) -- the model's own response text can itself echo a
+		// PDF-extraction artifact (e.g. quoting a caption/table cell
+		// verbatim) containing an invalid XML control character, which
+		// would land in plain body/PCDATA content, not just an attribute --
+		// see _stripInvalidXmlChars' own comment for the concrete case
+		// that surfaced this.
+		text = this._stripInvalidXmlChars(text);
 		let processed = text.replace(
 			// Alternation, tried in order at each position:
 			//  1. $$...$$ (block math) / $...$ (inline math, same pattern as
@@ -450,7 +479,24 @@ LLMChatPane = {
 			// "innerHTML: An invalid or illegal string was specified" on
 			// longer replies (more grounded citations = more chances of
 			// grounding to a PDF sentence with a stray ">" in it).
-			/\$\$[\s\S]+?\$\$|\$(?!\s)[^$\n]*?[^\s$]\$(?!\d)|\[([^\]]+)\]\(<(find|ref):([\s\S]+?)>\)/g,
+			//
+			// That alone isn't quite enough either, now that citations quote
+			// a full verbatim sentence (see llm-prompt.js's citation format
+			// instructions): a phrase can contain the literal TWO-character
+			// sequence ">)" itself (e.g. "...the effect (>)5 in most
+			// cases..."), which would truncate the match at that false
+			// terminator instead of the real one -- confirmed reproducible
+			// with a synthetic example before this fix. The trailing
+			// lookahead requires whatever follows a candidate ">)" to
+			// actually look like a token boundary (whitespace, sentence
+			// punctuation, a new "[" link starting, or end of string) --
+			// combined with the LAZY quantifier, the regex engine keeps
+			// extending the match past any ">)" that ISN'T followed by such
+			// a boundary (e.g. followed by a digit or letter continuing the
+			// sentence) until it finds the real one. Same pattern (and same
+			// reasoning) in llm-citation.js's groundCitations and request.js's
+			// citation-position query extraction -- keep all three in sync.
+			/\$\$[\s\S]+?\$\$|\$(?!\s)[^$\n]*?[^\s$]\$(?!\d)|\[([^\]]+)\]\(<(find|ref):([\s\S]+?)>\)(?=[\s.,;:!?)\]]|\[|$)/g,
 			(whole, label, kind, payload) => {
 				if (label === undefined) return whole; // matched a math span -- leave untouched
 				if (kind === "find") {

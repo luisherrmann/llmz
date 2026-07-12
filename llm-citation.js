@@ -260,6 +260,16 @@ LLMCitation = {
 		return index;
 	},
 
+	// Sentence-level index, used ONLY as document/citations.js's
+	// LLMCitationPosition.resolvePositions' embedding-based FALLBACK for a
+	// citation phrase that its primary, fast, exact SDT-text match failed
+	// to find -- a real paraphrase (not hallucinated, just not verbatim)
+	// has no exact match to find no matter how the text is normalized, but
+	// IS close in embedding space to the real sentence it's paraphrasing.
+	// The matched sentence is then re-resolved through the same exact SDT
+	// matcher (since it's real extracted text, that succeeds), so the
+	// fallback still ends up with a real position, not just a plausible
+	// sentence with nowhere to navigate to.
 	async getCitationIndex(item, text, onEmbeddingStart) {
 		return this._getIndex(item, text, "sentence", t => this.splitIntoSentences(t), onEmbeddingStart);
 	},
@@ -299,7 +309,22 @@ LLMCitation = {
 		return top.map(({ i }) => index.sentences[i]);
 	},
 
-	async groundCitations(text, index) {
+	// Numbers each [CITE](<find:phrase>) token in order -- [1], [2], etc,
+	// per the system prompt's "numbering is assigned automatically". Used
+	// to also try replacing `phrase` with the "nearest" sentence found by
+	// embedding similarity against the whole document -- removed not
+	// because those calls were sequential (that was a real cost too, but
+	// batching via Promise.all would have fixed just the latency) but
+	// because SDT-structure-based resolution (see document/citations.js's
+	// LLMCitationPosition, used for BOTH navigation and verification, per
+	// request.js's synchronous resolvePositions call before rendering) is
+	// a strictly better check to begin with: exact presence in the PDF's
+	// real text rather than semantic similarity (which can be "close"
+	// without the cited text actually being there), no network dependency
+	// or API cost, and faster even batched. `phrase` itself is left
+	// exactly as the model wrote it -- verification now happens downstream
+	// of this function, not inside it.
+	groundCitations(text) {
 		// Lazy match up to the literal ">)" close, not just any bare ">" --
 		// the citation phrase is copied verbatim from the PDF (per the system
 		// prompt) and can itself contain a literal ">" (e.g. "values >20"),
@@ -316,27 +341,7 @@ LLMCitation = {
 		let counter = 1;
 		for (let match of matches) {
 			let [full, phrase] = match;
-			let searchPhrase = phrase;
-			if (index) {
-				try {
-					let queryEmbedding = await this.getEmbedding(phrase, index.model, index.provider);
-					let bestScore = -Infinity, bestIdx = -1;
-					for (let i = 0; i < index.embeddings.length; i++) {
-						let score = this.cosineSimilarity(queryEmbedding, index.embeddings[i]);
-						if (score > bestScore) {
-							bestScore = score;
-							bestIdx = i;
-						}
-					}
-					if (bestIdx >= 0) {
-						searchPhrase = index.sentences[bestIdx];
-					}
-				}
-				catch (e) {
-					this.log(`groundCitations: failed to ground "${phrase}": ${e.message}`);
-				}
-			}
-			result = result.replace(full, () => `[${counter}](<find:${searchPhrase}>)`);
+			result = result.replace(full, () => `[${counter}](<find:${phrase}>)`);
 			counter++;
 		}
 		return result;
@@ -368,11 +373,45 @@ LLMCitation = {
 		fc.find(params);
 	},
 
+	// Directly re-applies the reader's own highlight state (bypassing its
+	// _highlightPosition wrapper method, not calling it) -- best-effort
+	// reach into live reader internals, same pattern as
+	// llm-chat-pane.js's getReaderPageText/getReaderFullText. Silently
+	// gives up if the reader's internal shape doesn't match what's
+	// expected (e.g. a future Zotero version renames/restructures it).
+	_reapplyHighlight(reader, position) {
+		try {
+			let view = reader._iframeWindow?.wrappedJSObject?._reader?._primaryView;
+			if (!view) return;
+			view._highlightedPosition = position;
+			view._render();
+		}
+		catch (e) {
+			this.log(`_reapplyHighlight failed: ${e.message}`);
+		}
+	},
+
 	// Navigates to (and briefly highlights) a specific region on a page, given
 	// a position in the reader's native format: { pageIndex, rects: [[x0,y0,x1,y1]] }
 	// in bottom-up PDF space. Used for figures/tables, where we already know the
 	// exact region from extraction — more precise than navigateToText's caption
 	// search, and works regardless of whether the PDF has named destinations.
+	//
+	// The highlight itself is the reader's own transient flash (pdf-view.js's
+	// _highlightPosition, hardcoded ~2s, no public way to reconfigure or make
+	// persistent -- tried both, see git history if revisiting this). Its
+	// visible duration is inconsistent on its own though: reader.navigate()
+	// starts that flash's 2s timer immediately, but the SCROLL to the target
+	// page (especially a distant one) can itself take a noticeable, variable
+	// amount of time to finish rendering, eating into the same 2s window
+	// before the user can actually see anything -- so a citation far from
+	// the current page can flash for well under 2s. Re-applying the
+	// highlight once more, timed to land just after the reader's own
+	// auto-clear fires, gives a full-length flash AFTER scrolling has
+	// settled instead. This second flash isn't truly persistent (something
+	// in the reader's own render cycle eventually clears it too, just not
+	// on a fixed schedule we can predict) but is consistently visible for
+	// the full ~2s, which is what actually matters here.
 	async navigateToPosition(position) {
 		if (!Zotero.Reader || !position) return;
 		let win = Zotero.getMainWindow();
@@ -381,6 +420,10 @@ LLMCitation = {
 		let reader = Zotero.Reader.getByTabID(selectedID);
 		if (!reader) return;
 		await reader.navigate({ position });
+		// 50ms past the reader's own uncancellable 2000ms auto-clear --
+		// enough margin to reliably land after it fires without an
+		// unnecessarily long gap.
+		setTimeout(() => this._reapplyHighlight(reader, position), 2050);
 	},
 
 	// Like navigateToPosition, but for an annotation specifically (`key` is

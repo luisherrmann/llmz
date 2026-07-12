@@ -688,7 +688,7 @@ LLMRequest = {
 					},
 				};
 			};
-			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem, citationIndex } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText, onEmbeddingStart);
+			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText, onEmbeddingStart);
 			if (isCancelled()) return;
 			let tableIndexPromise = pdfItem
 				? LLMTables.getTableIndex(pdfItem).catch((e) => {
@@ -839,14 +839,49 @@ LLMRequest = {
 				chat.setMessageText(reply, "(No response)");
 			}
 			else {
-				let groundedText = await LLMCitation.groundCitations(result.text, citationIndex);
+				let groundedText = LLMCitation.groundCitations(result.text);
+				if (isCancelled()) return;
+				// Resolves EVERY citation's position in ONE batched call
+				// (see document/citations.js's LLMCitationPosition.
+				// resolvePositions) before rendering at all -- this is now
+				// citation VERIFICATION as much as navigation prefetch (see
+				// _renderMarkdown's own comment on citationPositions): a
+				// phrase that fails to resolve to a real position anywhere
+				// in the PDF's own text gets flagged in the rendered link
+				// rather than silently presented as equally trustworthy as
+				// a verified one, so this has to happen before render, not
+				// after. Awaiting it here is acceptable because the PRIMARY
+				// path (exact match against the SDT structure) is fast and
+				// in-process for every case except the very first citation
+				// ever resolved for a given PDF (which pays the one-time
+				// structure computation cost, ONCE per PDF rather than once
+				// per request). resolvePositions does still fall back to a
+				// (now BATCHED, not sequential) embedding lookup for a
+				// citation the exact matcher can't anchor at all -- a
+				// genuine paraphrase, which the model is instructed to keep
+				// rare by quoting one full verbatim sentence (see
+				// llm-prompt.js's citation format instructions) but can't
+				// eliminate -- so this can occasionally cost one batched
+				// network round trip, not per-citation ones.
+				let citationPositions = null;
+				if (pdfItem) {
+					let queries = [...groundedText.matchAll(/\(<find:([\s\S]+?)>\)/g)].map(m => m[1]);
+					if (queries.length) {
+						try {
+							citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries, onEmbeddingStart);
+						}
+						catch (e) {
+							this.log(`Citation position resolution failed: ${e.message}`);
+						}
+					}
+				}
 				if (isCancelled()) return;
 				// Keeps chat's own exportTranscript() (see export.js) in sync
 				// with the final grounded markdown -- reply's DOM content
 				// below ends up as rendered HTML, not something export.js
 				// could read back out directly.
 				chat.setMessageText(reply, groundedText);
-				let html = chatPane._renderMarkdown(groundedText, linkIndex);
+				let html = chatPane._renderMarkdown(groundedText, linkIndex, citationPositions);
 				if (html) {
 					let rendered = doc.createElement("div");
 					// llm-message-content too, not just llm-markdown -- this
@@ -875,7 +910,7 @@ LLMRequest = {
 						this.log(`rendered.innerHTML assignment failed: ${e.message}\nFull generated HTML:\n${html}`);
 						rendered.textContent = groundedText;
 					}
-					rendered.addEventListener("click", (e) => {
+					rendered.addEventListener("click", async (e) => {
 						let anchor = e.target.closest(".llm-find-link");
 						if (!anchor) return;
 						e.preventDefault();
@@ -889,11 +924,36 @@ LLMRequest = {
 						}
 						if (anchor.dataset.position) {
 							try {
-								LLMCitation.navigateToPosition(JSON.parse(anchor.dataset.position));
+								await LLMCitation.navigateToPosition(JSON.parse(anchor.dataset.position));
 							}
 							catch (err) {
 								this.log(`Failed to parse position for link: ${err.message}`);
 							}
+							return;
+						}
+						// The search phrase itself STAYS on the link (see
+						// llm-citation.js's groundCitations -- it's a useful,
+						// human-readable hover tooltip and a fallback), but
+						// navigation prefers resolving it to a precise
+						// {pageIndex, rects} position via the SDT structure's
+						// own per-character positions (see
+						// document/citations.js's LLMCitationPosition) --
+						// same direct-highlight path a table/figure click
+						// uses, rather than a text-search round trip through
+						// the reader's own (separately-implemented, and
+						// separately hyphen-lossy) find(). Only falls back to
+						// navigateToText if resolution fails outright (e.g.
+						// no PDF context, or a heavily paraphrased/
+						// hallucinated citation the SDT structure itself has
+						// no literal match for).
+						let position = pdfItem
+							? await LLMCitationPosition.resolvePosition(pdfItem, anchor.dataset.query).catch((err) => {
+								this.log(`resolvePosition failed: ${err.message}`);
+								return null;
+							})
+							: null;
+						if (position) {
+							await LLMCitation.navigateToPosition(position);
 							return;
 						}
 						LLMCitation.navigateToText(anchor.dataset.query);

@@ -21,7 +21,7 @@ LLMReferences = {
 	// _runNode with it) but IS a relative `import`ed dependency of both
 	// extract_tables_sdt.js and extract_figures_sdt.js, so it still has to
 	// be deployed alongside them -- see _deployFromPackedXPI below.
-	_siblingScriptNames: ["extract_equations.js", "extract_tables_sdt.js", "extract_figures_sdt.js", "match_captions.js"],
+	_siblingScriptNames: ["extract_equations.js", "extract_tables_sdt.js", "extract_figures_sdt.js", "match_captions.js", "compute_document_structure.js"],
 	_cacheVersion: 1, // bump when the cached index schema changes (JS-side, not just the script/model)
 	_indexCache: new Map(),
 	_extensionRoot: null,

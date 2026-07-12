@@ -330,10 +330,22 @@ LLMCitation = {
 		// prompt) and can itself contain a literal ">" (e.g. "values >20"),
 		// which would otherwise terminate the match early and leave the
 		// whole [CITE](<find:...>) token completely unmatched (silently
-		// left as literal, un-grounded text) -- see llm-chat-pane.js's
-		// _renderMarkdown for the matching fix on the other regex that
-		// processes this same token format downstream.
-		let pattern = /\[CITE\]\(<find:([\s\S]+?)>\)/g;
+		// left as literal, un-grounded text). That alone isn't quite enough
+		// though -- now that citations quote a full verbatim sentence (see
+		// llm-prompt.js's citation format instructions), a phrase can also
+		// contain the literal TWO-character sequence ">)" itself (e.g. "...
+		// the effect (>)5 in most cases..."), which would truncate the
+		// match at that false terminator instead of the real one. The
+		// trailing lookahead requires whatever follows a candidate ">)" to
+		// actually look like a token boundary (whitespace, sentence
+		// punctuation, a new "[" link starting, or end of string) --
+		// combined with the LAZY quantifier, the regex engine keeps
+		// extending the match past any ">)" that ISN'T followed by such a
+		// boundary (e.g. followed by a digit or letter continuing the
+		// sentence) until it finds the real one. Same pattern (and same
+		// reasoning) in request.js's citation-position query extraction and
+		// llm-chat-pane.js's _renderMarkdown -- keep all three in sync.
+		let pattern = /\[CITE\]\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]]|\[|$)/g;
 		let matches = [...text.matchAll(pattern)];
 		if (!matches.length) return text;
 

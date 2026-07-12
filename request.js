@@ -865,7 +865,15 @@ LLMRequest = {
 				// network round trip, not per-citation ones.
 				let citationPositions = null;
 				if (pdfItem) {
-					let queries = [...groundedText.matchAll(/\(<find:([\s\S]+?)>\)/g)].map(m => m[1]);
+					// Boundary lookahead (matching _renderMarkdown's own
+					// regex and llm-citation.js's groundCitations exactly --
+					// see either one's comment for why) so a citation
+					// phrase that happens to contain a literal ">)" doesn't
+					// get truncated at that false terminator. Must extract
+					// the SAME payload string _renderMarkdown will (below),
+					// or citationPositions' lookup-by-payload silently
+					// misses.
+					let queries = [...groundedText.matchAll(/\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]]|\[|$)/g)].map(m => m[1]);
 					if (queries.length) {
 						try {
 							citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries, onEmbeddingStart);

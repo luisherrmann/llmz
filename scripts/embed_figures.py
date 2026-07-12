@@ -7,7 +7,10 @@ enabling direct cosine similarity between text and image embeddings.
 Install: pip install transformers torch Pillow einops
 Usage:   python3 embed_figures.py <figures_json_path> <output_json_path>
 
-Input:  JSON array from extract_figures.py — each entry has image_data (base64 JPEG).
+Input:  JSON array from extract_figures_sdt.js, after document/figures.js's
+        own render_crops.py step has filled in each entry's image_data
+        (base64 JPEG) -- extract_figures_sdt.js itself always leaves
+        image_data null (SDT-only detection, no PyMuPDF rendering).
 Output: Same array with an `embedding` field added to each entry. image_data is kept
 so cached figures can still be sent as image context to vision-capable models.
 """
@@ -109,6 +112,8 @@ if __name__ == '__main__':
             output.append({
                 'page_num': fig['page_num'],
                 'figure_num': fig['figure_num'],
+                'figure_extra_num': fig.get('figure_extra_num'),
+                'figure_id': fig.get('figure_id'),
                 'label': fig['label'],
                 'caption': fig['caption'],
                 'embedding': emb,

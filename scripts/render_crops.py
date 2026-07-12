@@ -1,38 +1,45 @@
 #!/usr/bin/env python3
 """
-Renders a cropped JPEG for each of the given (page_num, bbox) regions -- the
-image-rendering half of what extract_tables.py used to do in one pass, split
-out so it can be invoked lazily (only when an actual image is needed, e.g.
-at table-export time) against the SDT-only detection pipeline's cached
-bounding boxes (see extract_tables_sdt.js), rather than unconditionally for
-every table on every chat message.
+Renders a cropped JPEG for each of the given (page_num, bbox) regions -- a
+generic, item-agnostic rendering step split out of the old caption-anchored
+extract_tables.py (which used to render every table's image unconditionally
+as part of detection itself), now shared by both document/tables.js
+(invoked lazily, only when an actual image is needed, e.g. at table-export
+time, against extract_tables_sdt.js's cached bounding boxes) and
+document/figures.js (invoked eagerly, right after extract_figures_sdt.js's
+own detection pass, since a figure's image is a hard dependency of both its
+own embedding step and the "send this figure as image context to the model"
+feature -- see figures.js's own comment for why that can't be deferred the
+way table images can). All this script needs is a (page_num, bbox) region;
+it has no notion of what kind of item that region belongs to.
 
 A Node/pdf.js equivalent (using Zotero's own document-worker rendering
 pipeline) was also prototyped, but measured consistently ~2.5-3x slower than
 this PyMuPDF version even after matching render scale and JPEG output format
 -- the gap is Node/ESM/canvas startup overhead, not encode work, so it
 doesn't shrink with tuning. Kept as PyMuPDF since this plugin already
-requires the Python venv for figure extraction/embedding regardless
-(document/figures.js's extract_figures.py/embed_figures.py), so this doesn't
-add a new dependency either way.
+requires the Python venv for figure embedding regardless
+(document/figures.js's embed_figures.py), so this doesn't add a new
+dependency either way.
 
 A multiprocessing.Pool variant (concurrency 8, PyMuPDF explicitly does not
 support threading) was also tried, since table exports can request several
-tables at once. Measured slower than this plain sequential version for the
-realistic case (a handful of tables -- e.g. 4 regions: ~0.3-0.5s pooled vs.
+regions at once. Measured slower than this plain sequential version for the
+realistic case (a handful of regions -- e.g. 4: ~0.3-0.5s pooled vs.
 ~0.15-0.23s sequential, pool-startup cost dominating at that scale) and only
 modestly faster (~15-20%) once well past what a real export batch looks like
 (32 regions). Not worth the added complexity for the common case, so kept
 plain sequential.
 
-Usage: python3 render_table_crops.py <pdf_path> <regions_json_path> <output_json_path>
+Usage: python3 render_crops.py <pdf_path> <regions_json_path> <output_json_path>
 Input (regions_json_path): JSON array of { index, page_num, bbox }.
   page_num is 1-indexed. bbox is [x0,y0,x1,y1] in PDF-native (bottom-left
-  origin, y-up) space -- the same convention document/tables.js's `position`
-  field already uses everywhere else, so callers can pass position.rects[0]
-  and position.pageIndex+1 directly with no conversion of their own.
+  origin, y-up) space -- the same convention document/tables.js's and
+  document/figures.js's `position` field already uses everywhere else, so
+  callers can pass position.rects[0] and position.pageIndex+1 directly with
+  no conversion of their own.
 Output: JSON array of { index, image_data }, `index` carried through
-  unchanged so callers can match results back to their own table list.
+  unchanged so callers can match results back to their own item list.
 """
 
 import sys
@@ -84,7 +91,7 @@ def render_crops(pdf_path, regions):
 
 if __name__ == '__main__':
     if len(sys.argv) != 4:
-        print('Usage: render_table_crops.py <pdf_path> <regions_json_path> <output_json_path>', file=sys.stderr)
+        print('Usage: render_crops.py <pdf_path> <regions_json_path> <output_json_path>', file=sys.stderr)
         sys.exit(1)
 
     try:
@@ -93,7 +100,7 @@ if __name__ == '__main__':
         output = render_crops(sys.argv[1], regions)
         with open(sys.argv[3], 'w') as f:
             json.dump(output, f)
-        print(f'Rendered {len(output)} table image(s)', file=sys.stderr)
+        print(f'Rendered {len(output)} image(s)', file=sys.stderr)
     except Exception as e:
         print(f'Error: {e}', file=sys.stderr)
         sys.exit(1)

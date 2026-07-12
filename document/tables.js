@@ -26,7 +26,7 @@ LLMTables = {
 	// Python venv regardless for figure extraction/embedding
 	// (document/figures.js), so PyMuPDF here isn't adding a new dependency
 	// either way.
-	_renderScriptName: "render_table_crops.py",
+	_renderScriptName: "render_crops.py",
 	_cacheVersion: 3, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_indexCache: new Map(),
 
@@ -212,7 +212,7 @@ LLMTables = {
 	},
 
 	// Lazily renders image_data for whichever of `tables` don't already have
-	// it (see scripts/render_table_crops.py and _renderScriptName's own
+	// it (see scripts/render_crops.py and _renderScriptName's own
 	// comment) -- against each table's own cached `position` (the bounding
 	// box the SDT-only detection already found, no re-detection needed), so
 	// a caller like tools/table-export.js's image-grounded CSV conversion

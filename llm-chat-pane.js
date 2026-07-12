@@ -358,6 +358,7 @@ LLMChatPane = {
 	//   [label](<ref:table:N>) /
 	//   [label](<ref:tableExtra:N>) /
 	//   [label](<ref:figure:N>) /
+	//   [label](<ref:figureExtra:N>) /
 	//   [label](<ref:equation:N>) /
 	//   [label](<ref:note:KEY>)    -- table/figure/equation/note mention: looked
 	//                                  up in linkIndex for precise navigation --
@@ -444,6 +445,18 @@ LLMChatPane = {
 				// LLMPrompt.buildLinkIndex.
 				let key = refType === "note" ? refNum : parseInt(refNum, 10);
 				let entry = linkIndex?.[refType]?.get(key);
+				// Fallback for table/figure links specifically: a model that
+				// gets the ref: token itself wrong (wrong type, e.g.
+				// ref:figure:F.8 instead of ref:figureExtra:1, or an
+				// outright invented number) has still almost always copied
+				// the VISIBLE label correctly, since that's just verbatim
+				// caption text -- resolve by that instead of leaving the
+				// link silently dead. See LLMPrompt.buildLinkIndex's byLabel
+				// for why this is safe/sufficient across both numbering
+				// schemes (table/tableExtra, figure/figureExtra).
+				if (!entry && (refType === "table" || refType === "tableExtra" || refType === "figure" || refType === "figureExtra")) {
+					entry = linkIndex?.byLabel?.get(label.toLowerCase());
+				}
 				if (!entry) return label;
 				// The rendered link text always stays short -- for a
 				// reference mention specifically, just "[12]" (the model

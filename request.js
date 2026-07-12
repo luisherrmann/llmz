@@ -486,17 +486,26 @@ LLMRequest = {
 	// the current model supports image input, plus (only when the user
 	// DIDN'T paste any themselves) the best-matching figure(s) for `prompt`,
 	// if any have their own image data and the model supports vision.
-	// Unlike the other four context builders, this doesn't return a
-	// modelPrompt `addition` (images aren't injected as prompt TEXT) --
-	// just `images` (the data URIs to actually send) and `index` (the raw
-	// figure index, needed later for linkIndex's citation-link resolution
-	// on figures the model's text mentions, regardless of whether any of
-	// them ended up attached as images here).
+	// Unlike the other four context builders, `images` (the data URIs to
+	// actually send) aren't injected as prompt TEXT -- but `addition`
+	// (returned same as those other builders) still is: a figure attached
+	// as a pure image has no OTHER way to tell the model its own citable
+	// ref:figure:N/ref:figureExtra:N target the way a numbered figure's own
+	// printed caption (visible right there in the crop) implicitly can --
+	// this matters specifically for a figure_num === null figure (an
+	// appendix-lettered caption, or a synthetic heading-derived label for
+	// an uncaptioned one -- see scripts/extract_figures_sdt.js), which the
+	// model has no way to derive a citable number for just by looking at
+	// the image. `index` is the raw figure index, needed later for
+	// linkIndex's citation-link resolution on figures the model's text
+	// mentions, regardless of whether any of them ended up attached as
+	// images here.
 	async _buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, ctx) {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
 		let images = [];
+		let addition = "";
 		let figureIndex = await figureIndexPromise;
-		if (isCancelled()) return { index: figureIndex, images };
+		if (isCancelled()) return { index: figureIndex, images, addition };
 		try {
 			let currentModel = await LLMInterfaces.getCurrentModel();
 			let supportsImages = await LLMInterfaces.modelSupportsImages(currentModel);
@@ -520,20 +529,22 @@ LLMRequest = {
 			// model's text mentions).
 			if (figureIndex?.figures?.length && supportsImages && !pastedImageDataUris.length) {
 				let bestFigures = await LLMPrompt.selectFiguresWithLLM(figureIndex, prompt, readerContext);
-				if (isCancelled()) return { index: figureIndex, images };
+				if (isCancelled()) return { index: figureIndex, images, addition };
 				let figuresWithImages = bestFigures.filter(f => f.image_data);
 				if (figuresWithImages.length) {
 					images.push(...figuresWithImages.map(f => f.image_data));
 					let labels = figuresWithImages.map(f => f.label || `figure ${f.figure_num}`).join(", ");
 					let msg = appendMessage("System", `Including ${figuresWithImages.length} figure${figuresWithImages.length === 1 ? "" : "s"} as image context (best match for your question, ${currentModel} supports vision): ${labels}. Click to jump to the first one.`);
 					makeMessageClickable(msg, figuresWithImages[0]);
+					let figureBlock = figuresWithImages.map(f => LLMPrompt._formatFigureCitationHint(f)).join("\n");
+					addition = `\n\n<FIGURE_CONTEXT>\n${figureBlock}\n</FIGURE_CONTEXT>`;
 				}
 			}
 		}
 		catch (e) {
 			if (!isCancelled()) this.log(`Image context setup failed: ${e.message}`);
 		}
-		return { index: figureIndex, images };
+		return { index: figureIndex, images, addition };
 	},
 
 	// Same shape/rationale as _buildTableContext above, for the
@@ -763,6 +774,7 @@ LLMRequest = {
 			let imageResult = await this._buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, ctx);
 			if (isCancelled()) return;
 			let images = imageResult.images;
+			modelPrompt += imageResult.addition;
 
 			let referenceResult = await this._buildReferenceContext(referenceIndexPromise, prompt, readerContext, ctx);
 			if (isCancelled()) return;

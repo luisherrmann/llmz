@@ -51,6 +51,7 @@ LLMPrompt = {
 		"For equations, N is the bare number the PDF prints next to the equation (e.g. for '(3)', use ref:equation:3), and only use this for equations the PDF itself numbers this way — never invent a number for an unlabeled formula.",
 		"An equation shown to you in <EQUATION_CONTEXT> labeled 'Formula N' has no number in the original paper, so it uses a different link format: [Formula N](<ref:formula:N>), using the exact N shown to you in <EQUATION_CONTEXT> (do not confuse this with the ref:equation:N format above, which is only for equations the PDF itself numbers).",
 		"Similarly, a table shown to you in <TABLE_CONTEXT> may carry a bracketed hint right after its label, like '[cite as ref:tableExtra:2]' -- this means it has no plain paper-printed number (e.g. its label is a letter-and-number like 'Table D.1', or a section name), so ref:table:N doesn't apply to it. If you see this hint, use its exact label as the visible text but link it with the exact ref:tableExtra:N given in the hint, copied verbatim -- never invent or count your own N for these.",
+		"Every figure attached to you as an image is also listed, one line per figure, in a <FIGURE_CONTEXT> block as '<label>: cite as <ref>' -- always use the EXACT ref given there when you cite that figure, copied verbatim; never invent or count your own N. Most figures give you 'cite as ref:figure:N' (a real paper-printed number, e.g. Figure 3), but some instead give you 'cite as ref:figureExtra:N' -- that means the figure has no plain paper-printed number (e.g. an appendix-lettered caption like 'Figure D.1', or no caption at all), so ref:figure:N does not apply to it; use its exact label from <FIGURE_CONTEXT> as the visible link text either way.",
 		"The visible label in brackets must be the exact label as given in its context (e.g. 'Table 1', 'Figure 2a', 'Equation 3', 'Formula 8') — do not renumber, reletter, or rephrase it.",
 		"The angle brackets around ref: are mandatory, exactly like the citation format above.",
 		"Example: 'As shown in [Table 1](<ref:table:1>), the reaction rate doubles.'",
@@ -65,7 +66,7 @@ LLMPrompt = {
 		"Example: for an entry 'Note 1 (Highlight, p. 4) [key: AB12CD34]: ...', write 'Your highlight on this point [Note 1](<ref:note:AB12CD34>) is directly relevant here.' -- 'Note 1' is the label, 'AB12CD34' (that note's own key) is the link target.",
 		"Whenever you mention a specific page of the PDF by number (e.g. 'on page 5', 'see page 12'), wrap the page number in a link so the reader can jump straight there: [page N](<ref:page:N>), where N is the page number -- this works for any page, not just ones with a table/figure/equation/note on them, and is separate from those ref: formats above.",
 		"Example: 'The methodology is described in more detail on [page 7](<ref:page:7>).'",
-		"NEVER put any of the link formats above -- [CITE](<find:...>), [Table N](<ref:table:N>), [<label>](<ref:tableExtra:N>), [Figure N](<ref:figure:N>), [Equation N](<ref:equation:N>), [Formula N](<ref:formula:N>), [N](<ref:reference:N>), [Note N](<ref:note:...>), or [page N](<ref:page:N>) -- inside a math environment ($<formula>$ or $$<formula>$$). Links only work in plain text; a $...$/$$...$$ formula must contain ONLY the formula itself, never a link. This does not apply to Markdown table cells (which are plain text, not math) -- links work normally there.",
+		"NEVER put any of the link formats above -- [CITE](<find:...>), [Table N](<ref:table:N>), [<label>](<ref:tableExtra:N>), [Figure N](<ref:figure:N>), [<label>](<ref:figureExtra:N>), [Equation N](<ref:equation:N>), [Formula N](<ref:formula:N>), [N](<ref:reference:N>), [Note N](<ref:note:...>), or [page N](<ref:page:N>) -- inside a math environment ($<formula>$ or $$<formula>$$). Links only work in plain text; a $...$/$$...$$ formula must contain ONLY the formula itself, never a link. This does not apply to Markdown table cells (which are plain text, not math) -- links work normally there.",
 		"If a $...$/$$...$$ formula needs to reference a table/figure/equation/note, write its plain label as ordinary text immediately next to the formula instead, not inside it -- e.g. 'the result in Equation 1: $x = \\phi_s(s)$' with the link on 'Equation 1', not inside the $...$.",
 	].join(" "),
 
@@ -113,6 +114,18 @@ LLMPrompt = {
 	// several relevant figures, and reading the whole caption list once and
 	// returning every relevant number is one call regardless of how many
 	// match, vs. O(N) calls for a one-call-per-candidate approach.
+	//
+	// Matched against figure_id -- a plain sequential integer assigned to
+	// EVERY figure regardless of whether it has a real printed number (see
+	// scripts/extract_figures_sdt.js) -- same reasoning as
+	// selectTablesWithLLM's own use of table_id: a figure's own `label`
+	// isn't always a short, comma-free number (an appendix-lettered caption
+	// like "Figure D.1", or a synthetic heading-derived label for an
+	// uncaptioned figure, CAN contain a comma itself), and figure_num is
+	// null for exactly those cases, so matching on it directly (the old
+	// caption-anchored PyMuPDF pipeline's approach, back when every figure
+	// it could find at all necessarily had a real number) would silently
+	// drop them from the selection round-trip entirely.
 	async selectFiguresWithLLM(figureIndex, query, readerContext = {}) {
 		let figures = figureIndex?.figures;
 		if (!figures?.length) return [];
@@ -122,16 +135,16 @@ LLMPrompt = {
 		// (the user's OWN current page) so the model can correlate a
 		// page-scoped question ("the figure on this page") against each
 		// candidate's actual location, not just its caption text.
-		let captionList = figures.map(f => `(p.${f.page_num}) ${f.label}: ${f.caption}`).join("\n");
+		let captionList = figures.map(f => `[${f.figure_id}] (p.${f.page_num}) ${f.label}: ${f.caption}`).join("\n");
 		let selectionPrompt = [
 			"You are choosing which figures (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant figures -- include all of them, not just the single best one.",
 			...this._buildReaderContextLines(readerContext),
-			"Here are the figures in this paper, each preceded by its page number:",
+			"Here are the figures in this paper, each preceded by its id and page number:",
 			captionList,
 			"",
 			`User's question: "${query}"`,
 			"",
-			'Respond with ONLY a comma-separated list of every relevant figure number (e.g. "2, 5"), or "none" if no figure is relevant. Do not include any other text.',
+			'Respond with ONLY a comma-separated list of the ids of every relevant figure (e.g. "2, 5"), or "none" if no figure is relevant. Do not include any other text.',
 		].join("\n");
 
 		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
@@ -141,15 +154,33 @@ LLMPrompt = {
 		let seen = new Set();
 		let selected = [];
 		for (let match of text.matchAll(/\d+/g)) {
-			let figureNum = parseInt(match[0], 10);
-			if (seen.has(figureNum)) continue;
-			let figure = figures.find(f => f.figure_num === figureNum);
+			let id = parseInt(match[0], 10);
+			if (seen.has(id)) continue;
+			let figure = figures.find(f => f.figure_id === id);
 			if (!figure) continue;
-			seen.add(figureNum);
+			seen.add(id);
 			selected.push(figure);
 			if (selected.length >= MAX_SELECTED_FIGURES) break;
 		}
 		return selected;
+	},
+
+	// One line per figure attached as image context (see request.js's
+	// _buildImageContext), telling the model exactly which ref: token to
+	// cite it with -- a numbered figure's own printed caption is visible
+	// right there in the attached crop, so the model could in principle
+	// derive ref:figure:N on its own, but an unnumbered one (figure_num
+	// === null -- an appendix-lettered caption, or a synthetic
+	// heading-derived label for an uncaptioned figure, see
+	// scripts/extract_figures_sdt.js) has NO such visible number to read at
+	// all, so this is the only way it ever learns the right
+	// ref:figureExtra:N to use. Included for every attached figure
+	// uniformly (not just unnumbered ones) so the format is one predictable
+	// line per figure rather than two different shapes depending on
+	// numbering.
+	_formatFigureCitationHint(f) {
+		let ref = f.figure_num !== null ? `ref:figure:${f.figure_num}` : `ref:figureExtra:${f.figure_extra_num}`;
+		return `${f.label}: cite as ${ref}`;
 	},
 
 	_formatTableMarkdown(t) {
@@ -421,7 +452,20 @@ LLMPrompt = {
 			tableExtra: new Map((tableIndex?.tables || [])
 				.filter(t => t.table_num === null && t.table_extra_num != null)
 				.map(t => [t.table_extra_num, { position: t.position, caption: t.caption }])),
-			figure: new Map((figureIndex?.figures || []).map(f => [f.figure_num, { position: f.position, caption: f.caption }])),
+			// Same table_num/table_extra_num split as tables above, now that
+			// SDT-only detection (scripts/extract_figures_sdt.js) can find a
+			// figure with no real printed number too (an appendix-lettered
+			// caption like "Figure D.1", or a synthetic heading-derived
+			// label for an uncaptioned one) -- the old caption-anchored
+			// PyMuPDF pipeline this replaced could only ever find NUMBERED
+			// figures in the first place, so this split didn't used to be
+			// needed here.
+			figure: new Map((figureIndex?.figures || [])
+				.filter(f => f.figure_num !== null)
+				.map(f => [f.figure_num, { position: f.position, caption: f.caption }])),
+			figureExtra: new Map((figureIndex?.figures || [])
+				.filter(f => f.figure_num === null && f.figure_extra_num != null)
+				.map(f => [f.figure_extra_num, { position: f.position, caption: f.caption }])),
 			reference: new Map((referenceIndex?.references || []).map(r => [r.index, {
 				label: `[${r.index}] ${r.text}`,
 				caption: r.text.split(/\s+/).slice(0, 8).join(" "),
@@ -451,6 +495,23 @@ LLMPrompt = {
 				position: n.position,
 				caption: n.caption,
 			}])),
+			// Fallback lookup by the table's/figure's own LABEL text (e.g.
+			// "table d.1", "figure f.8"), used by llm-chat-pane.js's
+			// _renderMarkdown ONLY when the primary table/tableExtra/figure/
+			// figureExtra numeric lookup above fails -- a model that gets a
+			// ref:table:N/ref:figure:N token wrong (wrong ref TYPE, e.g.
+			// ref:figure:F.8 instead of ref:figureExtra:1, or an invented
+			// number) has still almost always copied the VISIBLE LABEL
+			// correctly, since that's just verbatim caption text, not
+			// something it has to compute -- so resolving by that label
+			// self-heals a malformed ref: token instead of leaving the link
+			// silently dead. Covers every table/figure regardless of
+			// table_num/table_extra_num vs figure_num/figure_extra_num, so
+			// one shared map suffices rather than one per numbering scheme.
+			byLabel: new Map([
+				...(tableIndex?.tables || []).map(t => [t.label.toLowerCase(), { position: t.position, caption: t.caption }]),
+				...(figureIndex?.figures || []).map(f => [f.label.toLowerCase(), { position: f.position, caption: f.caption }]),
+			]),
 		};
 	},
 

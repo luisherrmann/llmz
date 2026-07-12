@@ -1,0 +1,344 @@
+// Shared geometric caption-matching toolkit, factored out of
+// extract_tables_sdt.js so extract_figures_sdt.js can reuse the exact same
+// pairing algorithm against `type: 'image'` SDT blocks instead of
+// `type: 'table'` ones -- the matching problem (pair a body block with its
+// nearest caption, merge split bodies, fall back to a nearest-heading label
+// for anything still unmatched) is identical for both, only the block type
+// filter and caption-prefix regex differ per caller. Nothing in this module
+// is table- or figure-specific; see each call site's own comments for that
+// part.
+
+// Flattens a structure node's nested `content` array (text spans, possibly
+// nested inside further content-bearing nodes) into a single plain string.
+export function flattenText(node) {
+	if (!node || !Array.isArray(node.content)) return '';
+	return node.content.map(child => (
+		typeof child.text === 'string' ? child.text : flattenText(child)
+	)).join('');
+}
+
+export function rectDistance(a, b) {
+	let dx = Math.max(a[0] - b[2], b[0] - a[2], 0);
+	let dy = Math.max(a[1] - b[3], b[1] - a[3], 0);
+	return Math.sqrt(dx * dx + dy * dy);
+}
+
+export function unionRect(a, b) {
+	return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
+}
+
+export function extendRect(a, m) {
+	return [a[0] - m, a[1] - m, a[2] + m, a[3] + m];
+}
+
+export function iou(a, b) {
+	let ix0 = Math.max(a[0], b[0]), iy0 = Math.max(a[1], b[1]);
+	let ix1 = Math.min(a[2], b[2]), iy1 = Math.min(a[3], b[3]);
+	if (ix1 <= ix0 || iy1 <= iy0) return 0;
+	let inter = (ix1 - ix0) * (iy1 - iy0);
+	let areaA = (a[2] - a[0]) * (a[3] - a[1]);
+	let areaB = (b[2] - b[0]) * (b[3] - b[1]);
+	return inter / (areaA + areaB - inter);
+}
+
+export const EXTEND_MARGIN = 10;
+
+// Groups `images` (a page's `type: 'image'` SDT blocks) into clusters using
+// each image's nearest NON-image neighbor above and below it on the page
+// (by vertical center, scanning `allBlocks` -- every block on the page,
+// any type), rather than block-index adjacency or a fixed distance margin.
+// Two images that share the exact same (nearest-above, nearest-below) pair
+// of non-image blocks are, by construction, part of the same unbroken run
+// of image blocks bounded by real content on both sides -- i.e. pieces of
+// one visual figure -- regardless of how far apart they sit geometrically
+// or how their own block indices happen to be ordered.
+//
+// Needed for a case block-index proximity and small-margin bbox merging
+// (the existing pairWithCaptions post-pass, see its own comment) both miss
+// entirely: a complex multi-panel figure (chemical structures, plot tick
+// labels, legend swatches) can come back from SDT as a hundred-plus tiny
+// image blocks scattered across most of a page, with gaps between
+// individual fragments far wider than any margin that's safe to use
+// page-wide -- AND, observed on Penner et al.'s Figure 2, with SDT's own
+// reading-order block indices for that whole cluster of fragments landing
+// entirely AFTER the figure's own caption, even though the fragments sit
+// visually ABOVE it on the page -- so block-index proximity to the caption
+// doesn't work as a grouping signal either. What's reliable is that the
+// ENTIRE run of fragments making up one figure is bounded above and below
+// by the same two pieces of real surrounding content (e.g. a heading above
+// and the figure's own caption below) with no non-image block breaking up
+// the run in between -- exactly what this groups on.
+//
+// A single misclassified non-image block sitting in the middle of a real
+// figure (e.g. an axis-label paragraph SDT mistyped as a caption) will
+// still split that figure into two groups here -- this only fixes the
+// block-index/margin blind spots above, not every possible misclassification
+// -- but each half remains large enough to survive the caller's own
+// size-based candidate filtering and can still be reunited by the existing
+// pairWithCaptions post-pass (its own bbox-overlap merge, or same-page
+// nearest-distance matching if both halves end up unmatched).
+//
+// `allBlocks`: [{ blockIndex, bbox }] -- every block on ONE page, any type.
+// `images`: [{ blockIndex, bbox, content }] -- the SAME page's `type: 'image'`
+//   blocks only (a subset of `allBlocks`).
+// Returns one merged candidate per group: { blockIndex, bbox, content },
+// `blockIndex` is the group's lowest member index (for reading-order
+// placement downstream, same convention as everywhere else in this module).
+export function groupImagesByBoundary(allBlocks, images) {
+	let sorted = [...allBlocks].sort((a, b) => {
+		let aCenter = (a.bbox[1] + a.bbox[3]) / 2;
+		let bCenter = (b.bbox[1] + b.bbox[3]) / 2;
+		return bCenter - aCenter; // descending y-center: top of page first
+	});
+	let imageIndexSet = new Set(images.map(im => im.blockIndex));
+	let positionByBlockIndex = new Map(sorted.map((b, pos) => [b.blockIndex, pos]));
+
+	let groups = new Map(); // "aboveIndex|belowIndex" -> images[]
+	for (let im of images) {
+		let pos = positionByBlockIndex.get(im.blockIndex);
+		let above = null, below = null;
+		for (let k = pos - 1; k >= 0; k--) {
+			if (!imageIndexSet.has(sorted[k].blockIndex)) { above = sorted[k].blockIndex; break; }
+		}
+		for (let k = pos + 1; k < sorted.length; k++) {
+			if (!imageIndexSet.has(sorted[k].blockIndex)) { below = sorted[k].blockIndex; break; }
+		}
+		let key = `${above}|${below}`;
+		if (!groups.has(key)) groups.set(key, []);
+		groups.get(key).push(im);
+	}
+
+	let merged = [];
+	for (let group of groups.values()) {
+		let bbox = group.reduce((acc, im) => acc ? unionRect(acc, im.bbox) : im.bbox, null);
+		let blockIndex = Math.min(...group.map(im => im.blockIndex));
+		let content = group.flatMap(im => im.content || []);
+		merged.push({ blockIndex, bbox, content });
+	}
+	return merged;
+}
+
+// How many blocks apart (in structure.content's own flat, page-spanning
+// order) a body and caption may be for the cross-page pairing pass below to
+// still consider them a match. See that pass's own comment for why this is
+// a block-count window rather than a distance/margin in PDF points -- there
+// is no shared coordinate space to measure a margin in across two different
+// pages' bboxes.
+export const CROSS_PAGE_BLOCK_WINDOW = 3;
+
+// "above"/"below" describes where the caption sits relative to the body
+// block, in reading-order terms (native/bottom-up y: larger y = higher on
+// the page) -- "above" means the caption's center sits higher on the page
+// than the body's (LaTeX \caption-before-\begin{...} convention), "below"
+// the opposite (Nature/Scientific-Reports convention).
+export function captionArrangement(bodyBbox, captionBbox) {
+	let bodyCenterY = (bodyBbox[1] + bodyBbox[3]) / 2;
+	let captionCenterY = (captionBbox[1] + captionBbox[3]) / 2;
+	return captionCenterY > bodyCenterY ? "above" : "below";
+}
+
+// Matches captions to body blocks (table bodies, or figure/image blocks),
+// unions their bboxes, then merges any still-unmatched body into an
+// already-paired one on the same page if extending its bbox overlaps one at
+// all (handles SDT splitting one real table/figure into multiple blocks).
+//
+// `bodies`: [{ blockIndex, page_num, bbox, content }]
+// `captions`: [{ blockIndex, page_num, bbox, text }] -- already filtered by
+//   the caller to whatever caption-prefix regex applies (e.g. "Table"/"Tbl"
+//   or "Figure"/"Fig").
+//
+// Pairing happens in three passes:
+//  1. Per-page equal-count fast path: when a page has exactly as many body
+//     blocks as captions, pair them by READING ORDER (block index), not
+//     distance -- two items stacked closely together can have a caption
+//     sitting geometrically CLOSER to the wrong item's body than to its own
+//     (observed on Bozkurt et al.'s page 11: Table 3's body ended up nearer
+//     to Table 4's caption than to Table 3's own caption, mismatching them
+//     under pure nearest-distance matching). A page's own item/caption
+//     sequence is essentially never out of reading order, unlike raw
+//     geometric distance, so this is the more reliable signal whenever the
+//     counts line up 1:1.
+//  2. Nearest-distance greedy matching (the original approach) for
+//     whatever's left afterward -- pages where the counts didn't match, so
+//     there's no clean 1:1 correspondence to exploit.
+//  3. Cross-page block-adjacency matching, for whatever's STILL unmatched --
+//     covers a body and caption split across a page break (e.g. a full-page
+//     figure whose caption spills onto the next page, observed on Scutteri
+//     et al.'s page 7/8 boundary). Passes 1-2 both compare bboxes, which
+//     only makes sense within a single page's own coordinate space -- a
+//     body on page 7 and a caption on page 8 aren't geometrically
+//     comparable at all without fusing the two pages' coordinate systems
+//     (page height/rotation/scale), which this deliberately avoids. Instead
+//     it uses `blockIndex` proximity within CROSS_PAGE_BLOCK_WINDOW blocks:
+//     structure.content is already one flat, page-spanning sequence in true
+//     document reading order, so a caption that spills onto the next page
+//     is, BY CONSTRUCTION, one of the very next blocks after its figure (or
+//     one of the very last before it, for a caption-above convention) --
+//     not something that needs geometry to locate at all. The window
+//     tolerates a stray intervening block or two (a sentence of body text,
+//     a footnote); it does NOT need to account for running headers/footers/
+//     page numbers specifically, since SDT already excludes those upstream
+//     via its own flowClass: 'excluded' classification (see
+//     sdt/document-worker/src/pdf/structure/page-label.js) -- they never
+//     reach structure.content in the first place.
+//
+// Returns { matched: [{ blockIndex, page_num, bbox, label, caption, content }],
+//   unmatchedBodies: [...] } -- `label`/`caption` both hold the matched
+// caption's own text (kept as two separate fields since callers currently
+// use `label` as the parseable-for-a-number source and `caption` as the
+// full caption text verbatim, even though they start out identical here).
+// For a cross-page pair specifically, `bbox` is the body's OWN bbox alone
+// (not unioned with the caption's, which lives on a different page and
+// isn't a meaningful union target) -- see the final mapping step below.
+export function pairWithCaptions(bodies, captions) {
+	let unmatchedBodies = bodies.map((b, i) => ({ ...b, _i: i }));
+	let unmatchedCaptions = captions.map((c, i) => ({ ...c, _i: i }));
+	let takenB = new Set(), takenC = new Set();
+	let pairs = [];
+
+	let pages = new Set([...unmatchedBodies.map(b => b.page_num), ...unmatchedCaptions.map(c => c.page_num)]);
+	for (let page of pages) {
+		let pageBodies = unmatchedBodies.filter(b => b.page_num === page);
+		let pageCaptions = unmatchedCaptions.filter(c => c.page_num === page);
+		if (!pageBodies.length || pageBodies.length !== pageCaptions.length) continue;
+		let sortedBodies = [...pageBodies].sort((a, b) => a.blockIndex - b.blockIndex);
+		let sortedCaptions = [...pageCaptions].sort((a, b) => a.blockIndex - b.blockIndex);
+		for (let i = 0; i < sortedBodies.length; i++) {
+			takenB.add(sortedBodies[i]._i);
+			takenC.add(sortedCaptions[i]._i);
+			pairs.push({ body: sortedBodies[i], caption: sortedCaptions[i] });
+		}
+	}
+
+	// A paper is essentially always internally consistent about whether
+	// captions sit above or below their body (LaTeX vs. Nature/Sci-Reports
+	// style) -- establish that convention from pass 1's confident
+	// (reading-order) matches, then deprioritize pass 2 candidates that
+	// would violate it: a candidate pairing that puts the caption on the
+	// "wrong" side is unlikely to be the real match even when it happens to
+	// be geometrically closer. No preference is applied if pass 1 itself
+	// didn't produce a clear majority (including no pass-1 matches at all).
+	let arrangementCounts = { above: 0, below: 0 };
+	for (let p of pairs) {
+		arrangementCounts[captionArrangement(p.body.bbox, p.caption.bbox)]++;
+	}
+	let dominantArrangement = null;
+	if (arrangementCounts.above !== arrangementCounts.below) {
+		dominantArrangement = arrangementCounts.above > arrangementCounts.below ? "above" : "below";
+	}
+
+	let candidates = [];
+	for (let b of unmatchedBodies) {
+		if (takenB.has(b._i)) continue;
+		for (let c of unmatchedCaptions) {
+			if (takenC.has(c._i)) continue;
+			if (b.page_num !== c.page_num) continue;
+			let dist = rectDistance(b.bbox, c.bbox);
+			if (dominantArrangement && captionArrangement(b.bbox, c.bbox) !== dominantArrangement) {
+				dist = Infinity;
+			}
+			candidates.push({ b, c, dist });
+		}
+	}
+	candidates.sort((a, b) => a.dist - b.dist);
+	for (let { b, c } of candidates) {
+		if (takenB.has(b._i) || takenC.has(c._i)) continue;
+		takenB.add(b._i);
+		takenC.add(c._i);
+		pairs.push({ body: b, caption: c });
+	}
+
+	// Pass 3: cross-page block-adjacency (see this function's own comment
+	// above for the full rationale). Greedy nearest-blockIndex-distance,
+	// same shape as pass 2's own candidate-sort-and-assign loop, just
+	// keyed on block-count distance instead of rectDistance since there's
+	// no shared coordinate space here to measure a geometric distance in.
+	let crossPageCandidates = [];
+	for (let b of unmatchedBodies) {
+		if (takenB.has(b._i)) continue;
+		for (let c of unmatchedCaptions) {
+			if (takenC.has(c._i)) continue;
+			if (Math.abs(b.page_num - c.page_num) !== 1) continue;
+			let blockDist = Math.abs(b.blockIndex - c.blockIndex);
+			if (blockDist > CROSS_PAGE_BLOCK_WINDOW) continue;
+			crossPageCandidates.push({ b, c, blockDist });
+		}
+	}
+	crossPageCandidates.sort((a, b) => a.blockDist - b.blockDist);
+	for (let { b, c } of crossPageCandidates) {
+		if (takenB.has(b._i) || takenC.has(c._i)) continue;
+		takenB.add(b._i);
+		takenC.add(c._i);
+		pairs.push({ body: b, caption: c });
+	}
+
+	let matched = pairs.map(p => ({
+		blockIndex: p.body.blockIndex,
+		page_num: p.body.page_num,
+		// Same-page pair: union both bboxes, capturing body + caption
+		// together (existing behavior). Cross-page pair: the body's own
+		// bbox alone -- its caption lives on a DIFFERENT page, in a
+		// DIFFERENT coordinate space, so unioning the two rects would
+		// produce a meaningless, garbled box rather than a real region on
+		// either page. The caption's TEXT is still attached below via
+		// label/caption either way; only the navigable/highlightable
+		// region is scoped to the body's own page for a cross-page pair.
+		bbox: p.body.page_num === p.caption.page_num
+			? unionRect(p.body.bbox, p.caption.bbox)
+			: p.body.bbox,
+		label: p.caption.text,
+		caption: p.caption.text,
+		content: p.body.content,
+	}));
+	let leftoverBodies = unmatchedBodies.filter(b => !takenB.has(b._i));
+
+	let stillUnmatched = [];
+	for (let b of leftoverBodies) {
+		let ext = extendRect(b.bbox, EXTEND_MARGIN);
+		let best = null, bestIoU = 0;
+		for (let m of matched) {
+			if (m.page_num !== b.page_num) continue;
+			let score = iou(ext, m.bbox);
+			if (score > bestIoU) {
+				bestIoU = score;
+				best = m;
+			}
+		}
+		if (best) {
+			best.bbox = unionRect(best.bbox, b.bbox);
+		}
+		else {
+			stillUnmatched.push(b);
+		}
+	}
+
+	return { matched, unmatchedBodies: stillUnmatched };
+}
+
+// Flattens structure.catalog.outline (title/ref/children tree) into a flat
+// list ordered by block index, each resolved to its own page/bbox via the
+// referenced block's own anchor.
+export function flattenOutline(outline, structure, out = []) {
+	for (let entry of outline) {
+		let blockIndex = entry.ref?.[0];
+		let block = blockIndex != null ? structure.content[blockIndex] : null;
+		let pageRect = block?.anchor?.pageRects?.[0];
+		if (pageRect) {
+			out.push({ blockIndex, title: entry.title, page_num: pageRect[0] + 1, bbox: pageRect.slice(1) });
+		}
+		if (entry.children?.length) flattenOutline(entry.children, structure, out);
+	}
+	return out.sort((a, b) => a.blockIndex - b.blockIndex);
+}
+
+// Nearest preceding section for a block at `blockIndex` -- the outline
+// entry with the largest blockIndex that's still less than the target's own.
+export function nearestSection(sections, blockIndex) {
+	let best = null;
+	for (let s of sections) {
+		if (s.blockIndex < blockIndex && (!best || s.blockIndex > best.blockIndex)) {
+			best = s;
+		}
+	}
+	return best;
+}

@@ -290,10 +290,17 @@
 }
 
 /* Right column now (badge) -- no extra right-gap needed, same as
-   .llm-provider-field-input/.llm-advanced-field-input. */
+   .llm-provider-field-input/.llm-advanced-field-input. white-space: nowrap
+   keeps every badge in a multi-badge combo (see ui/keyboard-shortcuts.js's
+   own comment on `keys`) on one line -- .llm-shortcut-badge itself only
+   stops an individual badge's OWN text from wrapping, not the plain
+   " + "/" / " text nodes between separate badges in the same cell, which
+   would otherwise be valid line-break points once several badges no longer
+   fit on one line. */
 .llm-shortcut-badge-cell {
 	padding: 2px 0;
 	width: 1px;
+	white-space: nowrap;
 }
 
 .llm-shortcut-badge {

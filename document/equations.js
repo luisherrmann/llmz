@@ -57,7 +57,8 @@ LLMEquations = {
 		if (!pdfPath) throw new Error("Item has no attached file path");
 		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `equations_${item.id}.json`);
 		await IOUtils.makeDirectory(PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts"), { ignoreExisting: true, createAncestors: true });
-		await this._runNode(pdfPath, outputPath);
+		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item);
+		await this._runNode(pdfPath, outputPath, structureCachePath);
 		let equations = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
 		this.log(`_extractRaw: extracted ${equations.length} equations`);

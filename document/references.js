@@ -21,7 +21,7 @@ LLMReferences = {
 	// _runNode with it) but IS a relative `import`ed dependency of both
 	// extract_tables_sdt.js and extract_figures_sdt.js, so it still has to
 	// be deployed alongside them -- see _deployFromPackedXPI below.
-	_siblingScriptNames: ["extract_equations.js", "extract_tables_sdt.js", "extract_figures_sdt.js", "match_captions.js", "compute_document_structure.js"],
+	_siblingScriptNames: ["extract_equations.js", "extract_tables_sdt.js", "extract_figures_sdt.js", "match_captions.js", "compute_document_structure.js", "structure_sdt.js"],
 	_cacheVersion: 1, // bump when the cached index schema changes (JS-side, not just the script/model)
 	_indexCache: new Map(),
 	_extensionRoot: null,
@@ -156,7 +156,8 @@ LLMReferences = {
 		if (!pdfPath) throw new Error("Item has no attached file path");
 		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `references_${item.id}.json`);
 		await IOUtils.makeDirectory(PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts"), { ignoreExisting: true, createAncestors: true });
-		await this._runNode(pdfPath, outputPath);
+		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item);
+		await this._runNode(pdfPath, outputPath, structureCachePath);
 		let references = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
 		this.log(`_extractRaw: extracted ${references.length} references`);

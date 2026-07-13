@@ -184,9 +184,10 @@ LLMTables = {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
 		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `tables_${item.id}.json`);
+		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item);
 		// SDT-only detection via _runNode, not _runPython (see
 		// _sdtScriptName's own comment).
-		await this._runNode(this._sdtScriptName, pdfPath, outputPath);
+		await this._runNode(this._sdtScriptName, pdfPath, outputPath, structureCachePath);
 		let tables = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
 		this.log(`_extractRaw: extracted ${tables.length} tables`);

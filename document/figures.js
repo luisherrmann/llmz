@@ -241,6 +241,7 @@ LLMFigures = {
 		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
 		let imagesPath = PathUtils.join(scriptsDir, `figure_images_${item.id}.json`);
 		let outputPath = PathUtils.join(scriptsDir, `figures_${item.id}.json`);
+		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item);
 		// Best-effort: if PyMuPDF's image listing fails for any reason (e.g.
 		// the venv is present but somehow broken), detection still proceeds
 		// SDT-only, exactly as it did before this extra step existed --
@@ -253,7 +254,7 @@ LLMFigures = {
 			await IOUtils.remove(imagesPath, { ignoreAbsent: true });
 		}
 		let imagesArg = await IOUtils.exists(imagesPath) ? imagesPath : "";
-		await this._runNode(this._sdtScriptName, pdfPath, outputPath, imagesArg);
+		await this._runNode(this._sdtScriptName, pdfPath, outputPath, imagesArg, structureCachePath);
 		IOUtils.remove(imagesPath).catch(() => {});
 		let figures = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});

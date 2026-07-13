@@ -13,17 +13,40 @@
 // and are called back into from here where needed) -- same rationale as the
 // llm-interfaces.js split.
 LLMPrompt = {
+	// The properties below (through maxHistoryMessages) are the "advanced
+	// settings" tunable via ui/advanced.js's Context/Message history
+	// sections -- unlike a plain global preference, these are persisted PER
+	// (chat provider, chat model) PAIR (see _advancedSettingsPref/
+	// loadAdvancedSettings/applyAdvancedSettingsFor/saveAdvancedSetting
+	// below), the same way LLMInterfaces persists the provider/model
+	// SELECTION itself. Most of these are really tuning a specific model's
+	// own context budget (e.g. a smaller local model needs a tighter
+	// maxPDFContextChars than a large-context cloud model, and a slower
+	// local model benefits from a smaller maxSelectedFigures to keep
+	// prompts cheap), so a single global value doesn't fit well once a user
+	// switches between more than one provider/model. The values below are
+	// only the DEFAULTS (also see _advancedSettingDefaults, which must stay
+	// in sync with these) -- applyAdvancedSettingsFor overwrites them as
+	// soon as loadAdvancedSettings runs at startup (see bootstrap.js) with
+	// whatever's saved for the initially-selected pair, if anything.
 	maxPDFContextChars: 60000,
 	maxPageContextChars: 5000,
 	chunkContextTopK: 10,
+	// Caps on how many figures/tables/equations selectFiguresWithLLM/
+	// selectTablesWithLLM/selectEquationsWithLLM will attach as context for a
+	// single request, even if the model's own selection response names more
+	// than this -- each attached figure in particular is a rendered image
+	// (request.js's _buildImageContext), so a higher cap trades more context
+	// for a larger, more expensive prompt.
+	maxSelectedFigures: 10,
+	maxSelectedTables: 10,
+	maxSelectedEquations: 10,
 	// Whether a request resends prior turns (see chat.exportTranscript()) to
 	// the model as conversation history, or just the current prompt alone
-	// (the previous, single-turn-only behavior) -- an in-memory setting
-	// only, not persisted across restarts (same as maxPDFContextChars/
-	// chunkContextTopK above), toggled via ui/advanced.js's "Use message
-	// history" checkbox. Off trades conversation continuity for lower
-	// per-request token usage, since every past turn no longer gets resent
-	// on every subsequent request.
+	// (the previous, single-turn-only behavior), toggled via ui/advanced.js's
+	// "Use message history" checkbox. Off trades conversation continuity for
+	// lower per-request token usage, since every past turn no longer gets
+	// resent on every subsequent request.
 	useMessageHistory: true,
 	// Caps history to just the last N transcript entries (see request.js,
 	// Array.prototype.slice(-N)) rather than resending the ENTIRE
@@ -34,6 +57,96 @@ LLMPrompt = {
 	// but needs message-level embedding storage/IDs this doesn't have yet,
 	// so it's deferred; simple truncation is a reasonable starting point.
 	maxHistoryMessages: 20,
+
+	// Every key above that's actually tunable via ui/advanced.js and gets
+	// persisted per-(provider,model) pair -- deliberately excludes
+	// maxPageContextChars (not exposed as an Advanced setting at all right
+	// now) so a stray future rename doesn't silently start persisting
+	// something nobody can actually edit.
+	_advancedSettingKeys: [
+		"maxPDFContextChars", "chunkContextTopK",
+		"maxSelectedFigures", "maxSelectedTables", "maxSelectedEquations",
+		"useMessageHistory", "maxHistoryMessages",
+	],
+	// Must stay in sync with the plain property defaults above -- these are
+	// what applyAdvancedSettingsFor falls back to for a pair that's never
+	// had any of its settings changed from default.
+	_advancedSettingDefaults: {
+		maxPDFContextChars: 60000,
+		chunkContextTopK: 10,
+		maxSelectedFigures: 10,
+		maxSelectedTables: 10,
+		maxSelectedEquations: 10,
+		useMessageHistory: true,
+		maxHistoryMessages: 20,
+	},
+	// { "provider:model" -> { ...overridden _advancedSettingKeys } }, only
+	// ever containing keys a user has actually changed from default for that
+	// pair (see saveAdvancedSetting) -- not a full snapshot of every
+	// pair's settings, so a later change to _advancedSettingDefaults still
+	// takes effect for anything nobody's touched yet.
+	_advancedSettingsByPair: {},
+	// Same persisted-JSON-blob-under-one-pref pattern as LLMInterfaces'
+	// _serverSettingsPref (see its own comment) -- global: true required for
+	// the same reason (this plugin's own prefs, not Zotero's).
+	_advancedSettingsPref: "extensions.llm-chat-pane.advancedSettings",
+
+	// Populates _advancedSettingsByPair from disk, then applies whatever's
+	// saved for the CURRENTLY selected chat provider/model (LLMInterfaces'
+	// own state, which loadSelection() must have already populated -- see
+	// bootstrap.js's call ordering) onto this object's own properties above.
+	// Called once at startup, same as LLMInterfaces.loadSelection()/
+	// loadServerSettings() -- must run AFTER LLMInterfaces.loadSelection()
+	// so the "currently selected pair" it applies is actually correct, and
+	// BEFORE the Advanced panel first renders (ui/advanced.js's rows read
+	// these properties directly via their own get() at row-creation time).
+	loadAdvancedSettings() {
+		try {
+			let json = Zotero.Prefs.get(this._advancedSettingsPref, true);
+			if (json) this._advancedSettingsByPair = JSON.parse(json);
+		}
+		catch (e) {
+			this.log(`loadAdvancedSettings: failed to read pref: ${e.message}`);
+		}
+		this.applyAdvancedSettingsFor(LLMInterfaces._provider, LLMInterfaces._selectedModel[LLMInterfaces._provider]);
+	},
+
+	// Overwrites this object's own advanced-setting properties with
+	// whichever value is saved for (provider, model), falling back to
+	// _advancedSettingDefaults for any key that pair has never customized.
+	// Called from loadAdvancedSettings above at startup, and again whenever
+	// the CHAT provider/model selection changes (see ui/provider-model-select.js's
+	// onChange, wired up in llm-chat-pane.js's onRender) so switching models
+	// mid-session immediately switches to that model's own tuned settings
+	// rather than silently keeping whatever the PREVIOUS model had. The
+	// actual read path (buildPromptWithActivePDFContext, selectFiguresWithLLM,
+	// etc.) is untouched by any of this -- it keeps reading the plain
+	// `this.maxPDFContextChars` etc. properties directly, unaware of which
+	// pair is currently active.
+	applyAdvancedSettingsFor(provider, model) {
+		let saved = this._advancedSettingsByPair[`${provider}:${model}`] || {};
+		for (let key of this._advancedSettingKeys) {
+			this[key] = saved[key] !== undefined ? saved[key] : this._advancedSettingDefaults[key];
+		}
+	},
+
+	// Persists ONE advanced setting under the CURRENTLY selected chat
+	// provider/model pair, and updates this object's own live property so
+	// the change takes effect immediately -- called from ui/advanced.js's
+	// Context/Message history row `set` callbacks instead of a plain direct
+	// assignment.
+	saveAdvancedSetting(key, value) {
+		this[key] = value;
+		let pairKey = `${LLMInterfaces._provider}:${LLMInterfaces._selectedModel[LLMInterfaces._provider]}`;
+		if (!this._advancedSettingsByPair[pairKey]) this._advancedSettingsByPair[pairKey] = {};
+		this._advancedSettingsByPair[pairKey][key] = value;
+		try {
+			Zotero.Prefs.set(this._advancedSettingsPref, JSON.stringify(this._advancedSettingsByPair), true);
+		}
+		catch (e) {
+			this.log(`saveAdvancedSetting: failed to persist ${key}: ${e.message}`);
+		}
+	},
 	_systemPrompt: [
 		"You are a helpful research assistant.",
 		"Always express mathematical formulas and equations using LaTeX notation.",
@@ -109,7 +222,7 @@ LLMPrompt = {
 	// got this and three other test queries right where every embedding
 	// fusion approach failed at least one.
 	//
-	// Multi-select (up to MAX_SELECTED_FIGURES) in a single round-trip, same
+	// Multi-select (up to maxSelectedFigures) in a single round-trip, same
 	// rationale as selectNotesWithLLM below: a query can genuinely have
 	// several relevant figures, and reading the whole caption list once and
 	// returning every relevant number is one call regardless of how many
@@ -130,7 +243,6 @@ LLMPrompt = {
 		let figures = figureIndex?.figures;
 		if (!figures?.length) return [];
 
-		const MAX_SELECTED_FIGURES = 10;
 		// Page number included alongside the reader-context lines above
 		// (the user's OWN current page) so the model can correlate a
 		// page-scoped question ("the figure on this page") against each
@@ -160,7 +272,7 @@ LLMPrompt = {
 			if (!figure) continue;
 			seen.add(id);
 			selected.push(figure);
-			if (selected.length >= MAX_SELECTED_FIGURES) break;
+			if (selected.length >= this.maxSelectedFigures) break;
 		}
 		return selected;
 	},
@@ -248,13 +360,12 @@ LLMPrompt = {
 	// response (e.g. "3" could mean either), so selection is matched against
 	// exact label text instead, unlike the numeric matching
 	// selectTablesWithLLM/selectFiguresWithLLM use. Multi-select (up to
-	// MAX_SELECTED_EQUATIONS) in a single round-trip, same rationale as
+	// maxSelectedEquations) in a single round-trip, same rationale as
 	// selectNotesWithLLM below.
 	async selectEquationsWithLLM(equationIndex, query, readerContext = {}) {
 		let equations = equationIndex?.equations;
 		if (!equations?.length) return [];
 
-		const MAX_SELECTED_EQUATIONS = 10;
 		// Page number included alongside the reader-context lines above
 		// (the user's OWN current page) so the model can correlate a
 		// page-scoped question against each candidate's actual location.
@@ -284,7 +395,7 @@ LLMPrompt = {
 			if (!equation) continue;
 			seen.add(label);
 			selected.push(equation);
-			if (selected.length >= MAX_SELECTED_EQUATIONS) break;
+			if (selected.length >= this.maxSelectedEquations) break;
 		}
 		return selected;
 	},
@@ -298,7 +409,7 @@ LLMPrompt = {
 	// than for figures, which are visually distinctive), text-max scored 3/5
 	// (failed when one table merely mentioned the query's keywords more often
 	// than the table that actually answered it), LLM selection scored 5/5.
-	// Multi-select (up to MAX_SELECTED_TABLES) in a single round-trip, same
+	// Multi-select (up to maxSelectedTables) in a single round-trip, same
 	// rationale as selectNotesWithLLM below.
 	//
 	// Matched against table_id -- a plain sequential integer assigned to
@@ -319,7 +430,6 @@ LLMPrompt = {
 		let tables = tableIndex?.tables;
 		if (!tables?.length) return [];
 
-		const MAX_SELECTED_TABLES = 10;
 		// Page number included alongside the reader-context lines above
 		// (the user's OWN current page) so the model can correlate a
 		// page-scoped question against each candidate's actual location.
@@ -349,7 +459,7 @@ LLMPrompt = {
 			if (!table) continue;
 			seen.add(id);
 			selected.push(table);
-			if (selected.length >= MAX_SELECTED_TABLES) break;
+			if (selected.length >= this.maxSelectedTables) break;
 		}
 		return selected;
 	},

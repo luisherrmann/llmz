@@ -506,7 +506,8 @@ LLMChatPane = {
 		return html;
 	},
 
-	// Global CMD+I (Ctrl+I elsewhere) shortcut: opens/focuses the chat pane
+	// Global CTRL+I/CMD+I shortcut (both accepted on every platform, see
+	// ui/keyboard-shortcuts.js's own comment): opens/focuses the chat pane
 	// from anywhere in the main window, whether or not it's currently
 	// visible -- attached per-window (via onMainWindowLoad/addToAllWindows in
 	// bootstrap.js, the standard plugin pattern for main-window-scoped
@@ -533,7 +534,9 @@ LLMChatPane = {
 		win.document.l10n?.addResourceIds(["llm-chat-pane.ftl"]);
 
 		let handler = (event) => {
-			let accel = Zotero.isMac ? event.metaKey : event.ctrlKey;
+			// Both accepted on every platform (not just the OS-conventional
+			// one) -- see ui/keyboard-shortcuts.js's own comment for why.
+			let accel = event.metaKey || event.ctrlKey;
 			if (accel && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "i") {
 				event.preventDefault();
 				event.stopPropagation();
@@ -888,7 +891,10 @@ LLMChatPane = {
 				let historyDraft = "";
 
 				input.addEventListener("keydown", (e) => {
-					if (!e.metaKey) return;
+					// Both accepted on every platform, not just the OS-conventional
+					// one (CMD on Mac, CTRL elsewhere) -- see
+					// ui/keyboard-shortcuts.js's own comment for why.
+					if (!e.metaKey && !e.ctrlKey) return;
 					if (e.code === "Enter" && e.shiftKey) {
 						e.preventDefault();
 						if (!submitButton.disabled) submitButton.click();

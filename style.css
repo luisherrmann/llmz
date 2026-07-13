@@ -548,8 +548,23 @@
 	text-align: left;
 }
 
+.llm-advanced-input:disabled,
+.llm-advanced-select:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
 .llm-advanced-checkbox {
 	cursor: pointer;
+}
+
+/* "Use message history"'s none/last-k/semantic mode select (ui/advanced.js's
+   _makeSelectSettingRow) -- same width/box-sizing convention as
+   .llm-advanced-input, just wider to fit "Last K messages"/"Semantic"
+   without clipping. */
+.llm-advanced-select {
+	width: 140px;
+	box-sizing: border-box;
 }
 
 /* The Clear Cache checkbox list (see ui/advanced.js) -- one row per cache

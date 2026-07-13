@@ -41,22 +41,43 @@ LLMPrompt = {
 	maxSelectedFigures: 10,
 	maxSelectedTables: 10,
 	maxSelectedEquations: 10,
-	// Whether a request resends prior turns (see chat.exportTranscript()) to
-	// the model as conversation history, or just the current prompt alone
-	// (the previous, single-turn-only behavior), toggled via ui/advanced.js's
-	// "Use message history" checkbox. Off trades conversation continuity for
-	// lower per-request token usage, since every past turn no longer gets
-	// resent on every subsequent request.
-	useMessageHistory: true,
+	// Whether/how a request resends prior turns (see chat.exportTranscript())
+	// to the model as conversation history -- one of three modes, toggled via
+	// ui/advanced.js's "Use message history" dropdown:
+	//   "none"     -- just the current prompt alone (the original,
+	//                 single-turn-only behavior). Trades conversation
+	//                 continuity for lower per-request token usage, since no
+	//                 past turn ever gets resent.
+	//   "last-k"   -- the last maxHistoryMessages transcript entries, plain
+	//                 recency cutoff (the ORIGINAL always-on behavior, from
+	//                 back when this was a plain boolean -- see request.js's
+	//                 own handling of a stale persisted `true`/`false` from
+	//                 before this became a 3-way enum).
+	//   "semantic" -- union(last maxHistoryMessages entries, top
+	//                 maxSemanticHistoryMessages entries by embedding
+	//                 similarity to the current query) -- see
+	//                 semantic-history.js's LLMSemanticHistory.selectRelevant,
+	//                 which this mode delegates to. Can recover long-range
+	//                 relevant context a pure recency cutoff would drop (e.g.
+	//                 "what was that number you mentioned earlier?" many
+	//                 turns back). Only meaningful when message history is
+	//                 already in use, hence being a third value of THIS same
+	//                 setting rather than a separate on/off toggle next to
+	//                 it -- there's no way to select "semantic" without
+	//                 message history itself being on, by construction.
+	useMessageHistory: "last-k",
 	// Caps history to just the last N transcript entries (see request.js,
-	// Array.prototype.slice(-N)) rather than resending the ENTIRE
+	// Array.prototype.slice(-N)) -- used directly by "last-k" mode, and as
+	// the recency half of "semantic" mode's own union (see
+	// LLMSemanticHistory.selectRelevant) -- rather than resending the ENTIRE
 	// conversation on every turn, which would otherwise grow (and cost)
-	// without bound as a conversation gets longer. A plain recency cutoff
-	// for now -- a smarter union(last K, top-L-by-embedding-similarity)
-	// scheme would recover long-range relevant context a pure cutoff drops,
-	// but needs message-level embedding storage/IDs this doesn't have yet,
-	// so it's deferred; simple truncation is a reasonable starting point.
+	// without bound as a conversation gets longer.
 	maxHistoryMessages: 20,
+	// The OTHER half of "semantic" mode's union -- how many additional
+	// transcript entries (beyond the last maxHistoryMessages) get pulled in
+	// by embedding similarity to the current query. Ignored entirely in
+	// "none"/"last-k" mode.
+	maxSemanticHistoryMessages: 20,
 
 	// Every key above that's actually tunable via ui/advanced.js and gets
 	// persisted per-(provider,model) pair -- deliberately excludes
@@ -66,7 +87,7 @@ LLMPrompt = {
 	_advancedSettingKeys: [
 		"maxPDFContextChars", "chunkContextTopK",
 		"maxSelectedFigures", "maxSelectedTables", "maxSelectedEquations",
-		"useMessageHistory", "maxHistoryMessages",
+		"useMessageHistory", "maxHistoryMessages", "maxSemanticHistoryMessages",
 	],
 	// Must stay in sync with the plain property defaults above -- these are
 	// what applyAdvancedSettingsFor falls back to for a pair that's never
@@ -77,8 +98,9 @@ LLMPrompt = {
 		maxSelectedFigures: 10,
 		maxSelectedTables: 10,
 		maxSelectedEquations: 10,
-		useMessageHistory: true,
+		useMessageHistory: "last-k",
 		maxHistoryMessages: 20,
+		maxSemanticHistoryMessages: 20,
 	},
 	// { "provider:model" -> { ...overridden _advancedSettingKeys } }, only
 	// ever containing keys a user has actually changed from default for that
@@ -127,6 +149,16 @@ LLMPrompt = {
 		let saved = this._advancedSettingsByPair[`${provider}:${model}`] || {};
 		for (let key of this._advancedSettingKeys) {
 			this[key] = saved[key] !== undefined ? saved[key] : this._advancedSettingDefaults[key];
+		}
+		// Migrates a pre-existing persisted boolean (useMessageHistory was a
+		// plain on/off toggle before it became this 3-way "none"/"last-k"/
+		// "semantic" enum) -- without this, a pair whose pref blob still has
+		// the old `true`/`false` would silently fail every string comparison
+		// against it (request.js's own mode checks), effectively landing in
+		// neither "none" nor "semantic" and behaving unpredictably. Maps
+		// true -> "last-k" (the old always-on behavior) and false -> "none".
+		if (typeof this.useMessageHistory === "boolean") {
+			this.useMessageHistory = this.useMessageHistory ? "last-k" : "none";
 		}
 	},
 

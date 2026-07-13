@@ -1,9 +1,10 @@
 // The collapsible "Advanced" settings panel, split into three labeled
 // subsections (see _makeSection): Context (the two PDF-context-retrieval
-// tunables), Message history (the "Use message history" toggle and its
-// accompanying "Max history messages" cap -- all on LLMPrompt), and Cache
-// (the Clear Cache checkbox list + button). Split out of
-// llm-chat-pane.js's onRender for the same reason as the other ui/ modules.
+// tunables), Message history (the "Use message history" none/last-k/semantic
+// mode select, and its two accompanying caps -- Max history messages, Max
+// semantic history messages -- all on LLMPrompt), and Cache (the Clear Cache
+// checkbox list + button). Split out of llm-chat-pane.js's onRender for the
+// same reason as the other ui/ modules.
 LLMUIAdvanced = {
 	// A second <tr> placed right after a setting's own row, its description
 	// in a single colspan="3" cell -- same visible-caption styling
@@ -25,12 +26,17 @@ LLMUIAdvanced = {
 		return tr;
 	},
 
-	// Returns { rows, refresh } for one setting -- shared table layout with
-	// ui/providers.js/ui/keyboard-shortcuts.js, so the input column lines up
-	// at the same position for every row regardless of label length. `rows`
-	// is an array (length 1, or 2 if `description` is given -- see
-	// _makeHintRow above) so a caller can just spread it straight into a
-	// <tbody>.append(...) call.
+	// Returns { rows, refresh, input } for one setting -- shared table
+	// layout with ui/providers.js/ui/keyboard-shortcuts.js, so the input
+	// column lines up at the same position for every row regardless of
+	// label length. `rows` is an array (length 1, or 2 if `description` is
+	// given -- see _makeHintRow above) so a caller can just spread it
+	// straight into a <tbody>.append(...) call. `input` is the raw
+	// <input>/<select> element itself, for a caller that needs to do more
+	// than get/set/refresh it -- e.g. toggling `.disabled` based on some
+	// OTHER row's own value (see create()'s own Message history section,
+	// where the "Use message history" mode controls whether the other two
+	// rows are editable at all).
 	// Every row gets a third, empty, unconstrained <td> after the label/input
 	// columns (both of which use `width: 1px` -- shrink-to-fit, see
 	// style.css) -- with .llm-advanced-table now stretched to the section's
@@ -69,33 +75,39 @@ LLMUIAdvanced = {
 		inputTd.appendChild(input);
 		tr.append(labelTd, inputTd, doc.createElement("td"));
 		let rows = description ? [tr, this._makeHintRow(doc, description)] : [tr];
-		return { rows, refresh: () => { input.value = get(); } };
+		return { rows, refresh: () => { input.value = get(); }, input };
 	},
 
-	// Same row layout/refresh contract as _makeIntegerSettingRow above, but a
-	// checkbox instead of a number <input> -- for a plain on/off setting like
-	// "Use message history".
-	_makeCheckboxSettingRow(doc, labelText, get, set, { description } = {}) {
+	// Same row layout/refresh/input contract as _makeIntegerSettingRow
+	// above, but a <select> instead of a number <input> -- for a setting
+	// with a small fixed set of named options, like "Use message history"'s
+	// none/last-k/semantic modes. `options` is [{ value, label }, ...].
+	_makeSelectSettingRow(doc, labelText, get, set, options, { description } = {}) {
 		let tr = doc.createElement("tr");
 		let labelTd = doc.createElement("td");
 		labelTd.className = "llm-advanced-field-label";
 		labelTd.textContent = labelText;
 		let inputTd = doc.createElement("td");
 		inputTd.className = "llm-advanced-field-input";
-		let input = doc.createElement("input");
-		input.type = "checkbox";
-		input.className = "llm-advanced-checkbox";
-		input.checked = get();
+		let input = doc.createElement("select");
+		input.className = "llm-advanced-select";
+		for (let { value, label } of options) {
+			let option = doc.createElement("option");
+			option.value = value;
+			option.textContent = label;
+			input.appendChild(option);
+		}
+		input.value = get();
 		input.addEventListener("change", () => {
-			set(input.checked);
+			set(input.value);
 		});
 		inputTd.appendChild(input);
 		tr.append(labelTd, inputTd, doc.createElement("td"));
 		let rows = description ? [tr, this._makeHintRow(doc, description)] : [tr];
-		return { rows, refresh: () => { input.checked = get(); } };
+		return { rows, refresh: () => { input.value = get(); }, input };
 	},
 
-	// Same row layout as _makeIntegerSettingRow/_makeCheckboxSettingRow
+	// Same row layout as _makeIntegerSettingRow/_makeSelectSettingRow
 	// above, but for an arbitrary pre-built element (e.g.
 	// LLMUIProviderModelSelect.create's row) instead of building an input
 	// itself -- for a setting whose control isn't a plain number/checkbox.
@@ -157,16 +169,6 @@ LLMUIAdvanced = {
 			pairSettingRows.push(refresh);
 			return rows;
 		};
-		let makePairCheckboxRow = (labelText, key, opts) => {
-			let { rows, refresh } = this._makeCheckboxSettingRow(
-				doc, labelText,
-				() => LLMPrompt[key],
-				(value) => { LLMPrompt.saveAdvancedSetting(key, value); },
-				opts
-			);
-			pairSettingRows.push(refresh);
-			return rows;
-		};
 
 		// --- Context ---
 		let { label: contextLabel, sectionBody: contextBody } = this._makeSection(doc, "Context");
@@ -193,13 +195,62 @@ LLMUIAdvanced = {
 		let historyTable = doc.createElement("table");
 		historyTable.className = "llm-advanced-table";
 		let historyTbody = doc.createElement("tbody");
-		historyTbody.append(...[
-			makePairCheckboxRow("Use message history", "useMessageHistory",
-				{description: "Determines if the LLM remembers past messages."}),
-			makePairIntegerRow("Max history messages", "maxHistoryMessages",
-				{description: "The number of past messages visible to the LLM."}
-			),
-		].flat());
+
+		// Built directly via _makeSelectSettingRow/_makeIntegerSettingRow
+		// (not the makePairSelectRow/makePairIntegerRow convenience
+		// wrappers those other sections use) since these three rows need to
+		// reach each other's own `input` elements directly -- toggling
+		// maxHistoryRow's/maxSemanticHistoryRow's own `disabled` based on
+		// modeRow's current value, something the wrappers (which only
+		// return a bare `rows` array for the common case) don't expose.
+		let modeRow = this._makeSelectSettingRow(
+			doc, "Use message history",
+			() => LLMPrompt.useMessageHistory,
+			(value) => {
+				LLMPrompt.saveAdvancedSetting("useMessageHistory", value);
+				updateHistoryRowsEnabled();
+			},
+			[
+				{ value: "none", label: "None" },
+				{ value: "last-k", label: "Last K messages" },
+				{ value: "semantic", label: "Semantic" },
+			],
+			{ description: "Determines if (and how) the LLM remembers past messages. \"Last K messages\" resends the most recent turns; \"Semantic\" additionally includes earlier turns that are most relevant to the current question, on top of the last K." }
+		);
+		let maxHistoryRow = this._makeIntegerSettingRow(
+			doc, "Max history messages",
+			() => LLMPrompt.maxHistoryMessages,
+			(value) => { LLMPrompt.saveAdvancedSetting("maxHistoryMessages", value); },
+			{ description: "The number of past messages visible to the LLM." }
+		);
+		let maxSemanticHistoryRow = this._makeIntegerSettingRow(
+			doc, "Max semantic history messages",
+			() => LLMPrompt.maxSemanticHistoryMessages,
+			(value) => { LLMPrompt.saveAdvancedSetting("maxSemanticHistoryMessages", value); },
+			{ description: "The maximum number of additional past messages to include based on relevance to the current question, on top of the last K messages above. Only used in \"Semantic\" mode." }
+		);
+		pairSettingRows.push(modeRow.refresh, maxHistoryRow.refresh, maxSemanticHistoryRow.refresh);
+
+		// Max history messages is meaningless with history off entirely; Max
+		// semantic history messages is meaningless unless "Semantic" mode is
+		// actually selected -- called once immediately below (initial
+		// render) and again both on the mode select's own change (above) and
+		// whenever refreshPairSettings() runs (a provider/model switch can
+		// bring in a totally different saved mode for that pair -- see
+		// LLMPrompt.applyAdvancedSettingsFor, always called BEFORE
+		// refreshPairSettings by whichever caller triggers a pair switch, so
+		// LLMPrompt.useMessageHistory is already correct by the time this
+		// reads it here regardless of this function's own position in
+		// pairSettingRows).
+		let updateHistoryRowsEnabled = () => {
+			let mode = LLMPrompt.useMessageHistory;
+			maxHistoryRow.input.disabled = mode === "none";
+			maxSemanticHistoryRow.input.disabled = mode === "none" || mode === "last-k";
+		};
+		updateHistoryRowsEnabled();
+		pairSettingRows.push(updateHistoryRowsEnabled);
+
+		historyTbody.append(...[modeRow.rows, maxHistoryRow.rows, maxSemanticHistoryRow.rows].flat());
 		historyTable.appendChild(historyTbody);
 		historyBody.appendChild(historyTable);
 

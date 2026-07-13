@@ -199,7 +199,6 @@ LLMChatPane = {
 	},
 
 	async main() {
-		this.registerItemPane();
 		this.log("Hello World pane loaded");
 		this._configureMarkdown();
 		await LLMFigures.init(this.rootURI);
@@ -212,6 +211,18 @@ LLMChatPane = {
 		catch (e) {
 			this.log("Failed to load CSS: " + e.message);
 		}
+		// Registered LAST, only once this._css is actually populated --
+		// registerItemPane() makes the section immediately renderable by
+		// Zotero (onItemChange/onRender can fire as soon as registration
+		// returns, if the item pane is already visible with an item
+		// selected at startup), and onRender's own <style> tag falls back to
+		// an EMPTY stylesheet (`this._css || ""`) if this hasn't finished
+		// yet -- registering first (the previous order) meant that first
+		// render could beat this fetch, rendering completely unstyled until
+		// the user switched to a different item and back (a fresh onRender
+		// call, by which point the fetch had long since resolved) -- see
+		// onRender's own comment for where the fallback lives.
+		this.registerItemPane();
 	},
 
 	_configureMarkdown() {

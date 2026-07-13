@@ -896,7 +896,25 @@ LLMChatPane = {
 					// must match whatever a LATER selectRelevant call will
 					// see from chat.exportTranscript() itself, or this
 					// embedding would silently never be found again.
-					await LLMSemanticHistory.embedAll(chat.exportTranscript());
+					// Deliberately NOT awaited -- re-embedding a whole
+					// transcript is one or more network round-trips, and
+					// blocking the load on it made every conversation open
+					// with a noticeable lag proportional to its length. Runs
+					// in the background instead; a query that races it just
+					// won't have every message available as a semantic-match
+					// candidate yet (same fallback embedNewMessage already
+					// relies on -- see its own comment). A Logs entry tracks
+					// progress (same "[bar] current/total (pct%)" format as
+					// request.js's own onEmbeddingStart) so a slow re-embed
+					// of a long conversation is at least visible, not just
+					// silently pending.
+					let embedTranscript = chat.exportTranscript();
+					let embedLogEl = appendMessage("System", `Embedding ${embedTranscript.length} message${embedTranscript.length === 1 ? "" : "s"} for semantic history...`);
+					LLMSemanticHistory.embedAll(embedTranscript, (current, total) => {
+						embedLogEl.textContent = `Embedding messages for semantic history... ${LLMCitation._formatProgressBar(current, total)}`;
+					}).then(() => {
+						embedLogEl.textContent = `Embedded ${embedTranscript.length} message${embedTranscript.length === 1 ? "" : "s"} for semantic history.`;
+					});
 				};
 
 				// Imports a conversation previously written by Export

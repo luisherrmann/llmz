@@ -285,12 +285,12 @@ LLMUIAdvanced = {
 			getSelectedModel: provider => LLMInterfaces._selectedEmbeddingModel[provider],
 			saveSelectedModel: (provider, model) => LLMInterfaces.saveSelectedEmbeddingModel(provider, model),
 			listModels: () => LLMInterfaces.listEmbeddingModels(),
-			// Keeps LLMCitation's per-(embedding provider,embedding model)
+			// Keeps LLMEmbeddings' per-(embedding provider,embedding model)
 			// "Batch size" in sync with whichever pair is actually selected --
 			// same rationale/pattern as the chat Settings row's own onChange
 			// in llm-chat-pane.js, just for the embedding pair instead.
 			onChange: (provider, model) => {
-				LLMCitation.applyAdvancedSettingsFor(provider, model);
+				LLMEmbeddings.applyAdvancedSettingsFor(provider, model);
 				batchSizeRow?.refresh();
 			},
 		});
@@ -315,8 +315,8 @@ LLMUIAdvanced = {
 		batchSizeRow = this._makeIntegerSettingRow(
 			doc,
 			"Batch size",
-			() => LLMCitation.embedBatchSize,
-			(value) => { LLMCitation.saveAdvancedSetting("embedBatchSize", value); }
+			() => LLMEmbeddings.embedBatchSize,
+			(value) => { LLMEmbeddings.saveAdvancedSetting("embedBatchSize", value); }
 		);
 		embeddingsTbody.append(...batchSizeRow.rows);
 		embeddingsTable.appendChild(embeddingsTbody);

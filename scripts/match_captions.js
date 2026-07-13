@@ -17,6 +17,137 @@ export function flattenText(node) {
 	)).join('');
 }
 
+// How much of the LAST line's own height (see getLastLineHeight below) the
+// gap to a following block may be for extendCaptionText below to still treat
+// it as a wrapped continuation of the same caption, not a real paragraph
+// break. A FIXED point value can't work across papers -- observed true
+// continuation gaps ranged 1.6-2.1pt in one paper (Penner et al.) and
+// 8.7-8.9pt in another (Scutteri et al.), tracking each paper's own font
+// size/leading, not some universal constant; a threshold tight enough for
+// the first paper would miss every continuation in the second. Scaling by
+// the caption's OWN last-line height instead adapts automatically: verified
+// against every figure caption in 5 test papers (Penner, Scutteri, Pairoh,
+// Bozkurt, Lu), 0.9x correctly matched all 7 genuine continuations and
+// rejected every genuine non-continuation (the closest false-positive risk
+// observed was Bozkurt's Figure 4, an unrelated body paragraph landing 1.5x
+// line-height below the caption -- well outside this ratio).
+export const CAPTION_CONTINUATION_LINE_HEIGHT_RATIO = 0.9;
+
+// Extracts the height (maxY - minY, PDF points) of a text block's own LAST
+// physical line, from the raw per-line run data SDT's text-extraction layer
+// already records on each text span's anchor.textMap (see
+// sdt/document-worker/structured-document-text/src/pdf/decode.js's
+// buildRunData/reconstructCharPositions for the format this parses: each
+// run is `[header, pageIndex, minX, minY, maxX, maxY, ...charWidths]`, one
+// run per physical line -- minY/maxY there are the actual glyph bbox for
+// THAT line, not a document-wide constant, so this reflects the real
+// rendered font size/leading at the point being measured, however it varies
+// paper to paper or even block to block. Returns null if the block has no
+// text span with a parseable textMap (e.g. an empty or non-text block) --
+// callers should treat that as "can't judge, don't merge".
+export function getLastLineHeight(block) {
+	let spans = [];
+	function collect(node) {
+		if (!node || !Array.isArray(node.content)) return;
+		for (let child of node.content) {
+			if (typeof child.text === 'string' && child.anchor?.textMap) spans.push(child);
+			else collect(child);
+		}
+	}
+	collect(block);
+	if (!spans.length) return null;
+	let lastSpan = spans[spans.length - 1];
+	try {
+		let runs = JSON.parse(lastSpan.anchor.textMap);
+		if (!Array.isArray(runs) || !runs.length) return null;
+		let [, , , minY, , maxY] = runs[runs.length - 1];
+		if (!Number.isFinite(minY) || !Number.isFinite(maxY)) return null;
+		return maxY - minY;
+	}
+	catch {
+		return null;
+	}
+}
+
+// Walks forward from `content[startIndex]` (a caption block, already
+// confirmed to start with "Figure"/"Table" etc. by the caller) absorbing
+// immediately-following blocks that are really just the REST of the same
+// caption -- SDT's own per-block classification only recognizes the
+// caption's OPENING line reliably; a multi-panel figure's full caption
+// (the "(a) ... (b) ... (c) ..." breakdown that follows the topic sentence)
+// routinely comes back as one or more separate `paragraph` blocks instead
+// (observed on Penner et al.'s Figure 2: the real caption is 3 blocks --
+// `caption` then two `paragraph` blocks -- with everything after the first
+// silently dropped if only the `caption`-typed block's own text is used).
+//
+// A candidate block is absorbed only if ALL of:
+//  - same page as the block just absorbed (or the caption itself, for the
+//    first hop);
+//  - type is `paragraph` or `heading` (SDT sometimes misclassifies a real
+//    caption's own opening line as `heading` too -- see extract_figures_sdt.js's
+//    own comment on this -- so a continuation immediately after one of
+//    those needs the same allowance) -- never `image`/`table`/etc., so a
+//    figure's own BODY (sitting right after a caption-above-figure layout)
+//    can never be mistaken for more caption text regardless of how close it
+//    sits;
+//  - the vertical gap to the block just absorbed is between 0 (inclusive --
+//    a negative "gap" means the two bboxes overlap or are out of true
+//    top-to-bottom order, which happens for reading-order edge cases like a
+//    page footer landing right after a caption in block-index order despite
+//    sitting nowhere near it visually; never a real wrapped-line adjacency)
+//    and CAPTION_CONTINUATION_LINE_HEIGHT_RATIO times the last-absorbed
+//    block's own last-line height (see getLastLineHeight -- returns null,
+//    treated as "stop", for a block with no measurable text line);
+//  - the two blocks' bboxes overlap horizontally by at least half the
+//    narrower one's width, so a same-page but different-COLUMN block at a
+//    coincidentally small vertical gap (two-column layout) doesn't get
+//    absorbed just because nothing else ruled it out yet.
+// Stops at the first block that fails any check, or at a page boundary.
+//
+// `content`: structure.content, the full flat document array (random
+// access by index, already fully built before this ever runs -- unlike the
+// single forward loop callers collect `images`/`captions` in, this needs to
+// look AHEAD of the caption's own index).
+// `startIndex`: index of the caption block itself.
+// Returns `{ text, bbox }`: the caption's own text plus every absorbed
+// block's text (space-joined), and the union of the caption's own bbox with
+// every absorbed block's bbox -- so a caller highlighting/navigating to
+// "the caption" gets the full region actually covered by the extended text,
+// not just the opening `caption`-typed block's own (often much smaller) rect.
+export function extendCaptionText(content, startIndex) {
+	let block = content[startIndex];
+	let pageRect = block.anchor?.pageRects?.[0];
+	if (!pageRect) return { text: flattenText(block).replace(/\s+/g, ' ').trim(), bbox: null };
+	let page = pageRect[0];
+	let text = flattenText(block).replace(/\s+/g, ' ').trim();
+	let lastBbox = pageRect.slice(1);
+	let bbox = lastBbox;
+	let lastBlock = block;
+
+	for (let j = startIndex + 1; j < content.length; j++) {
+		let next = content[j];
+		let npr = next.anchor?.pageRects?.[0];
+		if (!npr || npr[0] !== page) break;
+		if (next.type !== 'paragraph' && next.type !== 'heading') break;
+
+		let nbbox = npr.slice(1);
+		let lineHeight = getLastLineHeight(lastBlock);
+		if (lineHeight === null) break;
+		let gap = lastBbox[1] - nbbox[3];
+		if (gap < 0 || gap > CAPTION_CONTINUATION_LINE_HEIGHT_RATIO * lineHeight) break;
+
+		let xOverlap = Math.min(lastBbox[2], nbbox[2]) - Math.max(lastBbox[0], nbbox[0]);
+		let minWidth = Math.min(lastBbox[2] - lastBbox[0], nbbox[2] - nbbox[0]);
+		if (xOverlap < 0.5 * minWidth) break;
+
+		text += ' ' + flattenText(next).replace(/\s+/g, ' ').trim();
+		bbox = unionRect(bbox, nbbox);
+		lastBbox = nbbox;
+		lastBlock = next;
+	}
+	return { text, bbox };
+}
+
 export function rectDistance(a, b) {
 	let dx = Math.max(a[0] - b[2], b[0] - a[2], 0);
 	let dy = Math.max(a[1] - b[3], b[1] - a[3], 0);

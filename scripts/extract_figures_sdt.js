@@ -23,10 +23,16 @@
 // removed), which structurally could not find a figure with no caption at
 // all, or an appendix-lettered one ("Figure D.1").
 //
-// Pipeline (mirrors extract_tables_sdt.js, see its own comment, plus two
+// Pipeline (mirrors extract_tables_sdt.js, see its own comment, plus three
 // figures-only steps):
 //   1. Collect every `type: 'image'` block (body) and `type: 'caption'` block
-//      whose text starts with "Figure"/"Fig" (page + bbox for both).
+//      whose text starts with "Figure"/"Fig" (page + bbox for both) -- for
+//      a caption, also walk forward absorbing any immediately-following
+//      blocks that are really just the rest of the SAME caption (see
+//      match_captions.js's extendCaptionText for the full rationale: SDT
+//      only reliably types a multi-panel caption's OPENING sentence as its
+//      own block, dropping the "(a) ... (b) ..." panel breakdown that
+//      follows into separate blocks otherwise invisible to this step).
 //   2. Consolidate step 1's raw image blocks, per page, into one candidate
 //      per contiguous run bounded by the same nearest non-image neighbors
 //      above/below (see match_captions.js's groupImagesByBoundary for the
@@ -98,7 +104,7 @@ import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 import { getStructure } from '../sdt/document-worker/src/pdf/index.js';
-import { flattenText, pairWithCaptions, flattenOutline, nearestSection, iou, groupImagesByBoundary } from './match_captions.js';
+import { flattenText, pairWithCaptions, flattenOutline, nearestSection, iou, groupImagesByBoundary, extendCaptionText } from './match_captions.js';
 
 // How much IoU overlap (with an SDT-classified `type: 'image'` block on the
 // SAME page) a PyMuPDF-sourced candidate needs before it's treated as a
@@ -218,7 +224,21 @@ async function main() {
 		// block's classified type.
 		let text = flattenText(block).replace(/\s+/g, ' ').trim();
 		if (/^(figure|fig)\b/i.test(text)) {
-			captions.push({ blockIndex: i, page_num: pageNum, bbox: pageRect.slice(1), text });
+			// SDT only reliably classifies a multi-panel caption's OPENING
+			// sentence as its own block -- the "(a) ... (b) ... (c) ..."
+			// panel-by-panel breakdown that follows routinely lands in one or
+			// more separate `paragraph`/`heading` blocks instead (see
+			// extendCaptionText's own comment for the full rationale and the
+			// Penner et al. Figure 2 case that surfaced this: using only
+			// `text` here would silently drop the entire panel breakdown,
+			// leaving the caption cut off mid-thought). Its returned `bbox`
+			// (union of every absorbed block's own rect) is used here too,
+			// not just `pageRect.slice(1)` -- otherwise a caller
+			// highlighting/navigating to "the caption" would only ever see
+			// the opening `caption`-typed block's own small rect, never the
+			// full region the extended text actually covers.
+			let { text: extendedText, bbox: extendedBbox } = extendCaptionText(structure.content, i);
+			captions.push({ blockIndex: i, page_num: pageNum, bbox: extendedBbox || pageRect.slice(1), text: extendedText });
 		}
 	}
 

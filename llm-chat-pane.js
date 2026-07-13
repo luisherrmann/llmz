@@ -386,7 +386,9 @@ LLMChatPane = {
 	// Renders markdown, converting three kinds of link tokens to HTML anchors
 	// (all sharing the `llm-find-link` class, so figure/table links look
 	// identical to citation links -- blue, underlined):
-	//   [label](<find:query>)      -- citation: text-search navigation
+	//   [label](<find:query>)      -- citation: geometry-backed navigation
+	//                                  only (requires pre-resolved
+	//                                  citationPositions)
 	//   [label](<ref:table:N>) /
 	//   [label](<ref:tableExtra:N>) /
 	//   [label](<ref:figure:N>) /
@@ -500,7 +502,6 @@ LLMChatPane = {
 			(whole, label, kind, payload) => {
 				if (label === undefined) return whole; // matched a math span -- leave untouched
 				if (kind === "find") {
-					let escaped = this._escapeAttr(payload);
 					// citationPositions.has(payload) but its value is null ==
 					// resolution was ATTEMPTED and found nothing verbatim in
 					// the PDF's own text -- distinct from key absent
@@ -511,12 +512,15 @@ LLMChatPane = {
 						let position = citationPositions.get(payload);
 						if (position) {
 							let posAttr = this._escapeAttr(JSON.stringify(position));
-							return `<a class="llm-find-link" data-position="${posAttr}" data-query="${escaped}" title="${escaped}">${label}</a>`;
+							let title = this._escapeAttr(payload);
+							return `<a class="llm-find-link" data-position="${posAttr}" title="${title}">${label}</a>`;
 						}
 						let title = this._escapeAttr(`Could not verify this citation against the PDF text: "${payload}"`);
-						return `<a class="llm-find-link llm-find-link-unverified" data-query="${escaped}" title="${title}">${label}</a>`;
+						return `<span class="llm-find-link llm-find-link-unverified" title="${title}">${label}</span>`;
 					}
-					return `<a class="llm-find-link" data-query="${escaped}" title="${escaped}">${label}</a>`;
+					// Citation links are geometry-backed only. If no pre-resolved
+					// position map is available, leave the label as plain text.
+					return label;
 				}
 				let [refType, refNum] = payload.split(":");
 				if (refType === "page") {
@@ -821,6 +825,7 @@ LLMChatPane = {
 					chat.clear();
 
 					let linkIndex = {};
+					let citationPositions = null;
 					if (pdfItem) {
 						try {
 							let [tableIndex, figureIndex, referenceIndex, equationIndex, notes] = await Promise.all([
@@ -838,6 +843,24 @@ LLMChatPane = {
 								LLMNotes.getNotes(pdfItem).catch(() => []),
 							]);
 							linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes });
+
+							// Keep history/import rendering aligned with fresh replies:
+							// pre-resolve grounded citation find: payloads to concrete
+							// positions once in batch, then pass the map into
+							// _renderMarkdown for data-position links.
+							let queries = [];
+							for (let { role, text } of transcript) {
+								if (role === "You" || !text) continue;
+								queries.push(...[...text.matchAll(/\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]]|\[|$)/g)].map(m => m[1]));
+							}
+							if (queries.length) {
+								try {
+									citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries);
+								}
+								catch (e) {
+									this.log(`Failed to resolve citation positions for ${logLabel}: ${e.message}`);
+								}
+							}
 						}
 						catch (e) {
 							this.log(`Failed to build link index for ${logLabel}: ${e.message}`);
@@ -852,7 +875,7 @@ LLMChatPane = {
 						// (the current time) kicks in instead.
 						let content = chat.appendMessage(role, text, time || undefined);
 						if (role === "You") continue;
-						let html = this._renderMarkdown(text, linkIndex);
+						let html = this._renderMarkdown(text, linkIndex, citationPositions);
 						if (html) chat.renderMarkdownMessage(content, html, text);
 					}
 				};

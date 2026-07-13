@@ -290,7 +290,13 @@ LLMUIAdvanced = {
 		// anything.
 		let { label: cacheLabel, sectionBody: cacheBody } = this._makeSection(doc, "Cache");
 		let cacheTypes = [
-			{ label: "Citations", clear: item => LLMCitation.clearCache(item) },
+			{
+				label: "Citations",
+				clear: async (item) => {
+					await LLMCitation.clearCache(item);
+					await LLMCitationPosition.clearCache(item);
+				},
+			},
 			{ label: "Equations", clear: item => LLMEquations.clearCache(item) },
 			{ label: "Figures", clear: item => LLMFigures.clearCache(item) },
 			{ label: "References", clear: item => LLMReferences.clearCache(item) },

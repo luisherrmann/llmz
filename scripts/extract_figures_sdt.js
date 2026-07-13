@@ -76,7 +76,7 @@
 //      preceding section heading (via structure.catalog.outline), numbered
 //      in block order per section.
 //
-// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_figures_sdt.js <pdf_path> <output_json_path> [pymupdf_images_json_path]
+// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_figures_sdt.js <pdf_path> <output_json_path> [pymupdf_images_json_path] [structure_cache_path]
 //   pymupdf_images_json_path (optional): output of scripts/list_page_images.py
 //   for this same PDF -- see step 2 above.
 // Output: JSON array of { figure_id, page_num, figure_num, figure_extra_num,
@@ -100,11 +100,8 @@
 // than lazily on demand.
 
 import fs from 'fs';
-import { dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
-
-import { getStructure } from '../sdt/document-worker/src/pdf/index.js';
 import { flattenText, pairWithCaptions, flattenOutline, nearestSection, iou, groupImagesByBoundary, extendCaptionText } from './match_captions.js';
+import { loadOrComputeStructure } from './structure_sdt.js';
 
 // How much IoU overlap (with an SDT-classified `type: 'image'` block on the
 // SAME page) a PyMuPDF-sourced candidate needs before it's treated as a
@@ -140,31 +137,13 @@ const PYMUPDF_DUPLICATE_IOU = 0.5;
 const MIN_IMAGE_AREA = 10000;
 const MAX_IMAGE_ASPECT_RATIO = 5.0;
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MODEL_ROOT = resolve(__dirname, '../sdt/document-worker/src/pdf/structure/model');
-const PDFJS_EXTERNAL = resolve(__dirname, '../sdt/document-worker/pdf.js/external');
-
-function dataProvider(path) {
-	if (path.startsWith('cmaps/')) {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'bcmaps', path.slice('cmaps/'.length)));
-	}
-	if (path.startsWith('standard_fonts/')) {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'standard_fonts', path.slice('standard_fonts/'.length)));
-	}
-	if (path === 'wasm/openjpeg.wasm') {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'openjpeg/openjpeg.wasm'));
-	}
-	return fs.readFileSync(resolve(MODEL_ROOT, path));
-}
-
 async function main() {
-	let [, , pdfPath, outputPath, pymupdfImagesPath] = process.argv;
+	let [, , pdfPath, outputPath, pymupdfImagesPath, structureCachePath] = process.argv;
 	if (!pdfPath || !outputPath) {
-		console.error('Usage: extract_figures_sdt.js <pdf_path> <output_json_path> [pymupdf_images_json_path]');
+		console.error('Usage: extract_figures_sdt.js <pdf_path> <output_json_path> [pymupdf_images_json_path] [structure_cache_path]');
 		process.exit(1);
 	}
-	let buf = fs.readFileSync(pdfPath);
-	let structure = await getStructure(buf, '', dataProvider);
+	let structure = await loadOrComputeStructure(pdfPath, structureCachePath);
 
 	let rawImages = [];
 	let captions = [];

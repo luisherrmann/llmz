@@ -34,7 +34,7 @@
 //      sequential block ordering, so this needs no page/coordinate math),
 //      numbered in block order per section.
 //
-// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_tables_sdt.js <pdf_path> <output_json_path>
+// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_tables_sdt.js <pdf_path> <output_json_path> [structure_cache_path]
 // Output: JSON array of { table_id, page_num, table_num, table_extra_num,
 //   label, caption, data, image_data, position }. table_num is a plain
 //   integer only for plainly-numbered captions ("Table 3:"); table_extra_num
@@ -61,28 +61,8 @@
 // unruled tables PyMuPDF's own find_tables() fails on).
 
 import fs from 'fs';
-import { dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
-
-import { getStructure } from '../sdt/document-worker/src/pdf/index.js';
 import { flattenText, pairWithCaptions, flattenOutline, nearestSection } from './match_captions.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MODEL_ROOT = resolve(__dirname, '../sdt/document-worker/src/pdf/structure/model');
-const PDFJS_EXTERNAL = resolve(__dirname, '../sdt/document-worker/pdf.js/external');
-
-function dataProvider(path) {
-	if (path.startsWith('cmaps/')) {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'bcmaps', path.slice('cmaps/'.length)));
-	}
-	if (path.startsWith('standard_fonts/')) {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'standard_fonts', path.slice('standard_fonts/'.length)));
-	}
-	if (path === 'wasm/openjpeg.wasm') {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'openjpeg/openjpeg.wasm'));
-	}
-	return fs.readFileSync(resolve(MODEL_ROOT, path));
-}
+import { loadOrComputeStructure } from './structure_sdt.js';
 
 // SDT's table block content is either a real row/column grid (array of
 // tablerow -> tablecell nodes, when its internal grid-fitting model
@@ -109,13 +89,12 @@ function tableContentToData(content) {
 }
 
 async function main() {
-	let [, , pdfPath, outputPath] = process.argv;
+	let [, , pdfPath, outputPath, structureCachePath] = process.argv;
 	if (!pdfPath || !outputPath) {
-		console.error('Usage: extract_tables_sdt.js <pdf_path> <output_json_path>');
+		console.error('Usage: extract_tables_sdt.js <pdf_path> <output_json_path> [structure_cache_path]');
 		process.exit(1);
 	}
-	let buf = fs.readFileSync(pdfPath);
-	let structure = await getStructure(buf, '', dataProvider);
+	let structure = await loadOrComputeStructure(pdfPath, structureCachePath);
 
 	let tables = [];
 	let captions = [];

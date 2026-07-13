@@ -396,6 +396,7 @@ LLMUIAdvanced = {
 				return;
 			}
 			await Promise.all(selected.map(({ clear }) => clear(item)));
+			LLMPrompt.noteCacheCleared(item, selected.map(c => c.label));
 			onMessage?.(`Cleared ${selected.map(c => c.label).join(", ")} cache for the active PDF. The next prompt will re-run extraction from scratch.`);
 		});
 		cacheBody.appendChild(clearCacheButton);

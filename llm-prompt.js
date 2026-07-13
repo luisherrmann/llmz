@@ -108,10 +108,28 @@ LLMPrompt = {
 	// pair's settings, so a later change to _advancedSettingDefaults still
 	// takes effect for anything nobody's touched yet.
 	_advancedSettingsByPair: {},
+	// Per-item one-shot marker set by ui/advanced.js when a user clears one
+	// or more caches. request.js consumes this on the next prompt for that
+	// same PDF and emits a System message so recomputation is explicitly
+	// visible as a consequence of the clear action.
+	_pendingCacheRecomputeByItem: new Map(), // item.id -> string[] (cache labels)
 	// Same persisted-JSON-blob-under-one-pref pattern as LLMInterfaces'
 	// _serverSettingsPref (see its own comment) -- global: true required for
 	// the same reason (this plugin's own prefs, not Zotero's).
 	_advancedSettingsPref: "extensions.llm-chat-pane.advancedSettings",
+
+	noteCacheCleared(item, labels = []) {
+		if (!item?.id) return;
+		let unique = [...new Set((labels || []).filter(l => typeof l === "string" && l.trim()))];
+		this._pendingCacheRecomputeByItem.set(item.id, unique);
+	},
+
+	consumePendingCacheRecompute(item) {
+		if (!item?.id) return null;
+		let labels = this._pendingCacheRecomputeByItem.get(item.id) || null;
+		this._pendingCacheRecomputeByItem.delete(item.id);
+		return labels;
+	},
 
 	// Populates _advancedSettingsByPair from disk, then applies whatever's
 	// saved for the CURRENTLY selected chat provider/model (LLMInterfaces'

@@ -663,6 +663,13 @@ LLMRequest = {
 			await Zotero.Promise.delay();
 			if (isCancelled()) return;
 
+			let activePDFItem = chatPane.getActiveReaderAttachment();
+			let pendingCacheLabels = activePDFItem ? LLMPrompt.consumePendingCacheRecompute(activePDFItem) : null;
+			if (pendingCacheLabels) {
+				let labelsText = pendingCacheLabels.length ? pendingCacheLabels.join(", ") : "selected";
+				appendMessage("System", `Recomputing ${labelsText} cache${pendingCacheLabels.length === 1 ? "" : "s"} for this PDF (triggered by Clear Cache).`);
+			}
+
 			// Posted (to Logs, since role "System" routes there -- see
 			// appendMessage below) AND mirrored onto the reply bubble itself
 			// (so a slow embedding recompute is visible in the actual

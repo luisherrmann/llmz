@@ -18,28 +18,7 @@
 // Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js
 //   compute_document_structure.js <pdf_path> <structure_cache_path>
 
-import fs from 'fs';
-import { dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
-
-import { getStructure } from '../sdt/document-worker/src/pdf/index.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MODEL_ROOT = resolve(__dirname, '../sdt/document-worker/src/pdf/structure/model');
-const PDFJS_EXTERNAL = resolve(__dirname, '../sdt/document-worker/pdf.js/external');
-
-function dataProvider(path) {
-	if (path.startsWith('cmaps/')) {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'bcmaps', path.slice('cmaps/'.length)));
-	}
-	if (path.startsWith('standard_fonts/')) {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'standard_fonts', path.slice('standard_fonts/'.length)));
-	}
-	if (path === 'wasm/openjpeg.wasm') {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'openjpeg/openjpeg.wasm'));
-	}
-	return fs.readFileSync(resolve(MODEL_ROOT, path));
-}
+import { loadOrComputeStructure } from './structure_sdt.js';
 
 async function main() {
 	let [, , pdfPath, structureCachePath] = process.argv;
@@ -47,12 +26,7 @@ async function main() {
 		console.error('Usage: compute_document_structure.js <pdf_path> <structure_cache_path>');
 		process.exit(1);
 	}
-	if (fs.existsSync(structureCachePath)) {
-		return;
-	}
-	let buf = fs.readFileSync(resolve(pdfPath));
-	let structure = await getStructure(buf, '', dataProvider);
-	fs.writeFileSync(structureCachePath, JSON.stringify(structure));
+	await loadOrComputeStructure(pdfPath, structureCachePath);
 }
 
 main();

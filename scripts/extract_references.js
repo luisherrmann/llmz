@@ -7,31 +7,12 @@
 // surnames, page-footer watermark noise, and false-positive "References"
 // headings from table columns, all without special-casing).
 //
-// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_references.js <pdf_path> <output_json_path>
+// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_references.js <pdf_path> <output_json_path> [structure_cache_path]
 // Output: JSON array of { index, text }, index = the paper's own reference number (or null if not parseable).
 
 import fs from 'fs';
-import { dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
 
-import { getStructure } from '../sdt/document-worker/src/pdf/index.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MODEL_ROOT = resolve(__dirname, '../sdt/document-worker/src/pdf/structure/model');
-const PDFJS_EXTERNAL = resolve(__dirname, '../sdt/document-worker/pdf.js/external');
-
-function dataProvider(path) {
-	if (path.startsWith('cmaps/')) {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'bcmaps', path.slice('cmaps/'.length)));
-	}
-	if (path.startsWith('standard_fonts/')) {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'standard_fonts', path.slice('standard_fonts/'.length)));
-	}
-	if (path === 'wasm/openjpeg.wasm') {
-		return fs.readFileSync(resolve(PDFJS_EXTERNAL, 'openjpeg/openjpeg.wasm'));
-	}
-	return fs.readFileSync(resolve(MODEL_ROOT, path));
-}
+import { loadOrComputeStructure } from './structure_sdt.js';
 
 function flattenText(node) {
 	if (!node || !Array.isArray(node.content)) return '';
@@ -59,13 +40,12 @@ function getReferences(structure) {
 }
 
 async function main() {
-	let [, , pdfPath, outputPath] = process.argv;
+	let [, , pdfPath, outputPath, structureCachePath] = process.argv;
 	if (!pdfPath || !outputPath) {
-		console.error('Usage: extract_references.js <pdf_path> <output_json_path>');
+		console.error('Usage: extract_references.js <pdf_path> <output_json_path> [structure_cache_path]');
 		process.exit(1);
 	}
-	let buf = fs.readFileSync(pdfPath);
-	let structure = await getStructure(buf, '', dataProvider);
+	let structure = await loadOrComputeStructure(pdfPath, structureCachePath);
 	let refs = getReferences(structure);
 	fs.writeFileSync(outputPath, JSON.stringify(refs));
 	console.error(`Extracted ${refs.length} references`);

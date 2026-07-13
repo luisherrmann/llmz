@@ -13,6 +13,7 @@ var LLMExport;
 var LLMImport;
 var LLMConversationHistory;
 var LLMUIConversationHistory;
+var LLMEmbeddings;
 var LLMCitation;
 var LLMSemanticHistory;
 var LLMFigures;
@@ -41,6 +42,10 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "vendor/marked.min.js");
 	Services.scriptloader.loadSubScript(rootURI + "vendor/highlight.min.js");
 	Services.scriptloader.loadSubScript(rootURI + "vendor/katex.min.js");
+	// LLMCitation's own embedding methods (getEmbedding/embedBatched/
+	// cosineSimilarity/getEmbeddingModel) just delegate to LLMEmbeddings --
+	// must load before it.
+	Services.scriptloader.loadSubScript(rootURI + "embeddings.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-citation.js");
 	// Depends on LLMCitation's own embedding API (getEmbedding/embedBatched/
 	// cosineSimilarity) -- must load after it.
@@ -95,7 +100,7 @@ async function startup({ id, version, rootURI }) {
 	// above (same reasoning as LLMPrompt.loadAdvancedSettings() above) --
 	// applies whichever "Batch size" is saved for the now-loaded EMBEDDING
 	// provider/model pair before main() renders the Embeddings section.
-	LLMCitation.loadAdvancedSettings();
+	LLMEmbeddings.loadAdvancedSettings();
 	// Also synchronous/plain-Prefs -- must run before main() renders the
 	// Providers panel (ui/providers.js), which reads _serverSettings
 	// directly to pre-fill the Server IP/Port fields.

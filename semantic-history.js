@@ -78,12 +78,14 @@ LLMSemanticHistory = {
 	// chat (llm-chat-pane.js's loadTranscriptIntoChat), after chat.clear()
 	// (which this does NOT call itself -- see reset()'s own comment on
 	// where that happens instead) and after every entry has actually been
-	// appended.
-	async embedAll(transcript) {
+	// appended. `onProgress(current, total)`, if given, is forwarded
+	// straight to embedBatched -- see its own comment -- so a caller can
+	// show a Logs progress bar for a long conversation's re-embedding.
+	async embedAll(transcript, onProgress) {
 		this.reset();
 		if (!transcript.length) return;
 		try {
-			let embeddings = await LLMCitation.embedBatched(transcript.map(entry => entry.text));
+			let embeddings = await LLMCitation.embedBatched(transcript.map(entry => entry.text), undefined, undefined, { onProgress });
 			transcript.forEach((entry, i) => {
 				if (embeddings[i]) this._embeddings.set(this._fingerprint(entry), embeddings[i]);
 			});

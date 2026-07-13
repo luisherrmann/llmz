@@ -375,13 +375,152 @@ LLMCitationPosition = {
 		return textIndex;
 	},
 
+	// Conservative per-query edit budget for fuzzy first-tier matching.
+	// Intentionally small ("few characters") to avoid anchoring a citation
+	// to the wrong sentence when the text is repetitive.
+	_fuzzyMaxEdits(queryLength) {
+		if (queryLength < 40) return 1;
+		if (queryLength < 120) return 2;
+		if (queryLength < 260) return 3;
+		return 4;
+	},
+
+	// Bounded Levenshtein with early stop. Returns maxEdits + 1 when the
+	// distance exceeds the budget.
+	_boundedLevenshtein(a, b, maxEdits) {
+		let n = a.length;
+		let m = b.length;
+		if (Math.abs(n - m) > maxEdits) return maxEdits + 1;
+
+		let prev = new Array(m + 1);
+		let curr = new Array(m + 1);
+		for (let j = 0; j <= m; j++) prev[j] = j;
+
+		for (let i = 1; i <= n; i++) {
+			curr[0] = i;
+			let rowMin = curr[0];
+			for (let j = 1; j <= m; j++) {
+				let cost = a[i - 1] === b[j - 1] ? 0 : 1;
+				let del = prev[j] + 1;
+				let ins = curr[j - 1] + 1;
+				let sub = prev[j - 1] + cost;
+				let v = Math.min(del, ins, sub);
+				curr[j] = v;
+				if (v < rowMin) rowMin = v;
+			}
+			if (rowMin > maxEdits) return maxEdits + 1;
+			let tmp = prev;
+			prev = curr;
+			curr = tmp;
+		}
+
+		return prev[m];
+	},
+
+	// Seeded candidate search for near-exact matches. Uses exact seed hits to
+	// avoid scanning the whole document with edit distance.
+	_resolveQueryAgainstTextIndexFuzzy(textIndex, normQuery) {
+		let { offsetMap, normalized, posMap } = textIndex;
+		let qLen = normQuery.length;
+		if (!qLen) return null;
+
+		let maxEdits = this._fuzzyMaxEdits(qLen);
+		if (maxEdits <= 0 || normalized.length < qLen - maxEdits) return null;
+
+		let seedLen = Math.max(4, Math.min(12, Math.floor(qLen / 4)));
+		if (qLen < seedLen) return null;
+
+		let seedPos = [
+			0,
+			Math.max(0, Math.floor((qLen - seedLen) / 2)),
+			Math.max(0, qLen - seedLen),
+		];
+		let seenSeedPos = new Set();
+		seedPos = seedPos.filter((p) => {
+			if (seenSeedPos.has(p)) return false;
+			seenSeedPos.add(p);
+			return true;
+		});
+
+		let candidateStarts = new Set();
+		for (let p of seedPos) {
+			let seed = normQuery.slice(p, p + seedLen);
+			let from = 0;
+			while (true) {
+				let hit = normalized.indexOf(seed, from);
+				if (hit === -1) break;
+				let start = hit - p;
+				if (start >= 0 && start < normalized.length) {
+					candidateStarts.add(start);
+				}
+				from = hit + 1;
+			}
+		}
+
+		if (!candidateStarts.size) return null;
+
+		let best = null;
+		let secondBestDist = Infinity;
+		for (let start of candidateStarts) {
+			for (let len = Math.max(1, qLen - maxEdits); len <= qLen + maxEdits; len++) {
+				if (start + len > normalized.length) break;
+				let cand = normalized.slice(start, start + len);
+				let dist = this._boundedLevenshtein(normQuery, cand, maxEdits);
+				if (dist > maxEdits) continue;
+				if (!best || dist < best.dist || (dist === best.dist && Math.abs(len - qLen) < Math.abs(best.len - qLen))) {
+					if (best) {
+						secondBestDist = Math.min(secondBestDist, best.dist);
+					}
+					best = { start, len, dist };
+				}
+				else {
+					secondBestDist = Math.min(secondBestDist, dist);
+				}
+			}
+		}
+
+		if (!best) return null;
+		// Reject ambiguous best hits.
+		if (secondBestDist - best.dist < 1) return null;
+
+		let matchStart = posMap[best.start];
+		let matchEnd = posMap[best.start + best.len - 1] + 1;
+
+		let nodeRanges = new Map();
+		for (let i = matchStart; i < matchEnd; i++) {
+			let entry = offsetMap[i];
+			if (!entry) continue;
+			let r = nodeRanges.get(entry.node);
+			if (!r) {
+				nodeRanges.set(entry.node, { min: entry.localOffset, max: entry.localOffset + 1 });
+			}
+			else {
+				r.min = Math.min(r.min, entry.localOffset);
+				r.max = Math.max(r.max, entry.localOffset + 1);
+			}
+		}
+
+		let allRects = [];
+		for (let [node, range] of nodeRanges) {
+			allRects.push(...this._getRectsForNodeRange(node, range.min, range.max));
+		}
+		if (!allRects.length) return null;
+
+		allRects.sort((a, b) => a.pageIndex - b.pageIndex || b.y1 - a.y1);
+		let pageIndex = allRects[0].pageIndex;
+		let rects = allRects.filter(r => r.pageIndex === pageIndex).map(r => [r.x1, r.y1, r.x2, r.y2]);
+		return { pageIndex, rects };
+	},
+
 	_resolveQueryAgainstTextIndex(textIndex, query) {
 		let { offsetMap, normalized, posMap } = textIndex;
 		let normQuery = this._normalizeForMatch(query);
 		if (!normQuery) return null;
 
 		let idx = normalized.indexOf(normQuery);
-		if (idx === -1) return null;
+		if (idx === -1) {
+			return this._resolveQueryAgainstTextIndexFuzzy(textIndex, normQuery);
+		}
 
 		let matchStart = posMap[idx];
 		let matchEnd = posMap[idx + normQuery.length - 1] + 1;

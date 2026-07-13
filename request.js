@@ -939,32 +939,9 @@ LLMRequest = {
 							}
 							return;
 						}
-						// The search phrase itself STAYS on the link (see
-						// llm-citation.js's groundCitations -- it's a useful,
-						// human-readable hover tooltip and a fallback), but
-						// navigation prefers resolving it to a precise
-						// {pageIndex, rects} position via the SDT structure's
-						// own per-character positions (see
-						// document/citations.js's LLMCitationPosition) --
-						// same direct-highlight path a table/figure click
-						// uses, rather than a text-search round trip through
-						// the reader's own (separately-implemented, and
-						// separately hyphen-lossy) find(). Only falls back to
-						// navigateToText if resolution fails outright (e.g.
-						// no PDF context, or a heavily paraphrased/
-						// hallucinated citation the SDT structure itself has
-						// no literal match for).
-						let position = pdfItem
-							? await LLMCitationPosition.resolvePosition(pdfItem, anchor.dataset.query).catch((err) => {
-								this.log(`resolvePosition failed: ${err.message}`);
-								return null;
-							})
-							: null;
-						if (position) {
-							await LLMCitation.navigateToPosition(position);
-							return;
-						}
-						LLMCitation.navigateToText(anchor.dataset.query);
+							if (anchor.dataset.query) {
+								LLMCitation.navigateToText(anchor.dataset.query);
+							}
 					});
 					reply.replaceWith(rendered);
 				}

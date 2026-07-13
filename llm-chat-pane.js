@@ -801,6 +801,15 @@ LLMChatPane = {
 				let logs = LLMUILogs.create(doc);
 
 				let chat = LLMUIChat.create(doc);
+				// A fresh chat instance starts with an empty transcript --
+				// LLMSemanticHistory's own cache must start empty alongside
+				// it (a stale embedding from whatever item/conversation was
+				// showing in a PREVIOUS render must never leak into this
+				// one). loadTranscriptIntoChat/onClearConversation below
+				// each reset it again themselves at their own point too, but
+				// this covers the plain "pane just rendered, no load/clear
+				// action involved yet" case those two don't run for.
+				LLMSemanticHistory.reset();
 
 				// Replaces whatever's currently shown with `transcript` --
 				// shared by both onImport (a file-picker-selected file) and
@@ -823,6 +832,7 @@ LLMChatPane = {
 				// linkIndex entry.
 				let loadTranscriptIntoChat = async (transcript, pdfItem, logLabel) => {
 					chat.clear();
+					LLMSemanticHistory.reset();
 
 					let linkIndex = {};
 					let citationPositions = null;
@@ -878,6 +888,15 @@ LLMChatPane = {
 						let html = this._renderMarkdown(text, linkIndex, citationPositions);
 						if (html) chat.renderMarkdownMessage(content, html, text);
 					}
+					// Reads back chat.exportTranscript() itself (rather than
+					// re-using the `transcript` parameter above) since an
+					// entry with time: "" gets a DIFFERENT, freshly-assigned
+					// timestamp from chat.appendMessage's own default (see
+					// the loop above) -- LLMSemanticHistory's fingerprints
+					// must match whatever a LATER selectRelevant call will
+					// see from chat.exportTranscript() itself, or this
+					// embedding would silently never be found again.
+					await LLMSemanticHistory.embedAll(chat.exportTranscript());
 				};
 
 				// Imports a conversation previously written by Export
@@ -953,7 +972,7 @@ LLMChatPane = {
 					getTranscript: () => chat.exportTranscript(),
 					onImport: () => onImport().catch(e => appendMessage("System", `Import failed: ${e.message}`)),
 					onExported: () => refreshConversationHistory(),
-					onClearConversation: () => chat.clear(),
+					onClearConversation: () => { chat.clear(); LLMSemanticHistory.reset(); },
 					sendIconURL: iconURL("send"),
 					cancelIconURL: iconURL("cancel"),
 					uploadIconURL: iconURL("upload"),

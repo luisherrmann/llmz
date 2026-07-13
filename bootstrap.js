@@ -14,6 +14,7 @@ var LLMImport;
 var LLMConversationHistory;
 var LLMUIConversationHistory;
 var LLMCitation;
+var LLMSemanticHistory;
 var LLMFigures;
 var LLMTables;
 var LLMReferences;
@@ -41,6 +42,9 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "vendor/highlight.min.js");
 	Services.scriptloader.loadSubScript(rootURI + "vendor/katex.min.js");
 	Services.scriptloader.loadSubScript(rootURI + "llm-citation.js");
+	// Depends on LLMCitation's own embedding API (getEmbedding/embedBatched/
+	// cosineSimilarity) -- must load after it.
+	Services.scriptloader.loadSubScript(rootURI + "semantic-history.js");
 	Services.scriptloader.loadSubScript(rootURI + "document/figures.js");
 	Services.scriptloader.loadSubScript(rootURI + "document/tables.js");
 	Services.scriptloader.loadSubScript(rootURI + "document/references.js");

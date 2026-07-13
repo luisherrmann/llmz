@@ -620,6 +620,13 @@ LLMRequest = {
 			// the previous one, so creating userReply first/reply second
 			// preserves the existing visual order: reply above userReply).
 			let userReply = appendMessage("You", prompt, submissionTime);
+			// Fire-and-forget (not awaited) -- LLMSemanticHistory.selectRelevant
+			// (used by "semantic" mode, see the messages-array build further
+			// down) only ever looks at whatever's landed in its cache BY THE
+			// TIME a later query needs it; embedding this message now, in the
+			// background, doesn't block the reply that's about to stream in
+			// for THIS turn.
+			LLMSemanticHistory.embedNewMessage({ role: "You", time: submissionTime, text: prompt });
 			// A visual record of what was actually attached to this
 			// specific message -- imagePaste's own list keeps accumulating
 			// across turns (see ui/image-paste.js), so this snapshot is what
@@ -809,20 +816,41 @@ LLMRequest = {
 			// Prior turns (see priorTranscript, snapshotted before this
 			// turn's own bubbles were appended) plus the current turn's
 			// full context-stuffed prompt as the final entry -- "You" ->
-			// "user", everything else (a provider/feature reply label)
-			// -> "assistant". Skipped entirely when
-			// LLMPrompt.useMessageHistory is off, trading conversation
-			// continuity for lower per-request token usage (every past
-			// turn otherwise gets resent, in full, on every subsequent
-			// request -- none of these backends remember anything
-			// server-side). Capped to the last maxHistoryMessages entries
-			// (a plain recency cutoff, not the whole conversation) so
-			// per-request size doesn't grow unbounded as a conversation
-			// gets longer -- slice(-N) is a no-op if there are fewer than
-			// N entries to begin with.
-			let messages = LLMPrompt.useMessageHistory
-				? priorTranscript.slice(-LLMPrompt.maxHistoryMessages).map(({ role, text }) => ({ role: role === "You" ? "user" : "assistant", content: text }))
-				: [];
+			// "user", everything else (a provider/feature reply label) ->
+			// "assistant". Which prior entries get included depends on
+			// LLMPrompt.useMessageHistory's own 3-way mode (see its own
+			// comment): "none" sends no history at all, trading conversation
+			// continuity for lower per-request token usage (every past turn
+			// otherwise gets resent, in full, on every subsequent request --
+			// none of these backends remember anything server-side);
+			// "last-k" is a plain recency cutoff (slice(-N), a no-op if
+			// there are fewer than N entries to begin with); "semantic"
+			// additionally pulls in whichever earlier entries are most
+			// relevant to THIS turn's own raw prompt (not modelPrompt --
+			// see LLMSemanticHistory.selectRelevant's own call below), via
+			// embedding similarity, on top of the same last-K recency cutoff.
+			let historyEntries;
+			if (LLMPrompt.useMessageHistory === "none") {
+				historyEntries = [];
+			}
+			else if (LLMPrompt.useMessageHistory === "semantic") {
+				historyEntries = await LLMSemanticHistory.selectRelevant(
+					priorTranscript, prompt, LLMPrompt.maxHistoryMessages, LLMPrompt.maxSemanticHistoryMessages
+				).catch((e) => {
+					this.log(`selectRelevant failed, falling back to last-k: ${e.message}`);
+					return priorTranscript.slice(-LLMPrompt.maxHistoryMessages);
+				});
+			}
+			else {
+				// "last-k" (the default), or a stale persisted boolean
+				// `true` from before this was a 3-way enum -- see
+				// LLMPrompt.applyAdvancedSettingsFor's own migration for why
+				// that's not expected to reach here as a raw boolean
+				// anymore, but falling through to the same behavior it used
+				// to mean either way costs nothing.
+				historyEntries = priorTranscript.slice(-LLMPrompt.maxHistoryMessages);
+			}
+			let messages = historyEntries.map(({ role, text }) => ({ role: role === "You" ? "user" : "assistant", content: text }));
 			messages.push({ role: "user", content: modelPrompt });
 
 			let result = await LLMInterfaces.streamModel(messages, (token) => {
@@ -834,9 +862,14 @@ LLMRequest = {
 				systemPrompt,
 			}, images);
 			if (isCancelled()) return;
+			// Set in both branches below, read once at the unified
+			// "turn is complete" point further down (chat.setMessageTime) --
+			// see LLMSemanticHistory.embedNewMessage's own call there for why.
+			let finalReplyText;
 			if (!result.text) {
 				reply.textContent = "(No response)";
 				chat.setMessageText(reply, "(No response)");
+				finalReplyText = "(No response)";
 			}
 			else {
 				let groundedText = LLMCitation.groundCitations(result.text);
@@ -884,6 +917,7 @@ LLMRequest = {
 					}
 				}
 				if (isCancelled()) return;
+				finalReplyText = groundedText;
 				// Keeps chat's own exportTranscript() (see export.js) in sync
 				// with the final grounded markdown -- reply's DOM content
 				// below ends up as rendered HTML, not something export.js
@@ -951,7 +985,16 @@ LLMRequest = {
 			// its own creation comment). Still resolves correctly even
 			// after reply.replaceWith above -- see setMessageTime's own
 			// comment in ui/chat.js.
-			chat.setMessageTime(reply, chat.formatTimestamp());
+			let finalReplyTime = chat.formatTimestamp();
+			chat.setMessageTime(reply, finalReplyTime);
+			// Fire-and-forget, same reasoning as the "You" message's own
+			// embedNewMessage call above -- replyLabel (not providerLabel)
+			// matches the role chat.appendMessage originally stored `reply`
+			// under (see its own creation, `appendMessage(replyLabel, ...)`),
+			// which is what chat.exportTranscript() will report back for
+			// this entry -- the fingerprint here MUST match that exactly, or
+			// a later selectRelevant call would never find this embedding.
+			LLMSemanticHistory.embedNewMessage({ role: replyLabel, time: finalReplyTime, text: finalReplyText });
 			this.log(`Received response from ${providerLabel} model ${result.model}`);
 		}
 		catch (e) {

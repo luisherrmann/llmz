@@ -116,6 +116,17 @@ LLMUIProviderModelSelect = {
 		getSelectedModel = provider => LLMInterfaces._selectedModel[provider],
 		saveSelectedModel = (provider, model) => LLMInterfaces.saveSelectedModel(provider, model),
 		listModels = () => LLMInterfaces.listModels(),
+		// Fires with (provider, model) whenever the selected pair actually
+		// changes -- both from an explicit model pick (modelSelect's own
+		// "change" listener below) and from switching provider (which
+		// auto-selects a model as part of refreshModelOptions below, with no
+		// separate modelSelect "change" event of its own). Undefined by
+		// default so the Embeddings row (ui/advanced.js, which reuses this
+		// same create() with its own get/save hooks) stays a no-op here --
+		// only the main chat Settings row (llm-chat-pane.js's onRender)
+		// passes this, to keep LLMPrompt's per-(provider,model) advanced
+		// settings in sync with whichever pair is actually selected.
+		onChange,
 	} = {}) {
 		let providerSelect = doc.createElement("select");
 		providerSelect.className = "llm-provider-select";
@@ -159,6 +170,7 @@ LLMUIProviderModelSelect = {
 				let selected = getSelectedModel(provider);
 				modelSelect.value = models.includes(selected) ? selected : models[0];
 				saveSelectedModel(provider, modelSelect.value);
+				onChange?.(provider, modelSelect.value);
 				modelSelect.disabled = false;
 			}
 			catch (e) {
@@ -177,6 +189,7 @@ LLMUIProviderModelSelect = {
 		});
 		modelSelect.addEventListener("change", () => {
 			saveSelectedModel(getProvider(), modelSelect.value);
+			onChange?.(getProvider(), modelSelect.value);
 		});
 		modelRefreshButton.addEventListener("click", () => refreshModelOptions());
 		refreshModelOptions();

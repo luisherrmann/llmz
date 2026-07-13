@@ -1,14 +1,70 @@
 LLMCitation = {
 	maxCitationChunks: 1000,
 	// Default batch size for embedBatched below -- exposed as an Advanced
-	// setting (ui/advanced.js's Embeddings section), session-only like
-	// maxPDFContextChars/chunkContextTopK (llm-prompt.js) and
-	// useMessageHistory/maxHistoryMessages, not persisted via Zotero.Prefs.
+	// setting (ui/advanced.js's Embeddings section). Persisted per
+	// (embedding provider, embedding model) pair -- same
+	// load/apply/save-per-pair pattern as LLMPrompt's own advanced settings
+	// (see its own comment for the fuller rationale), just keyed off
+	// LLMInterfaces' EMBEDDING provider/model state instead of its chat
+	// one, since batch size is a property of whichever backend embeddings
+	// actually get requested from, not the chat model.
 	embedBatchSize: 16,
+	_advancedSettingKeys: ["embedBatchSize"],
+	_advancedSettingDefaults: { embedBatchSize: 16 },
+	_advancedSettingsByPair: {},
+	_advancedSettingsPref: "extensions.llm-chat-pane.citationAdvancedSettings",
 	_citationIndexCache: new Map(),
 
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Citation]: " + msg);
+	},
+
+	// Populates _advancedSettingsByPair from disk, then applies whatever's
+	// saved for the CURRENTLY selected embedding provider/model
+	// (LLMInterfaces.loadEmbeddingSelection() must have already run -- see
+	// bootstrap.js's call ordering) onto this object's own properties.
+	// Called once at startup, same as LLMPrompt.loadAdvancedSettings().
+	loadAdvancedSettings() {
+		try {
+			let json = Zotero.Prefs.get(this._advancedSettingsPref, true);
+			if (json) this._advancedSettingsByPair = JSON.parse(json);
+		}
+		catch (e) {
+			this.log(`loadAdvancedSettings: failed to read pref: ${e.message}`);
+		}
+		this.applyAdvancedSettingsFor(LLMInterfaces._embeddingProvider, LLMInterfaces._selectedEmbeddingModel[LLMInterfaces._embeddingProvider]);
+	},
+
+	// Overwrites this object's own advanced-setting properties with
+	// whichever value is saved for (provider, model), falling back to
+	// _advancedSettingDefaults for any key that pair has never customized.
+	// Called from loadAdvancedSettings above at startup, and again whenever
+	// the EMBEDDING provider/model selection changes (see
+	// ui/provider-model-select.js's onChange, wired up in ui/advanced.js's
+	// Embeddings section) so switching embedding models mid-session
+	// immediately switches to that model's own tuned batch size.
+	applyAdvancedSettingsFor(provider, model) {
+		let saved = this._advancedSettingsByPair[`${provider}:${model}`] || {};
+		for (let key of this._advancedSettingKeys) {
+			this[key] = saved[key] !== undefined ? saved[key] : this._advancedSettingDefaults[key];
+		}
+	},
+
+	// Persists ONE advanced setting under the CURRENTLY selected embedding
+	// provider/model pair, and updates this object's own live property so
+	// the change takes effect immediately -- called from ui/advanced.js's
+	// "Batch size" row `set` callback instead of a plain direct assignment.
+	saveAdvancedSetting(key, value) {
+		this[key] = value;
+		let pairKey = `${LLMInterfaces._embeddingProvider}:${LLMInterfaces._selectedEmbeddingModel[LLMInterfaces._embeddingProvider]}`;
+		if (!this._advancedSettingsByPair[pairKey]) this._advancedSettingsByPair[pairKey] = {};
+		this._advancedSettingsByPair[pairKey][key] = value;
+		try {
+			Zotero.Prefs.set(this._advancedSettingsPref, JSON.stringify(this._advancedSettingsByPair), true);
+		}
+		catch (e) {
+			this.log(`saveAdvancedSetting: failed to persist ${key}: ${e.message}`);
+		}
 	},
 
 	splitIntoSentences(text) {

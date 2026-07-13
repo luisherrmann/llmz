@@ -498,11 +498,16 @@
 }
 
 /* A real <table> (same technique as ui/providers.js) so the input column
-   lines up at the same position for every row regardless of label length. */
+   lines up at the same position for every row regardless of label length.
+   Stretched to the full section width (rather than shrinking to content,
+   which earlier versions of this rule did) so a hint row's colspan="3" --
+   see _makeHintRow's own comment for why there's a third dummy column at
+   all -- has real room to wrap across, instead of being squeezed into just
+   the label+input columns' own content width. */
 .llm-advanced-table {
 	border-collapse: collapse;
-	width: auto;
-	align-self: flex-start;
+	width: 100%;
+	align-self: stretch;
 }
 
 .llm-advanced-field-label {
@@ -518,11 +523,16 @@
 }
 
 /* Explanatory text below a setting row (e.g. ui/advanced.js's Embeddings
-   "Batch size") -- muted/smaller so it reads as a caption, not another
-   setting label. */
+   "Batch size", or a per-row hint like "Max selected figures") -- muted/
+   smaller so it reads as a caption, not another setting label. Applied to
+   a colspan="2" <td> when used as a table row (_makeHintRow) -- normal
+   wrapping text, not shrink-to-fit like the label/input columns either
+   side of it. */
 .llm-advanced-field-hint {
 	color: GrayText;
 	font-size: 0.85em;
+	padding: 0 0 6px 0;
+	white-space: normal;
 }
 
 .llm-advanced-input {

@@ -667,6 +667,21 @@ LLMChatPane = {
 
 				let providerModelSelect = LLMUIProviderModelSelect.create(doc, {
 					refreshIconURL: iconURL("refresh"),
+					// Keeps LLMPrompt's per-(provider,model) advanced settings
+					// (Max PDF context, Max selected figures, etc. -- see
+					// llm-prompt.js's own comment) in sync with the CHAT
+					// provider/model pair specifically -- fires on every
+					// actual pair change, including the auto-select that
+					// happens when switching provider, not just an explicit
+					// model pick. `advanced` is assigned further down, but
+					// this closure only ever runs later (async, after at
+					// least one model-list fetch resolves), well after this
+					// whole render function has finished running -- see
+					// ui/provider-model-select.js's own comment on onChange.
+					onChange: (provider, model) => {
+						LLMPrompt.applyAdvancedSettingsFor(provider, model);
+						advanced.refreshPairSettings();
+					},
 				});
 
 				let providers = LLMUIProviders.create(doc, (label, message) => {

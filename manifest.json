@@ -1,13 +1,13 @@
 {
   "manifest_version": 2,
-  "name": "LLM Chat Pane",
-  "version": "2.0",
-  "description": "Minimal no-op Zotero plugin scaffold.",
-  "homepage_url": "https://example.com/llm-chat-pane",
+  "name": "LLMz",
+  "version": "1.0",
+  "description": "A plugin that turns your Zotero into an LLM research assistant.",
+  "homepage_url": "https://github.com/luisherrmann/llmz",
   "applications": {
     "zotero": {
-      "id": "llm-chat-pane@example.com",
-      "update_url": "https://example.com/llm-chat-pane/updates.json",
+      "id": "llmz@luisherrmann.github.io",
+      "update_url": "https://raw.githubusercontent.com/luisherrmann/llmz/main/update.json",
       "strict_min_version": "9.0",
       "strict_max_version": "9.*"
     }

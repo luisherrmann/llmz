@@ -2,3 +2,4 @@
 node_modules/
 *.xpi
 __pycache__/
+build/

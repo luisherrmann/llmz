@@ -34,10 +34,10 @@
 
 ## Installation
 
-1. Download the latest `llm-chat-pane.xpi`, or build one yourself from source:
+1. Download the latest `llmz.xpi`, or build one yourself from source:
    ```bash
    cd plugins/llm-chat-pane
-   zip -r llm-chat-pane.xpi . -x ".*" -x "*.xpi"
+   zip -r build/llmz.xpi . -x ".*" -x "*.xpi" -x "scripts/__pycache__/*"
    ```
 2. In Zotero, go to **Tools → Add-ons**, click the gear icon, choose **Install Add-on From File...**, and select the `.xpi`.
 3. Restart Zotero.

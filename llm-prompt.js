@@ -39,8 +39,8 @@ LLMPrompt = {
 	// (request.js's _buildImageContext), so a higher cap trades more context
 	// for a larger, more expensive prompt.
 	maxSelectedFigures: 10,
-	maxSelectedTables: 10,
-	maxSelectedEquations: 10,
+	maxSelectedTables: 20,
+	maxSelectedEquations: 40,
 	// Whether/how a request resends prior turns (see chat.exportTranscript())
 	// to the model as conversation history -- one of three modes, toggled via
 	// ui/advanced.js's "Use message history" dropdown:
@@ -77,7 +77,7 @@ LLMPrompt = {
 	// transcript entries (beyond the last maxHistoryMessages) get pulled in
 	// by embedding similarity to the current query. Ignored entirely in
 	// "none"/"last-k" mode.
-	maxSemanticHistoryMessages: 20,
+	maxSemanticHistoryMessages: 15,
 
 	// Every key above that's actually tunable via ui/advanced.js and gets
 	// persisted per-(provider,model) pair -- deliberately excludes

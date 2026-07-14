@@ -17,9 +17,9 @@ LLMEmbeddings = {
 	// LLMInterfaces' EMBEDDING provider/model state instead of its chat
 	// one, since batch size is a property of whichever backend embeddings
 	// actually get requested from, not the chat model.
-	embedBatchSize: 16,
+	embedBatchSize: 1024,
 	_advancedSettingKeys: ["embedBatchSize"],
-	_advancedSettingDefaults: { embedBatchSize: 16 },
+	_advancedSettingDefaults: { embedBatchSize: 1024 },
 	_advancedSettingsByPair: {},
 	// Deliberately UNCHANGED from when this setting lived on LLMCitation --
 	// renaming it would silently orphan anyone's already-saved batch size

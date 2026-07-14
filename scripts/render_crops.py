@@ -7,20 +7,19 @@ as part of detection itself), now shared by both document/tables.js
 (invoked lazily, only when an actual image is needed, e.g. at table-export
 time, against extract_tables_sdt.js's cached bounding boxes) and
 document/figures.js (invoked eagerly, right after extract_figures_sdt.js's
-own detection pass, since a figure's image is a hard dependency of both its
-own embedding step and the "send this figure as image context to the model"
-feature -- see figures.js's own comment for why that can't be deferred the
-way table images can). All this script needs is a (page_num, bbox) region;
-it has no notion of what kind of item that region belongs to.
+own detection pass, since a figure's image is a hard dependency of the "send
+this figure as image context to the model" feature -- see figures.js's own
+comment for why that can't be deferred the way table images can). All this
+script needs is a (page_num, bbox) region; it has no notion of what kind of
+item that region belongs to.
 
 A Node/pdf.js equivalent (using Zotero's own document-worker rendering
 pipeline) was also prototyped, but measured consistently ~2.5-3x slower than
 this PyMuPDF version even after matching render scale and JPEG output format
 -- the gap is Node/ESM/canvas startup overhead, not encode work, so it
 doesn't shrink with tuning. Kept as PyMuPDF since this plugin already
-requires the Python venv for figure embedding regardless
-(document/figures.js's embed_figures.py), so this doesn't add a new
-dependency either way.
+requires the Python venv for figure/table extraction regardless, so this
+doesn't add a new dependency either way.
 
 A multiprocessing.Pool variant (concurrency 8, PyMuPDF explicitly does not
 support threading) was also tried, since table exports can request several

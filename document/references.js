@@ -151,12 +151,12 @@ LLMReferences = {
 		}
 	},
 
-	async _extractRaw(item) {
+	async _extractRaw(item, onMessage) {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
 		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `references_${item.id}.json`);
 		await IOUtils.makeDirectory(PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts"), { ignoreExisting: true, createAncestors: true });
-		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item);
+		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item, onMessage);
 		await this._runNode(pdfPath, outputPath, structureCachePath);
 		let references = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
@@ -211,7 +211,7 @@ LLMReferences = {
 
 	// Returns { references: [{ index, text }] }, index = the paper's own
 	// reference-list number (or null if unparseable).
-	async getReferenceIndex(item) {
+	async getReferenceIndex(item, onMessage) {
 		if (this._indexCache.has(item.id)) {
 			this.log(`getReferenceIndex: memory cache hit for item ${item.id}`);
 			return this._indexCache.get(item.id);
@@ -223,7 +223,7 @@ LLMReferences = {
 			return cached;
 		}
 
-		let references = await this._extractRaw(item);
+		let references = await this._extractRaw(item, onMessage);
 		let index = { references, scriptFingerprint: await this._scriptFingerprint() };
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);

@@ -801,6 +801,7 @@ LLMChatPane = {
 				let logs = LLMUILogs.create(doc);
 
 				let chat = LLMUIChat.create(doc);
+				chat.clear();
 				// A fresh chat instance starts with an empty transcript --
 				// LLMSemanticHistory's own cache must start empty alongside
 				// it (a stale embedding from whatever item/conversation was
@@ -830,19 +831,22 @@ LLMChatPane = {
 				// case it falls back to plain unlinked text via
 				// _renderMarkdown's own handling of an unresolvable
 				// linkIndex entry.
-				let loadTranscriptIntoChat = async (transcript, pdfItem, logLabel) => {
-					chat.clear();
+				let loadTranscriptIntoChat = async (transcript, pdfItem, logLabel, reply) => {
 					LLMSemanticHistory.reset();
 
 					let linkIndex = {};
 					let citationPositions = null;
 					if (pdfItem) {
 						try {
+							let onStructureMessage = (text) => {
+								appendMessage("System", text);
+								if (reply) chat.updateMessageText(reply, text);
+							};
 							let [tableIndex, figureIndex, referenceIndex, equationIndex, notes] = await Promise.all([
-								LLMTables.getTableIndex(pdfItem).catch(() => null),
-								LLMFigures.getFigureIndex(pdfItem).catch(() => null),
-								LLMReferences.getReferenceIndex(pdfItem).catch(() => null),
-								LLMEquations.getEquationIndex(pdfItem).catch(() => null),
+								LLMTables.getTableIndex(pdfItem, onStructureMessage).catch(() => null),
+								LLMFigures.getFigureIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
+								LLMReferences.getReferenceIndex(pdfItem, onStructureMessage).catch(() => null),
+								LLMEquations.getEquationIndex(pdfItem, onStructureMessage).catch(() => null),
 								// ALL current annotations, not just some
 								// message's selected subset -- there's no way
 								// to know which ones the original (historical)
@@ -865,7 +869,34 @@ LLMChatPane = {
 							}
 							if (queries.length) {
 								try {
-									citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries);
+									// resolvePositions' own embedding fallback
+									// (document/citations.js) -- triggered when
+									// exact/fuzzy text matching can't anchor a
+									// query -- re-embeds the WHOLE PDF's
+									// sentence-level citation index on a cold
+									// LLMCitation cache (e.g. right after
+									// clearing it in Advanced), which can take
+									// several seconds with zero visibility
+									// otherwise. Mirrored onto `reply` (if
+									// given -- onImport doesn't pass one) same
+									// as every other status message below.
+									let onEmbeddingStart = (provider, model) => {
+										let baseText = `Recomputing citation embeddings using ${provider} ${model}...`;
+										let logEl = appendMessage("System", baseText);
+										if (reply) chat.updateMessageText(reply, baseText);
+										return {
+											get textContent() { return logEl.textContent; },
+											set textContent(text) {
+												logEl.textContent = text;
+												if (reply) chat.updateMessageText(reply, text);
+											},
+											setProgress(current, total) {
+												logEl.textContent = `${baseText} ${LLMCitation._formatProgressBar(current, total)}`;
+												if (reply) chat.updateMessageText(reply, `${baseText} ${Math.round(current / total * 100)}%`);
+											},
+										};
+									};
+									citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries, onEmbeddingStart);
 								}
 								catch (e) {
 									this.log(`Failed to resolve citation positions for ${logLabel}: ${e.message}`);
@@ -877,6 +908,7 @@ LLMChatPane = {
 						}
 					}
 
+					chat.clear()
 					for (let { role, time, text } of transcript) {
 						// Preserves the original timestamp from the file --
 						// `time` comes back "" for files exported before
@@ -909,6 +941,7 @@ LLMChatPane = {
 					// of a long conversation is at least visible, not just
 					// silently pending.
 					let embedTranscript = chat.exportTranscript();
+					appendMessage("System", `Embedding messages...`);
 					let embedLogEl = appendMessage("System", `Embedding ${embedTranscript.length} message${embedTranscript.length === 1 ? "" : "s"} for semantic history...`);
 					LLMSemanticHistory.embedAll(embedTranscript, (current, total) => {
 						embedLogEl.textContent = `Embedding messages for semantic history... ${LLMCitation._formatProgressBar(current, total)}`;
@@ -922,13 +955,17 @@ LLMChatPane = {
 				// currently shown.
 				let onImport = async () => {
 					let pdfItem = this.getActiveReaderAttachment();
-					let transcript = await LLMImport.importConversation(pdfItem);
+					let transcript = await LLMImport.importConversation(pdfItem, (text) => appendMessage("System", text));
 					if (transcript === null) return; // cancelled
 					if (!transcript.length) {
 						appendMessage("System", "Import: no messages found in that file.");
 						return;
 					}
-					await loadTranscriptIntoChat(transcript, pdfItem, "import");
+					let providerLabel = LLMInterfaces.getProviderLabel(LLMInterfaces._provider);
+					let currentModel = await LLMInterfaces.getCurrentModel().catch(() => null);
+					let replyLabel = currentModel ? `${providerLabel} - ${currentModel}` : providerLabel;
+					let reply = chat.appendMessage(replyLabel, `Parsing file ${pdfItem.attachmentFilename}...`, "");
+					await loadTranscriptIntoChat(transcript, pdfItem, "import", reply);
 					appendMessage("System", `Imported ${transcript.length} message${transcript.length === 1 ? "" : "s"}.`);
 				};
 
@@ -940,12 +977,33 @@ LLMChatPane = {
 				let onLoadConversation = async (conv) => {
 					let pdfItem = this.getActiveReaderAttachment();
 					let markdown = await IOUtils.readUTF8(conv.path);
+					// Mirrored onto a chat bubble as well as Logs -- same
+					// reasoning as request.js's own onEmbeddingStart -- so
+					// the in-progress status is visible immediately in the
+					// conversation, not just the Logs panel. The bubble
+					// itself is transient: loadTranscriptIntoChat's own
+					// chat.clear() wipes it once the real messages load.
+					let providerLabel = LLMInterfaces.getProviderLabel(LLMInterfaces._provider);
+					let currentModel = await LLMInterfaces.getCurrentModel().catch(() => null);
+					let replyLabel = currentModel ? `${providerLabel} - ${currentModel}` : providerLabel;
+					// Created HERE (using the real provider/model label) and
+					// passed through to loadTranscriptIntoChat, which mirrors
+					// its own status messages onto it as it works -- rather
+					// than loadTranscriptIntoChat creating its own bubble
+					// under a generic label, this way the bubble reads like
+					// any other reply. Discarded by loadTranscriptIntoChat's
+					// own chat.clear() right before the real transcript
+					// loads, so it never pollutes the actual conversation.
+					let reply = chat.appendMessage(replyLabel, `Parsing file ${conv.filename}...`, "");
+					appendMessage("System", `Parsing file ${conv.filename}...`);
 					let transcript = LLMImport.parseConversation(markdown);
+					appendMessage("System", `Parsed ${transcript.length} message${transcript.length === 1 ? "" : "s"} from ${conv.filename}.`);
 					if (!transcript.length) {
+						chat.clear();
 						appendMessage("System", `Load: no messages found in ${conv.filename}.`);
 						return;
 					}
-					await loadTranscriptIntoChat(transcript, pdfItem, "conversation history load");
+					await loadTranscriptIntoChat(transcript, pdfItem, "conversation history load", reply);
 					appendMessage("System", `Loaded ${transcript.length} message${transcript.length === 1 ? "" : "s"} from ${conv.filename}.`);
 				};
 

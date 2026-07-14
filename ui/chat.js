@@ -216,6 +216,18 @@ LLMUIChat = {
 		};
 		showPlaceholder();
 
+		// Overwrites the placeholder's own text in place -- e.g.
+		// llm-chat-pane.js's onLoadConversation uses this to show "Parsing
+		// file X..." while a saved conversation is being read/parsed,
+		// reusing the already-visible placeholder instead of spawning a
+		// throwaway message bubble that would just get wiped by the next
+		// clear() anyway. A no-op if a real conversation is currently
+		// shown (no placeholder to update) -- callers that want this text
+		// visible should clear() first.
+		let setPlaceholderText = (text) => {
+			if (placeholder) placeholder.textContent = text;
+		};
+
 		// dd/mm/yyyy - hh:mm:ss, local time, zero-padded.
 		let formatTimestamp = () => {
 			let d = new Date();
@@ -444,6 +456,6 @@ LLMUIChat = {
 			return rendered;
 		};
 
-		return { label, list, appendMessage, appendRichMessage, appendImages, setMessageText, updateMessageText, setMessageTime, finalizeRichMessage, exportTranscript, clear, renderMarkdownMessage, formatTimestamp };
+		return { label, list, appendMessage, appendRichMessage, appendImages, setMessageText, updateMessageText, setMessageTime, finalizeRichMessage, exportTranscript, clear, setPlaceholderText, renderMarkdownMessage, formatTimestamp };
 	},
 };

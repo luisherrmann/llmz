@@ -96,8 +96,13 @@ LLMImport = {
 	// *.md) and parses the selected file's conversation back out (see
 	// parseConversation). Returns null if the user cancels, otherwise
 	// [{ role, time, text }] (possibly empty, if the file's Conversation
-	// section had no parseable messages).
-	async importConversation(item) {
+	// section had no parseable messages). `onMessage(text)`, if given, is
+	// called for user-facing status text -- routing this (e.g. to the Logs
+	// panel) is the caller's concern, same convention as e.g.
+	// LLMUIAdvanced.create's own `onMessage` -- called once before parsing
+	// starts and again once it finishes, as two separate lines (not one
+	// updated in place), so both remain visible in the Logs history.
+	async importConversation(item, onMessage) {
 		let fp = await this._createFilePicker("Import Conversation", Ci.nsIFilePicker.modeOpen, item);
 
 		let result = await new Promise(resolve => fp.open(resolve));
@@ -106,7 +111,9 @@ LLMImport = {
 		}
 
 		let markdown = await IOUtils.readUTF8(fp.file.path);
+		onMessage?.(`Parsing file ${fp.file.leafName}...`);
 		let transcript = this.parseConversation(markdown);
+		onMessage?.(`Parsed ${transcript.length} message${transcript.length === 1 ? "" : "s"} from ${fp.file.leafName}.`);
 		this.log(`Imported ${transcript.length} message(s) from ${fp.file.path}`);
 		return transcript;
 	},

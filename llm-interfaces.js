@@ -1051,6 +1051,16 @@ LLMInterfaces = {
 		return this.getOllamaModel();
 	},
 
+	// Human-readable display name for a chat provider ID -- shared by
+	// request.js's own reply-bubble labeling and any other caller (e.g.
+	// llm-chat-pane.js's onLoadConversation) that needs to show which
+	// provider/model a plugin-generated status bubble is "speaking as",
+	// rather than each call site keeping its own copy of this mapping.
+	getProviderLabel(provider) {
+		let providerLabels = { ollama: "Ollama", lmstudio: "LM Studio", litellm: "LiteLLM", openai: "OpenAI", anthropic: "Anthropic" };
+		return providerLabels[provider] || "Ollama";
+	},
+
 	// LM Studio and OpenAI have no reliable vision-capability API (unlike
 	// Ollama's /api/show capabilities, LiteLLM's /model_group/info
 	// supports_vision, or Anthropic's /v1/models capabilities.image_input)

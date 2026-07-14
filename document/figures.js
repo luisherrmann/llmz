@@ -235,13 +235,13 @@ LLMFigures = {
 	// body-candidate source. Returns raw entries with image_data always
 	// null (see _sdtScriptName's own comment) -- _renderImages below fills
 	// it in right after this runs.
-	async _extractRaw(item) {
+	async _extractRaw(item, onMessage) {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
 		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
 		let imagesPath = PathUtils.join(scriptsDir, `figure_images_${item.id}.json`);
 		let outputPath = PathUtils.join(scriptsDir, `figures_${item.id}.json`);
-		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item);
+		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item, onMessage);
 		// Best-effort: if PyMuPDF's image listing fails for any reason (e.g.
 		// the venv is present but somehow broken), detection still proceeds
 		// SDT-only, exactly as it did before this extra step existed --
@@ -329,7 +329,7 @@ LLMFigures = {
 	// return value (e.g. a Logs entry's content element) is updated in
 	// place with a completion line once recomputation finishes, rather
 	// than logging start/done as two separate messages.
-	async getFigureIndex(item, onEmbeddingStart) {
+	async getFigureIndex(item, onEmbeddingStart, onMessage) {
 		if (this._venvMissing) {
 			throw new Error(
 				"Python venv not found. Set it up with:\n"
@@ -358,7 +358,7 @@ LLMFigures = {
 			return cached;
 		}
 
-		let figures = await this._extractRaw(item);
+		let figures = await this._extractRaw(item, onMessage);
 		if (figures.length) await this._renderImages(item, figures);
 		let embedded = figures.length ? await this._embedRaw(item, figures) : [];
 		let progress = embedded.length ? onEmbeddingStart?.(embeddingProvider, embeddingModel) : null;

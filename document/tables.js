@@ -180,11 +180,11 @@ LLMTables = {
 		}
 	},
 
-	async _extractRaw(item) {
+	async _extractRaw(item, onMessage) {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
 		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `tables_${item.id}.json`);
-		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item);
+		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item, onMessage);
 		// SDT-only detection via _runNode, not _runPython (see
 		// _sdtScriptName's own comment).
 		await this._runNode(this._sdtScriptName, pdfPath, outputPath, structureCachePath);
@@ -282,7 +282,7 @@ LLMTables = {
 		return tables;
 	},
 
-	async getTableIndex(item) {
+	async getTableIndex(item, onMessage) {
 		if (this._indexCache.has(item.id)) {
 			this.log(`getTableIndex: memory cache hit for item ${item.id}`);
 			return this._indexCache.get(item.id);
@@ -294,7 +294,7 @@ LLMTables = {
 			return cached;
 		}
 
-		let tables = await this._extractRaw(item);
+		let tables = await this._extractRaw(item, onMessage);
 		// The embedding CALLS in _embedRaw/_addTextEmbeddings are skipped
 		// while the Python path is bypassed (see _sdtScriptName's own
 		// comment) -- image_data is always null from the SDT-only script

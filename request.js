@@ -704,26 +704,27 @@ LLMRequest = {
 			};
 			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText, onEmbeddingStart);
 			if (isCancelled()) return;
+			let onStructureMessage = (text) => appendMessage("System", text);
 			let tableIndexPromise = pdfItem
-				? LLMTables.getTableIndex(pdfItem).catch((e) => {
+				? LLMTables.getTableIndex(pdfItem, onStructureMessage).catch((e) => {
 					this.log(`getTableIndex failed: ${e.message}`);
 					return { error: e.message };
 				})
 				: Promise.resolve(null);
 			let figureIndexPromise = pdfItem
-				? LLMFigures.getFigureIndex(pdfItem, onEmbeddingStart).catch((e) => {
+				? LLMFigures.getFigureIndex(pdfItem, onEmbeddingStart, onStructureMessage).catch((e) => {
 					this.log(`getFigureIndex failed: ${e.message}`);
 					return null;
 				})
 				: Promise.resolve(null);
 			let referenceIndexPromise = pdfItem
-				? LLMReferences.getReferenceIndex(pdfItem).catch((e) => {
+				? LLMReferences.getReferenceIndex(pdfItem, onStructureMessage).catch((e) => {
 					this.log(`getReferenceIndex failed: ${e.message}`);
 					return null;
 				})
 				: Promise.resolve(null);
 			let equationIndexPromise = pdfItem
-				? LLMEquations.getEquationIndex(pdfItem).catch((e) => {
+				? LLMEquations.getEquationIndex(pdfItem, onStructureMessage).catch((e) => {
 					this.log(`getEquationIndex failed: ${e.message}`);
 					return { error: e.message };
 				})
@@ -1046,8 +1047,7 @@ LLMRequest = {
 		let rejectCancel = null;
 		let cancelPromise = new Promise((_, reject) => { rejectCancel = reject; });
 
-		let providerLabels = { ollama: "Ollama", lmstudio: "LM Studio", litellm: "LiteLLM", openai: "OpenAI", anthropic: "Anthropic" };
-		let providerLabel = providerLabels[LLMInterfaces._provider] || "Ollama";
+		let providerLabel = LLMInterfaces.getProviderLabel(LLMInterfaces._provider);
 
 		// The entire request -- tool-intent lookup or normal chat -- runs
 		// inside this one closure so it can be raced against cancelPromise

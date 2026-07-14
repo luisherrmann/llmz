@@ -48,8 +48,13 @@ LLMFigures = {
 		Zotero.debug("LLM Chat Pane [Figures]: " + msg);
 	},
 
+	// Delegates to LLMPythonSetup (core/python-setup.js), which owns the
+	// venv's actual layout convention (Windows: Scripts/python.exe; Unix:
+	// bin/python3) -- this must always resolve to the SAME path that
+	// module's own setup() creates, so it's the single source of truth
+	// rather than a second hardcoded copy.
 	_pythonPath() {
-		return PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "venv", "bin", "python3");
+		return LLMPythonSetup._venvPythonPath(LLMPythonSetup.venvDir());
 	},
 
 	_scriptPath(name) {
@@ -132,35 +137,6 @@ LLMFigures = {
 
 	_nodeScriptPath(name) {
 		return PathUtils.join(LLMReferences._extensionRoot, "scripts", name);
-	},
-
-	// Same shape as document/tables.js's own _runNode -- reuses
-	// LLMReferences's deployed sdt/ copy and node/pdfjs-setup infra rather
-	// than duplicating it.
-	async _runNode(scriptName, ...scriptArgs) {
-		if (!LLMReferences._extensionRoot) {
-			throw new Error("Extension root path unavailable; cannot run SDT-based extraction");
-		}
-		let nodePath = await LLMReferences._nodePath();
-		let scriptPath = this._nodeScriptPath(scriptName);
-		let setupPath = LLMReferences._pdfjsSetupPath();
-		let stderrPath = scriptArgs[scriptArgs.length - 1] + ".err";
-		let quotedArgs = scriptArgs.map(a => JSON.stringify(a)).join(" ");
-		let cmd = `${JSON.stringify(nodePath)} --import ${JSON.stringify(setupPath)} ${JSON.stringify(scriptPath)} ${quotedArgs} 2>${JSON.stringify(stderrPath)}`;
-
-		this.log(`_runNode: ${scriptName}`);
-		let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
-		let proc = await Subprocess.call({ command: "/bin/sh", arguments: ["-c", cmd] });
-		let { exitCode } = await proc.wait();
-
-		let stderr = "";
-		try { stderr = (await IOUtils.readUTF8(stderrPath)).trim(); } catch (e) {}
-		IOUtils.remove(stderrPath).catch(() => {});
-		if (stderr) this.log(`${scriptName} stderr: ${stderr}`);
-
-		if (exitCode !== 0) {
-			throw new Error(`${scriptName} failed (exit ${exitCode}): ${stderr || "(no stderr)"}`);
-		}
 	},
 
 	async _cacheDir() {
@@ -254,7 +230,7 @@ LLMFigures = {
 			await IOUtils.remove(imagesPath, { ignoreAbsent: true });
 		}
 		let imagesArg = await IOUtils.exists(imagesPath) ? imagesPath : "";
-		await this._runNode(this._sdtScriptName, pdfPath, outputPath, imagesArg, structureCachePath);
+		await LLMReferences._runNode(this._nodeScriptPath(this._sdtScriptName), this._sdtScriptName, pdfPath, outputPath, imagesArg, structureCachePath);
 		IOUtils.remove(imagesPath).catch(() => {});
 		let figures = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});

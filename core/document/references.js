@@ -107,10 +107,29 @@ LLMReferences = {
 		this.log("init: extraction complete");
 	},
 
-	// Common Homebrew/system locations, checked in order; falls back to a
-	// bare "node" resolved via PATH (may not be inherited by a GUI app).
+	// Resolved via Subprocess.pathSearch (the same mechanism Zotero's own
+	// Zotero.Utilities.Internal.subprocess uses, see utilities_internal.js)
+	// -- cross-platform (honors PATHEXT on Windows, PATH on Unix) instead of
+	// a hand-maintained list of platform-specific install locations. Falls
+	// back to a short list of common install locations that a GUI app
+	// launched outside a login shell (Zotero.app from Finder/Dock, a
+	// Windows shortcut) sometimes doesn't inherit PATH for, and finally to
+	// a bare "node" so Subprocess.call's own error is at least what
+	// surfaces, rather than this function itself throwing something less
+	// diagnostic.
 	async _nodePath() {
-		let candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"];
+		let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
+		try {
+			let found = await Subprocess.pathSearch("node");
+			if (found) return found;
+		}
+		catch (e) {
+			// Not on PATH -- fall through to the candidate list below.
+		}
+		let candidates = [
+			"/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node",
+			"C:\\Program Files\\nodejs\\node.exe", "C:\\Program Files (x86)\\nodejs\\node.exe",
+		];
 		for (let path of candidates) {
 			if (await IOUtils.exists(path)) return path;
 		}
@@ -125,29 +144,61 @@ LLMReferences = {
 		return PathUtils.join(this._extensionRoot, "sdt", "document-worker", "scripts", "pdfjs-setup.js");
 	},
 
-	async _runNode(...scriptArgs) {
+	// Shared by every SDT-based extraction module (LLMEquations, LLMTables,
+	// LLMFigures, LLMStructureSDT, LLMCitationPosition, and this module
+	// itself) rather than each keeping its own copy -- they used to, and
+	// all six copies needed the same cross-platform fix at once. `scriptPath`
+	// and `logLabel` are passed in explicitly (rather than this function
+	// assuming `this._scriptPath()`/`this._scriptName` mean the right thing)
+	// since callers resolve their own script path differently -- some have
+	// one fixed script (`_scriptPath()`), others (LLMTables/LLMFigures)
+	// support more than one named script per module (`_nodeScriptPath(name)`).
+	//
+	// Runs `node` directly (no shell) -- Subprocess.call itself handles
+	// cross-platform process spawning; the previous `/bin/sh -c` wrapper
+	// existed only to get `2>stderrPath` shell redirection, which is also
+	// why this used to be Unix-only. stdout/stderr are read directly off
+	// the process's own streams instead (mirrors Zotero's own
+	// Zotero.Utilities.Internal.subprocess), read concurrently via
+	// Promise.all rather than one after another, so a script that writes
+	// enough to one stream to fill its OS pipe buffer while this is still
+	// blocked reading the other can't deadlock the two of them against
+	// each other.
+	async _runNode(scriptPath, logLabel, ...scriptArgs) {
 		if (!this._extensionRoot) {
 			throw new Error("Extension root path unavailable; cannot run SDT-based extraction");
 		}
 		let nodePath = await this._nodePath();
-		let scriptPath = this._scriptPath();
 		let setupPath = this._pdfjsSetupPath();
-		let stderrPath = scriptArgs[scriptArgs.length - 1] + ".err";
-		let quotedArgs = scriptArgs.map(a => JSON.stringify(a)).join(" ");
-		let cmd = `${JSON.stringify(nodePath)} --import ${JSON.stringify(setupPath)} ${JSON.stringify(scriptPath)} ${quotedArgs} 2>${JSON.stringify(stderrPath)}`;
 
-		this.log(`_runNode: ${this._scriptName}`);
+		this.log(`_runNode: ${logLabel}`);
 		let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
-		let proc = await Subprocess.call({ command: "/bin/sh", arguments: ["-c", cmd] });
+		// stderr: "stdout" merges stderr into the same pipe as stdout --
+		// proc.stderr isn't a readable stream on its own by default (unlike
+		// what Mozilla's own docs for this module might suggest; confirmed
+		// the hard way -- neither of the two real call sites for this module
+		// anywhere in Zotero's own source, Zotero.Utilities.Internal.
+		// subprocess and Scaffold's ESLint runner, ever read proc.stderr,
+		// only proc.stdout). These scripts don't write anything meaningful
+		// to stdout anyway (their real output goes to a file via
+		// fs.writeFileSync -- see each script's own main()), so merging
+		// loses nothing; it's always either empty or exactly the
+		// diagnostic/error text we want.
+		let proc = await Subprocess.call({
+			command: nodePath,
+			arguments: ["--import", setupPath, scriptPath, ...scriptArgs],
+			stderr: "stdout",
+		});
+
+		let output = "";
+		let chunk;
+		while ((chunk = await proc.stdout.readString())) output += chunk;
+		output = output.trim();
 		let { exitCode } = await proc.wait();
 
-		let stderr = "";
-		try { stderr = (await IOUtils.readUTF8(stderrPath)).trim(); } catch (e) {}
-		IOUtils.remove(stderrPath).catch(() => {});
-		if (stderr) this.log(`${this._scriptName} stderr: ${stderr}`);
-
+		if (output) this.log(`${logLabel} output: ${output}`);
 		if (exitCode !== 0) {
-			throw new Error(`${this._scriptName} failed (exit ${exitCode}): ${stderr || "(no stderr)"}`);
+			throw new Error(`${logLabel} failed (exit ${exitCode}): ${output || "(no output)"}`);
 		}
 	},
 
@@ -157,7 +208,7 @@ LLMReferences = {
 		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `references_${item.id}.json`);
 		await IOUtils.makeDirectory(PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts"), { ignoreExisting: true, createAncestors: true });
 		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item, onMessage);
-		await this._runNode(pdfPath, outputPath, structureCachePath);
+		await this._runNode(this._scriptPath(), this._scriptName, pdfPath, outputPath, structureCachePath);
 		let references = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
 		this.log(`_extractRaw: extracted ${references.length} references`);

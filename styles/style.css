@@ -549,6 +549,163 @@
 	box-sizing: border-box;
 }
 
+/* Library index status (see ui/advanced.js's Cache panel) -- a progress bar
+   + text showing what fraction of "My Library"'s papers are fully indexed
+   (every extraction cache present) vs. partially indexed vs. have no PDF at
+   all vs. have a broken PDF link (a recorded attachment whose file is
+   missing on disk), with a Refresh/Index All/Clear All action row
+   underneath. Sits above the Clear Cache checkbox list below, in the same
+   Cache panel. */
+.llm-cache-status {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: 8px;
+}
+
+.llm-cache-status-header {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 8px;
+}
+
+.llm-cache-status-label {
+	font-weight: 600;
+}
+
+/* Refresh/Index All/Clear All -- sits below the bar/text/hint, above the
+   Clear Cache checkbox list. */
+.llm-cache-status-actions {
+	display: flex;
+	flex-direction: row;
+	gap: 8px;
+	margin-top: 4px;
+}
+
+/* Same inline-flex + align-items: center + gap technique as
+   .llm-model-refresh -- icon + text centered against each other. */
+.llm-cache-status-refresh, .llm-index-all, .llm-clear-all {
+	flex: 0 0 auto;
+	align-self: flex-start;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+/* Mid-red text -- and, via currentColor, the icon mask too (see .llm-icon's
+   background-color: currentColor) -- flags Clear All as the destructive,
+   irreversible, WHOLE-LIBRARY action it is, same convention as the
+   per-PDF .llm-clear-cache button. */
+.llm-body button.llm-clear-all {
+	color: #e74c3c;
+}
+
+/* position: relative -- the anchor for both fill bars below, which are each
+   positioned independently (one from the left edge, one from the right)
+   rather than laid out side by side, so they can grow toward each other
+   over the SAME full-width track instead of splitting it in two. */
+.llm-cache-status-track {
+	position: relative;
+	width: 100%;
+	height: 8px;
+	border-radius: 4px;
+	background: rgba(128, 128, 128, 0.3);
+	overflow: hidden;
+	box-sizing: border-box;
+}
+
+/* Fully indexed papers (every extraction cache present) -- grows from the
+   LEFT edge (0%), width = fullyIndexed/total. See ui/advanced.js's own
+   comment for the full rationale behind this three-bar layout. */
+.llm-cache-status-fill-indexed {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	background: #4caf50;
+	transition: width 0.2s ease-out, left 0.2s ease-out;
+}
+
+/* Partially indexed papers (some, not all, caches present) -- sits directly
+   to the RIGHT of the green bar (both `left` and `width` are set from JS,
+   not fixed here, since `left` has to track wherever the green bar's own
+   width currently ends -- see ui/advanced.js's applyStats). Cyan, distinct
+   from both the green "done" bar and the gray "doesn't apply" one. */
+.llm-cache-status-fill-partial {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	background: #00bcd4;
+	transition: width 0.2s ease-out, left 0.2s ease-out;
+}
+
+/* Papers with no PDF at all -- grows from the RIGHT edge (100%), width =
+   noPDF/total, "subtracting" from the reachable range on that end. Orange --
+   same hex as .llm-cache-status-text-no-pdf below, so the bar and its own
+   callout in the text below stay visually paired. */
+.llm-cache-status-fill-no-pdf {
+	position: absolute;
+	right: 0;
+	top: 0;
+	bottom: 0;
+	background: #e67e22;
+	transition: width 0.2s ease-out;
+}
+
+/* Papers with a PDF attachment recorded but the file itself missing on disk
+   (a broken link -- see ui/advanced.js's getLibraryPapers) -- sits directly
+   to the LEFT of the gray "no PDF" bar (both `right` and `width` are set
+   from JS, not fixed here, since `right` has to track wherever the gray
+   bar's own width currently ends). Yellow -- a real problem (there's an
+   attachment, just pointing at nothing), but a caution rather than the
+   destructive-red already used for Clear Cache/Clear All. Same hex as
+   .llm-cache-status-text-broken below. */
+.llm-cache-status-fill-broken {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	background: #f1c40f;
+	transition: width 0.2s ease-out, right 0.2s ease-out;
+}
+
+.llm-cache-status-text {
+	font-size: 0.9em;
+}
+
+/* Per-category callouts inside the hint line below the bar (see
+   ui/advanced.js's applyStats) -- each matches its own bar's color
+   (.llm-cache-status-fill-partial/-broken/-no-pdf) so the text and the bar
+   segment it's describing read as the same thing. The "not indexed" clause
+   deliberately has no color of its own here either, same as its bar
+   segment (the plain, uncolored track background). */
+.llm-cache-status-text-partial {
+	color: #00bcd4;
+}
+
+.llm-cache-status-text-broken {
+	color: #f1c40f;
+}
+
+.llm-cache-status-text-no-pdf {
+	color: #e67e22;
+}
+
+/* The paper title inside the "Indexing: <title> (n / m)" current-item line
+   (see ui/advanced.js's runIndexAll/setCurrentItem) -- fixed max-width so a
+   long title truncates with an ellipsis instead of wrapping the line or
+   pushing the "(n / m)" counter around; vertical-align: bottom keeps it
+   level with the surrounding plain text. Full title still available via
+   the element's own `title` attribute (native hover tooltip). */
+.llm-cache-status-current-label {
+	display: inline-block;
+	max-width: 220px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	vertical-align: bottom;
+}
+
 /* The Clear Cache checkbox list (see ui/advanced.js) -- one row per cache
    type, all checked by default. */
 .llm-clear-cache-options {

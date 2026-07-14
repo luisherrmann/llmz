@@ -118,4 +118,14 @@ LLMEquations = {
 			this.log(`clearCache: failed: ${e.message}`);
 		}
 	},
+
+	// Cheap disk existence check (no content read) -- used by
+	// ui/advanced.js's "Library index status" bar to tell a fully-indexed
+	// paper (every extraction type cached) from a partially-indexed one
+	// (see LLMCitation.hasCache's own comment for the fuller rationale,
+	// same idea applied to this module's own cache file).
+	async hasCache(item) {
+		let dir = await this._cacheDir();
+		return IOUtils.exists(PathUtils.join(dir, `${item.id}.json`));
+	},
 };

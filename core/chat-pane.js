@@ -789,6 +789,9 @@ LLMChatPane = {
 					onMessage: (text) => appendMessage("System", text),
 					clearCacheIconURL: iconURL("delete_forever"),
 					refreshIconURL: iconURL("refresh"),
+					indexAllIconURL: iconURL("library_books"),
+					clearAllIconURL: iconURL("clear_all"),
+					cancelIconURL: iconURL("cancel"),
 				});
 
 				// System messages (extraction/selection status, errors, etc.) render

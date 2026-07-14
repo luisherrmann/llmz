@@ -12,6 +12,30 @@
 // Split out of chat-pane.js's onRender for the same reason as the other
 // ui/ modules.
 LLMUIAdvanced = {
+	// How many completed papers between each "memory-pressure" nudge during
+	// runIndexAll's own worker loop -- see that comment for why this exists
+	// (native PDF-parsing memory, observed as macOS's CGPDFService process,
+	// growing substantially over a long run). Frequent enough to keep peak
+	// memory down across hundreds of papers, infrequent enough not to
+	// thrash Gecko's own caches for no benefit on a short run.
+	MEMORY_PRESSURE_INTERVAL: 10,
+
+	// Shared (module-level, NOT per-create() call) state for an in-progress
+	// Index All run -- { cancelled, subscribers: Set<{ setIndexAllButtonState,
+	// setSecondaryButtonsDisabled, setCurrentItem, applyStats }> } while a
+	// run is active, else null. Needed because switching the active item/
+	// tab tears down and rebuilds this entire Cache section from scratch
+	// (see chat-pane.js's onRender calling create() fresh) -- without this,
+	// a run started from one pane would become invisible to whichever pane
+	// renders next: its buttons would show a fresh, clickable "Index All"
+	// with no way to tell a run is already active (inviting a second
+	// overlapping run) or to Abort the one actually still executing in the
+	// background. create() checks this at build time (see below) and, if
+	// set, immediately reflects the running state and registers itself as
+	// a subscriber so it keeps receiving progress/completion updates for
+	// the rest of that run.
+	_activeIndexAllRun: null,
+
 	// A second <tr> placed right after a setting's own row, its description
 	// in a single colspan="3" cell -- same visible-caption styling
 	// (.llm-advanced-field-hint) as the Embeddings panel's existing "Batch
@@ -149,13 +173,16 @@ LLMUIAdvanced = {
 	// caller's LLMChatPane.getActiveReaderAttachment()). `onMessage(text)` is
 	// called for user-facing status text -- routing this (e.g. to the Logs
 	// panel) is the caller's concern, not this module's. `clearCacheIconURL`/
-	// `refreshIconURL` are plain file:/jar: URLs (see chat-pane.js's
-	// onRender, rootURI + "res/icons/...svg"), rendered via LLMUIIcon.create.
+	// `refreshIconURL`/`indexAllIconURL`/`clearAllIconURL`/`cancelIconURL`
+	// are plain file:/jar: URLs (see chat-pane.js's onRender, rootURI +
+	// "res/icons/...svg"), rendered via LLMUIIcon.create. `cancelIconURL` is
+	// what Index All swaps to (becoming an Abort button) once running -- see
+	// runIndexAll's own comment.
 	// Returns { contextElement, messageHistoryElement, embeddingsElement,
 	// cacheElement, clearCacheButton, refreshPairSettings } -- four
 	// independent <details> panels for the caller to place wherever it
 	// wants in the pane's controls (see chat-pane.js's onRender).
-	create(doc, { getActiveItem, onMessage, clearCacheIconURL, refreshIconURL } = {}) {
+	create(doc, { getActiveItem, onMessage, clearCacheIconURL, refreshIconURL, indexAllIconURL, clearAllIconURL, cancelIconURL } = {}) {
 		// Rows built from LLMPrompt's per-(provider,model) advanced settings
 		// (see its own comment) -- collected here so create()'s returned
 		// refreshPairSettings() can re-sync every one of these inputs after
@@ -343,25 +370,564 @@ LLMUIAdvanced = {
 		// extraction), hence the confirm prompt before actually clearing
 		// anything.
 		let { details: cacheDetails, body: cacheBody } = this._makeDetails(doc, "Cache");
+
+		// Library index status -- what fraction of "My Library" PDFs have a
+		// citation embedding index (LLMCitation's sentence-level cache, the
+		// thing that actually makes a PDF searchable/answerable in chat),
+		// plus how many library items have a PDF attached at all. Computed
+		// async (scanning the whole library -- Zotero.Items.getAll plus a
+		// getBestAttachment() lookup per regular item -- can take a couple
+		// seconds for a large library), so the bar starts in a "Scanning…"
+		// state and fills in once the scan finishes. The action row below
+		// it (Refresh/Index All/Clear All) re-runs or acts on this same
+		// scan on demand.
+		let statusWrapper = doc.createElement("div");
+		statusWrapper.className = "llm-cache-status";
+		let statusHeader = doc.createElement("div");
+		statusHeader.className = "llm-cache-status-header";
+		let statusLabel = doc.createElement("span");
+		statusLabel.className = "llm-cache-status-label";
+		statusLabel.textContent = "Library Index Status";
+		statusHeader.append(statusLabel);
+		// Four independently-anchored fill bars over one track (see
+		// style.css's .llm-cache-status-track/-fill-*) -- the whole track
+		// represents every paper in "My Library". Two grow inward from the
+		// LEFT: green (fully indexed, indexed/total, anchored at 0%) then
+		// cyan immediately to ITS right (partially indexed -- some, but not
+		// all, of the five extraction caches -- citation/equations/figures/
+		// references/tables, see getIndexStatus below -- are present; left
+		// = the green bar's own width, not a fixed anchor). Two grow inward
+		// from the RIGHT: gray (no PDF attachment at all, anchored at 100%)
+		// then red immediately to ITS left (a PDF attachment IS recorded,
+		// but the file itself is missing on disk -- a broken link, see
+		// getLibraryPapers below -- right = the gray bar's own width).
+		// Whatever's left unfilled in the true middle is "has a real PDF
+		// file, ZERO caches built yet" -- the actual untouched, actionable
+		// remainder, with no dedicated color of its own (it's just the
+		// track's own background showing through).
+		let statusTrack = doc.createElement("div");
+		statusTrack.className = "llm-cache-status-track";
+		let statusFillIndexed = doc.createElement("div");
+		statusFillIndexed.className = "llm-cache-status-fill-indexed";
+		statusFillIndexed.style.width = "0%";
+		let statusFillPartial = doc.createElement("div");
+		statusFillPartial.className = "llm-cache-status-fill-partial";
+		statusFillPartial.style.left = "0%";
+		statusFillPartial.style.width = "0%";
+		let statusFillNoPDF = doc.createElement("div");
+		statusFillNoPDF.className = "llm-cache-status-fill-no-pdf";
+		statusFillNoPDF.style.width = "0%";
+		let statusFillBroken = doc.createElement("div");
+		statusFillBroken.className = "llm-cache-status-fill-broken";
+		statusFillBroken.style.right = "0%";
+		statusFillBroken.style.width = "0%";
+		statusTrack.append(statusFillIndexed, statusFillPartial, statusFillNoPDF, statusFillBroken);
+		let statusText = doc.createElement("div");
+		statusText.className = "llm-cache-status-text";
+		statusText.textContent = "Scanning My Library…";
+		let statusHint = doc.createElement("div");
+		statusHint.className = "llm-advanced-field-hint";
+		// Shows which paper Index All most recently finished (there's no
+		// single well-defined "current" item once several run concurrently
+		// -- see runIndexAll's own comment) -- empty/untouched outside of an
+		// Index All run. The paper title itself is wrapped in its own
+		// fixed-width, ellipsis-truncated span (see style.css's
+		// .llm-cache-status-current-label) rather than letting the whole
+		// line wrap or truncate -- a long title would otherwise push the
+		// "(n / m)" counter off to a wildly varying position line to line,
+		// or wrap onto a second line and shift the layout below it. The
+		// full title is still available on hover via the span's own
+		// `title` attribute (a native tooltip).
+		let statusCurrentItem = doc.createElement("div");
+		statusCurrentItem.className = "llm-advanced-field-hint";
+		let statusCurrentItemLabel = doc.createElement("span");
+		statusCurrentItemLabel.className = "llm-cache-status-current-label";
+		let setCurrentItem = (label, completed, total) => {
+			statusCurrentItemLabel.textContent = label;
+			statusCurrentItemLabel.title = label;
+			statusCurrentItem.replaceChildren(
+				doc.createTextNode("Indexing: "),
+				statusCurrentItemLabel,
+				doc.createTextNode(` (${completed} / ${total})`)
+			);
+		};
+		let clearCurrentItem = () => { statusCurrentItem.textContent = ""; };
+
+		// Refresh re-runs the scan below on demand (e.g. after indexing/
+		// clearing elsewhere). Index All indexes every paper that isn't
+		// FULLY indexed yet -- partial or none, see getIndexStatus below
+		// (runIndexAll below). Clear All drops all five extraction caches
+		// for EVERY paper in the library, not just the active one
+		// (runClearAll below) -- the destructive counterpart to Index All,
+		// hence the red text (same convention as the existing per-PDF Clear
+		// Cache button).
+		let statusActions = doc.createElement("div");
+		statusActions.className = "llm-cache-status-actions";
+		let statusRefresh = doc.createElement("button");
+		statusRefresh.className = "llm-cache-status-refresh";
+		statusRefresh.append(LLMUIIcon.create(doc, refreshIconURL), doc.createTextNode("Refresh"));
+		// Swaps between "Index All" (library_books icon) and "Abort" (cancel
+		// icon, same one ui/button-row.js's Stop button uses) -- see
+		// runIndexAll's own comment for when each state applies. Kept as one
+		// button (rather than two, toggling which is shown) so its position
+		// in the row doesn't shift.
+		let indexAllButton = doc.createElement("button");
+		let setIndexAllButtonState = (running) => {
+			// Reset here (not just after an Abort click) so a single
+			// notify("setIndexAllButtonState", false) -- see the shared
+			// LLMUIAdvanced._activeIndexAllRun mechanism further down --
+			// uniformly re-enables every pane's own button, including ones
+			// that never had Abort clicked on them directly.
+			indexAllButton.disabled = false;
+			indexAllButton.replaceChildren();
+			if (running) {
+				indexAllButton.className = "llm-index-all llm-index-all-running";
+				indexAllButton.title = "Stop after whatever's currently in flight finishes";
+				indexAllButton.append(LLMUIIcon.create(doc, cancelIconURL), doc.createTextNode("Abort"));
+			}
+			else {
+				indexAllButton.className = "llm-index-all";
+				indexAllButton.title = "Index every paper with a PDF in My Library that isn't fully indexed yet";
+				indexAllButton.append(LLMUIIcon.create(doc, indexAllIconURL), doc.createTextNode("Index All"));
+			}
+		};
+		setIndexAllButtonState(false);
+		let clearAllButton = doc.createElement("button");
+		clearAllButton.className = "llm-clear-all";
+		clearAllButton.title = "Clear the index for every paper in My Library";
+		clearAllButton.append(LLMUIIcon.create(doc, clearAllIconURL), doc.createTextNode("Clear All"));
+		statusActions.append(statusRefresh, indexAllButton, clearAllButton);
+
+		statusWrapper.append(statusHeader, statusTrack, statusText, statusHint, statusCurrentItem, statusActions);
+		cacheBody.appendChild(statusWrapper);
+
+		// "Papers" = regular items only (Zotero.Item.isRegularItem(),
+		// journalArticle/book/etc.) -- excludes standalone notes and
+		// standalone/loose PDF attachments with no parent regular item,
+		// neither of which is "a paper". A paper's own PDF is resolved via
+		// getBestAttachment()/isPDFAttachment(), same combination used
+		// elsewhere in this plugin (see tools/reference-retrieval.js,
+		// chat-pane.js's getActiveReaderAttachment, ui/index-all.js's own
+		// _getPDFItems -- those scan attachments more broadly, since
+		// "index every PDF" and "what fraction of my papers are indexed"
+		// are different questions). Scoped to "My Library" only
+		// (Zotero.Libraries.userLibraryID), not group libraries.
+		// A paper with a recorded PDF attachment whose file is actually
+		// MISSING on disk (observed via ENOENT failures from
+		// compute_document_structure.js -- moved/renamed outside Zotero, or
+		// never actually downloaded under a "files as needed" sync setup)
+		// is deliberately NOT counted as a plain "has a PDF" paper --
+		// there's nothing for Index All to do with it (every SDT-based
+		// extraction step needs the real file and will just fail the same
+		// way every time), so it gets its own "broken link" bucket instead
+		// (see the red bar above), distinct from "no PDF attachment at
+		// all". getFilePath() returns whatever path Zotero's DB *thinks*
+		// the file is at -- it does NOT itself verify the file exists,
+		// hence the explicit IOUtils.exists check.
+		let getLibraryPapers = async () => {
+			let topLevelItems = await Zotero.Items.getAll(Zotero.Libraries.userLibraryID, true, false, false);
+			let papers = topLevelItems.filter(item => item.isRegularItem());
+			let pdfItems = [];
+			let noPDFCount = 0;
+			let brokenCount = 0;
+			for (let paper of papers) {
+				let attachment = await paper.getBestAttachment();
+				if (!attachment?.isPDFAttachment()) {
+					noPDFCount++;
+					continue;
+				}
+				let path = attachment.getFilePath();
+				if (!path || !await IOUtils.exists(path)) {
+					brokenCount++;
+					continue;
+				}
+				pdfItems.push(attachment);
+			}
+			return { total: papers.length, pdfItems, noPDFCount, brokenCount };
+		};
+
+		// "Fully indexed" = every one of the five extraction caches this
+		// paper's PDF can have is present (citation embeddings, equations,
+		// figures, references, tables -- the same five LLMUIIndexAll's own
+		// _indexItem builds, and the same five listed as checkboxes further
+		// down under Clear Cache). "Partial" = some but not all -- a very
+		// real state in practice (e.g. an embedding-provider quota error
+		// leaves citations missing while tables/figures/etc. still built
+		// fine, or vice versa; see the ENOENT/429 cases already observed).
+		// "None" = zero. Each module's own hasCache(item) is a cheap disk
+		// existence check, no content read.
+		let getIndexStatus = async (item) => {
+			let present = await Promise.all([
+				LLMCitation.hasCache(item),
+				LLMEquations.hasCache(item),
+				LLMFigures.hasCache(item),
+				LLMReferences.hasCache(item),
+				LLMTables.hasCache(item),
+			]);
+			let count = present.filter(Boolean).length;
+			if (count === present.length) return "full";
+			if (count === 0) return "none";
+			return "partial";
+		};
+
+		// Updates the bar/text from already-known counts -- split out of
+		// refreshLibraryIndexStatus below so runIndexAll's own progress
+		// loop can update the SAME bar live, per completed item, without
+		// re-scanning the whole library on every tick. noPDFCount/
+		// brokenCount don't change during an Index All run (only
+		// fullyIndexed/partiallyIndexed do, as papers with a real file get
+		// processed), so callers just pass through whatever scanLibrary
+		// last returned for those two.
+		let applyStats = (total, noPDFCount, brokenCount, fullyIndexed, partiallyIndexed) => {
+			let pdfCount = total - noPDFCount - brokenCount;
+			let notIndexed = pdfCount - fullyIndexed - partiallyIndexed;
+			let fullyPct = total > 0 ? (fullyIndexed / total) * 100 : 0;
+			let partialPct = total > 0 ? (partiallyIndexed / total) * 100 : 0;
+			let noPDFPct = total > 0 ? (noPDFCount / total) * 100 : 0;
+			let brokenPct = total > 0 ? (brokenCount / total) * 100 : 0;
+			statusFillIndexed.style.width = `${fullyPct}%`;
+			statusFillPartial.style.left = `${fullyPct}%`;
+			statusFillPartial.style.width = `${partialPct}%`;
+			statusFillNoPDF.style.width = `${noPDFPct}%`;
+			statusFillBroken.style.right = `${noPDFPct}%`;
+			statusFillBroken.style.width = `${brokenPct}%`;
+			statusText.textContent = `${fullyIndexed} / ${total} papers fully indexed (${Math.round(fullyPct)}%)`;
+			// Each clause colored to match its own bar segment
+			// (.llm-cache-status-fill-partial/-broken/-no-pdf) -- "not
+			// indexed" deliberately stays uncolored, same as its bar
+			// segment (the plain track background). Broken-link is listed
+			// before no-PDF (matches the bar's own right-to-left order:
+			// no-PDF is the outermost/rightmost segment, broken sits just
+			// inside it).
+			let partialSpan = doc.createElement("span");
+			partialSpan.className = "llm-cache-status-text-partial";
+			partialSpan.textContent = `${partiallyIndexed} paper${partiallyIndexed === 1 ? "" : "s"} partially indexed`;
+			let brokenSpan = doc.createElement("span");
+			brokenSpan.className = "llm-cache-status-text-broken";
+			brokenSpan.textContent = `${brokenCount} paper${brokenCount === 1 ? "" : "s"} have a broken PDF link`;
+			let noPDFSpan = doc.createElement("span");
+			noPDFSpan.className = "llm-cache-status-text-no-pdf";
+			noPDFSpan.textContent = `${noPDFCount} paper${noPDFCount === 1 ? "" : "s"} have no PDF`;
+			statusHint.replaceChildren(
+				partialSpan,
+				doc.createTextNode(` · ${notIndexed} paper${notIndexed === 1 ? "" : "s"} not indexed · `),
+				brokenSpan,
+				doc.createTextNode(" · "),
+				noPDFSpan,
+				doc.createTextNode(".")
+			);
+		};
+
+		let setActionsDisabled = (disabled) => {
+			statusRefresh.disabled = disabled;
+			indexAllButton.disabled = disabled;
+			clearAllButton.disabled = disabled;
+		};
+
+		// The actual scan (no button-disabling of its own) -- returns
+		// { total, pdfItems, statuses } (statuses[i] is pdfItems[i]'s own
+		// "full"/"partial"/"none", see getIndexStatus above) and updates
+		// the bar as a side effect. Split out from refreshLibraryIndexStatus
+		// below so runIndexAll/runClearAll, which each manage their OWN
+		// disabled state across a longer operation that ends with a
+		// re-scan, don't have this flicker the buttons re-enabled partway
+		// through.
+		let scanLibrary = async () => {
+			statusText.textContent = "Scanning My Library…";
+			let { total, pdfItems, noPDFCount, brokenCount } = await getLibraryPapers();
+			let statuses = await Promise.all(pdfItems.map(item => getIndexStatus(item)));
+			let fullyIndexed = statuses.filter(s => s === "full").length;
+			let partiallyIndexed = statuses.filter(s => s === "partial").length;
+			applyStats(total, noPDFCount, brokenCount, fullyIndexed, partiallyIndexed);
+			return { total, pdfItems, statuses, noPDFCount, brokenCount };
+		};
+
+		// Refresh button handler -- owns its own disabled state around one
+		// bare scan, unlike runIndexAll/runClearAll below.
+		let refreshLibraryIndexStatus = async () => {
+			setActionsDisabled(true);
+			try {
+				await scanLibrary();
+			}
+			catch (e) {
+				statusText.textContent = `Failed to scan library: ${e.message}`;
+			}
+			finally {
+				setActionsDisabled(false);
+			}
+		};
+		statusRefresh.addEventListener("click", () => refreshLibraryIndexStatus());
+
+		// Indexes every paper that ISN'T fully indexed yet (status
+		// "partial" or "none", per getIndexStatus -- a partial paper is
+		// included since _indexItem's five extraction steps already only
+		// (re)compute whatever's actually missing, each stage reading its
+		// own cache first, so re-running it on an already-partial paper
+		// just fills the gaps rather than redoing completed work). Runs via
+		// LLMUIIndexAll._indexItem -- the SAME per-paper extraction logic
+		// (tables/figures/references/equations/citation embeddings)
+		// LLMUIIndexAll.run's own whole-overlay flow uses, just scoped to
+		// not-fully-indexed papers and reporting progress through this
+		// panel's own bar instead of a separate overlay. Same worker-pool
+		// concurrency pattern/level as LLMUIIndexAll.run (see its own
+		// comment) -- several papers' extraction pipelines running at once
+		// lets their network-bound embedding calls overlap instead of
+		// sitting fully idle between one paper's own sequential steps.
+		// Progress reflects the most recently COMPLETED paper, not "about
+		// to start" -- with several in flight at once, there's no single
+		// well-defined "current" paper to show before the fact (same
+		// reasoning as LLMUIIndexAll.run's own progress updates).
+		//
+		// indexAllButton doubles as Abort while this runs (see
+		// setIndexAllButtonState) -- clicking it sets the shared run's
+		// `cancelled` flag, which stops each worker from picking up a NEW
+		// item, but (same as LLMUIIndexAll.run's own Cancel -- see its
+		// comment) doesn't force-abort whichever items are already
+		// mid-extraction; there's no cheap way to do that (would need
+		// AbortController plumbing through every network call/subprocess
+		// spawn _indexItem makes). Those still finish and populate their
+		// own caches normally -- the button only flips back to "Index All"
+		// once the whole worker pool has actually settled, not the instant
+		// Abort is clicked.
+		//
+		// This render's own UI-update functions, bundled as one subscriber
+		// -- registered on this._activeIndexAllRun below, either
+		// immediately (if a run started from a DIFFERENT pane is already
+		// active when this panel is built) or when runIndexAll itself
+		// starts one from THIS pane. Either way, every subscribed pane's
+		// buttons/bar/current-item line track the SAME run.
+		let indexAllSubscriber = {
+			// Used by notifyIndexAllRun below to prune this subscriber once
+			// its pane is no longer part of the live document (e.g. this
+			// same tab re-rendered again, or was closed) -- Node.isConnected
+			// is a cheap, native "is this still attached" check. Any element
+			// created in this create() call works as the anchor; statusWrapper
+			// (the root of this whole status block) is as good as any.
+			element: statusWrapper,
+			setIndexAllButtonState,
+			setSecondaryButtonsDisabled: (disabled) => {
+				statusRefresh.disabled = disabled;
+				clearAllButton.disabled = disabled;
+			},
+			setCurrentItem,
+			clearCurrentItem,
+			applyStats,
+		};
+		// Also stashes the latest args for "setCurrentItem"/"applyStats" on
+		// the run itself (runState.lastArgs), so a pane that starts
+		// subscribing mid-run (see below) can be initialized immediately
+		// with the current progress instead of showing a blank bar until
+		// the next item happens to complete. Prunes any subscriber whose
+		// own pane is no longer attached to the document (closed, or
+		// re-rendered again under a NEW subscriber object -- see
+		// indexAllSubscriber's own comment) on every call, rather than
+		// letting the set grow unboundedly over a run spanning hundreds of
+		// papers if a pane re-renders more than once mid-run.
+		let notifyIndexAllRun = (runState, fn, ...args) => {
+			if (fn === "setCurrentItem" || fn === "applyStats") {
+				runState.lastArgs[fn] = args;
+			}
+			for (let subscriber of [...runState.subscribers]) {
+				if (!subscriber.element.isConnected) {
+					runState.subscribers.delete(subscriber);
+					continue;
+				}
+				try { subscriber[fn]?.(...args); }
+				catch (e) { this.log(`notifyIndexAllRun(${fn}): subscriber failed: ${e.message}`); }
+			}
+		};
+
+		// A run may already be active from a different pane -- reflect
+		// that immediately rather than rendering a fresh, clickable
+		// "Index All" that would invite a second overlapping run.
+		if (this._activeIndexAllRun) {
+			let runState = this._activeIndexAllRun;
+			runState.subscribers.add(indexAllSubscriber);
+			setIndexAllButtonState(true);
+			indexAllSubscriber.setSecondaryButtonsDisabled(true);
+			if (runState.lastArgs.applyStats) indexAllSubscriber.applyStats(...runState.lastArgs.applyStats);
+			if (runState.lastArgs.setCurrentItem) indexAllSubscriber.setCurrentItem(...runState.lastArgs.setCurrentItem);
+		}
+
+		let runIndexAll = async () => {
+			if (this._activeIndexAllRun) return; // safety net -- the click handler below routes to Abort instead once a run exists
+			let runState = { cancelled: false, subscribers: new Set([indexAllSubscriber]), lastArgs: {} };
+			this._activeIndexAllRun = runState;
+			let notify = (fn, ...args) => notifyIndexAllRun(runState, fn, ...args);
+			notify("setIndexAllButtonState", true);
+			notify("setSecondaryButtonsDisabled", true);
+			try {
+				let { total, pdfItems, statuses, noPDFCount, brokenCount } = await scanLibrary();
+				let needsIndexing = pdfItems
+					.map((item, i) => ({ item, oldStatus: statuses[i] }))
+					.filter(({ oldStatus }) => oldStatus !== "full");
+				if (!needsIndexing.length) {
+					onMessage?.("Index All: every paper with a PDF is already fully indexed.");
+					return;
+				}
+				// Live running counts, adjusted per-item below as each one's
+				// status transitions (none/partial -> partial/full) --
+				// starts from the already-fully-indexed papers (excluded
+				// above) plus however many of the not-yet-touched papers
+				// already happen to be "partial".
+				let liveFullyIndexed = pdfItems.length - needsIndexing.length;
+				let livePartiallyIndexed = statuses.filter(s => s === "partial").length;
+				let baseText = `Index All: indexing ${needsIndexing.length} paper${needsIndexing.length === 1 ? "" : "s"} (up to ${LLMUIIndexAll.CONCURRENCY_LEVEL} at once)…`;
+				let logEl = onMessage?.(baseText);
+				let completed = 0, succeeded = 0, failed = 0;
+				let nextIndex = 0;
+				let worker = async () => {
+					while (nextIndex < needsIndexing.length) {
+						if (runState.cancelled) return;
+						let { item, oldStatus } = needsIndexing[nextIndex++];
+						let result = await LLMUIIndexAll._indexItem(item);
+						if (!result.ok) failed++;
+						completed++;
+						// Every _indexItem call that hits LLMPrompt.getAttachmentFullText's
+						// PDFWorker fallback (any paper without Zotero's own
+						// .zotero-ft-cache file yet) opens a native PDF
+						// context outside this plugin's own pdf.js/Skia
+						// pipeline -- observed to grow macOS's CGPDFService
+						// process's memory substantially over a long run,
+						// apparently not released between documents on its
+						// own. "memory-pressure" is Gecko's own documented
+						// observer topic for prompting caches across the
+						// engine (including native PDF workers) to release
+						// what they can -- nudging it periodically here,
+						// rather than once at the very end, keeps peak
+						// memory down across a run of hundreds of papers
+						// instead of letting it climb unchecked throughout.
+						if (completed % this.MEMORY_PRESSURE_INTERVAL === 0) {
+							Services.obs.notifyObservers(null, "memory-pressure", "heap-minimize");
+						}
+						let label = LLMUIIndexAll._labelFor(item);
+						notify("setCurrentItem", label, completed, needsIndexing.length);
+						// Ground-truth re-check, NOT result.ok -- _indexItem
+						// wraps each extraction step in its own .catch() (an
+						// embedding-provider error, a PDF file missing on
+						// disk, or a PDF with no extractable text at all all
+						// leave the corresponding cache unbuilt but still
+						// return {ok: true} overall), so trusting result.ok
+						// here would let the live bar count a paper as (more)
+						// indexed than the final re-scan (which DOES check
+						// the real cache files) then agrees with -- exactly
+						// the "bar jumps back down at the end" bug this
+						// replaced.
+						let newStatus = await getIndexStatus(item);
+						if (oldStatus === "partial") livePartiallyIndexed--;
+						if (newStatus === "full") { liveFullyIndexed++; succeeded++; }
+						else if (newStatus === "partial") livePartiallyIndexed++;
+						notify("applyStats", total, noPDFCount, brokenCount, liveFullyIndexed, livePartiallyIndexed);
+						if (logEl) logEl.textContent = `${baseText} ${LLMCitation._formatProgressBar(completed, needsIndexing.length)} — ${label}`;
+					}
+				};
+				await Promise.all(Array.from({ length: Math.min(LLMUIIndexAll.CONCURRENCY_LEVEL, needsIndexing.length) }, () => worker()));
+				let summary = runState.cancelled
+					? `Aborted after ${completed} / ${needsIndexing.length} paper${needsIndexing.length === 1 ? "" : "s"} (${succeeded} newly fully indexed).`
+					: `${succeeded} / ${needsIndexing.length} paper${needsIndexing.length === 1 ? "" : "s"} newly fully indexed${failed ? ` (${failed} failed -- see Logs/console for details)` : ""}.`;
+				notify("clearCurrentItem");
+				if (logEl) logEl.textContent = `Index All: ${summary}`;
+				else onMessage?.(`Index All: ${summary}`);
+			}
+			catch (e) {
+				onMessage?.(`Index All: failed (${e.message}).`);
+			}
+			finally {
+				this._activeIndexAllRun = null;
+				notify("setIndexAllButtonState", false);
+				notify("setSecondaryButtonsDisabled", false);
+				await scanLibrary().catch(() => {});
+			}
+		};
+		indexAllButton.addEventListener("click", () => {
+			if (this._activeIndexAllRun) {
+				this._activeIndexAllRun.cancelled = true;
+				indexAllButton.disabled = true;
+				indexAllButton.title = "Stopping…";
+			}
+			else {
+				runIndexAll();
+			}
+		});
+
+		// Drops all five extraction caches (citation sentence+paragraph,
+		// equations, figures, references, tables -- the same five
+		// getIndexStatus checks) for EVERY paper with a PDF in the library
+		// -- the exact counterpart to Index All/the bar's own definition of
+		// "fully indexed", so this always resets the bar to 0%. Irreversible,
+		// hence the confirm prompt.
+		let runClearAll = async () => {
+			let confirmed = Services.prompt.confirm(
+				doc.defaultView,
+				"LLMz",
+				"Are you sure you want to clear the index for all files? This action is irreversible."
+			);
+			if (!confirmed) return;
+			setActionsDisabled(true);
+			try {
+				let { pdfItems } = await getLibraryPapers();
+				await Promise.all(pdfItems.map(async (item) => {
+					await LLMCitation.clearCache(item);
+					await LLMCitationPosition.clearCache(item);
+					await LLMEquations.clearCache(item);
+					await LLMFigures.clearCache(item);
+					await LLMReferences.clearCache(item);
+					await LLMTables.clearCache(item);
+				}));
+				onMessage?.(`Clear All: cleared the index for ${pdfItems.length} paper${pdfItems.length === 1 ? "" : "s"}.`);
+			}
+			catch (e) {
+				onMessage?.(`Clear All: failed (${e.message}).`);
+			}
+			finally {
+				await scanLibrary().catch(() => {});
+				setActionsDisabled(false);
+			}
+		};
+		clearAllButton.addEventListener("click", () => runClearAll());
+
+		// Skipped if a run is already active (see the this._activeIndexAllRun
+		// check above) -- refreshLibraryIndexStatus's own setActionsDisabled(false)
+		// in its finally would otherwise re-enable Refresh/Clear All right
+		// after they were just disabled for the active run, and the
+		// subscription already registered above keeps this render's bar in
+		// sync for the rest of that run without needing an extra scan here.
+		if (!this._activeIndexAllRun) {
+			refreshLibraryIndexStatus();
+		}
+
 		let cacheTypes = [
 			{
 				label: "Citations",
+				hasCache: item => LLMCitation.hasCache(item),
 				clear: async (item) => {
 					await LLMCitation.clearCache(item);
 					await LLMCitationPosition.clearCache(item);
 				},
 			},
-			{ label: "Equations", clear: item => LLMEquations.clearCache(item) },
-			{ label: "Figures", clear: item => LLMFigures.clearCache(item) },
-			{ label: "References", clear: item => LLMReferences.clearCache(item) },
-			{ label: "Tables", clear: item => LLMTables.clearCache(item) },
+			{ label: "Equations", hasCache: item => LLMEquations.hasCache(item), clear: item => LLMEquations.clearCache(item) },
+			{ label: "Figures", hasCache: item => LLMFigures.hasCache(item), clear: item => LLMFigures.clearCache(item) },
+			{ label: "References", hasCache: item => LLMReferences.hasCache(item), clear: item => LLMReferences.clearCache(item) },
+			{ label: "Tables", hasCache: item => LLMTables.hasCache(item), clear: item => LLMTables.clearCache(item) },
 		];
+
+		// Header for the per-active-paper checkbox list + Clear Cache
+		// button below -- distinguishes this (acts on whichever PDF is
+		// currently open) from the "Library Index Status" section above
+		// (acts on every paper in My Library).
+		let cacheOptionsLabel = doc.createElement("div");
+		cacheOptionsLabel.className = "llm-cache-status-label";
+		cacheOptionsLabel.textContent = "Active Title Cache";
+		cacheBody.appendChild(cacheOptionsLabel);
 
 		let cacheOptionsList = doc.createElement("div");
 		cacheOptionsList.className = "llm-clear-cache-options";
 		// Checked by default, so clicking Clear Cache without touching any
 		// checkbox still clears everything, same as before this became
-		// selectable.
+		// selectable -- then immediately uncheck whichever types have
+		// nothing cached for the CURRENTLY ACTIVE paper (see below), so
+		// Clear Cache doesn't visually offer to clear a cache that was
+		// never actually populated in the first place.
 		let cacheCheckboxes = cacheTypes.map(({ label }) => {
 			let optionLabel = doc.createElement("label");
 			optionLabel.className = "llm-clear-cache-option";
@@ -374,6 +940,23 @@ LLMUIAdvanced = {
 			return checkbox;
 		});
 		cacheBody.appendChild(cacheOptionsList);
+
+		// Unchecks whichever checkboxes have nothing cached for the
+		// CURRENTLY ACTIVE paper -- called once below at panel build time,
+		// and again after Clear Cache actually clears something, so the
+		// checkboxes reflect ground truth (a fresh disk check) rather than
+		// just assuming the clear worked. Best-effort/async (hasCache is a
+		// disk check) -- if there's no active paper, or a check fails, just
+		// leaves whatever state that checkbox already had.
+		let refreshCacheCheckboxes = async () => {
+			let item = getActiveItem?.();
+			if (!item) return;
+			let present = await Promise.all(cacheTypes.map(({ hasCache }) => hasCache(item).catch(() => true)));
+			present.forEach((has, i) => {
+				if (!has) cacheCheckboxes[i].checked = false;
+			});
+		};
+		refreshCacheCheckboxes();
 
 		let clearCacheButton = doc.createElement("button");
 		clearCacheButton.className = "llm-clear-cache";
@@ -401,6 +984,7 @@ LLMUIAdvanced = {
 			await Promise.all(selected.map(({ clear }) => clear(item)));
 			LLMPrompt.noteCacheCleared(item, selected.map(c => c.label));
 			onMessage?.(`Cleared ${selected.map(c => c.label).join(", ")} cache for the active PDF. The next prompt will re-run extraction from scratch.`);
+			await refreshCacheCheckboxes();
 		});
 		cacheBody.appendChild(clearCacheButton);
 

@@ -625,8 +625,18 @@ LLMRequest = {
 			// down) only ever looks at whatever's landed in its cache BY THE
 			// TIME a later query needs it; embedding this message now, in the
 			// background, doesn't block the reply that's about to stream in
-			// for THIS turn.
-			LLMSemanticHistory.embedNewMessage({ role: "You", time: submissionTime, text: prompt });
+			// for THIS turn. Gated on "semantic" mode -- selectRelevant is
+			// the only thing that ever reads this cache, and it's itself
+			// gated the same way (see the messages-array build further
+			// down), so embedding here in "none"/"last-k" mode would just
+			// be a wasted embedding-provider call for a cache nothing will
+			// consult. Switching TO "semantic" mid-conversation backfills
+			// the whole transcript in one go instead (see ui/advanced.js's
+			// "Use message history" row), so there's no gap for messages
+			// sent before the switch.
+			if (LLMPrompt.useMessageHistory === "semantic") {
+				LLMSemanticHistory.embedNewMessage({ role: "You", time: submissionTime, text: prompt });
+			}
 			// A visual record of what was actually attached to this
 			// specific message -- imagePaste's own list keeps accumulating
 			// across turns (see ui/image-paste.js), so this snapshot is what
@@ -995,14 +1005,17 @@ LLMRequest = {
 			// comment in ui/chat.js.
 			let finalReplyTime = chat.formatTimestamp();
 			chat.setMessageTime(reply, finalReplyTime);
-			// Fire-and-forget, same reasoning as the "You" message's own
-			// embedNewMessage call above -- replyLabel (not providerLabel)
-			// matches the role chat.appendMessage originally stored `reply`
-			// under (see its own creation, `appendMessage(replyLabel, ...)`),
-			// which is what chat.exportTranscript() will report back for
-			// this entry -- the fingerprint here MUST match that exactly, or
-			// a later selectRelevant call would never find this embedding.
-			LLMSemanticHistory.embedNewMessage({ role: replyLabel, time: finalReplyTime, text: finalReplyText });
+			// Fire-and-forget, same reasoning (and same "semantic" mode
+			// gate) as the "You" message's own embedNewMessage call above --
+			// replyLabel (not providerLabel) matches the role
+			// chat.appendMessage originally stored `reply` under (see its
+			// own creation, `appendMessage(replyLabel, ...)`), which is what
+			// chat.exportTranscript() will report back for this entry -- the
+			// fingerprint here MUST match that exactly, or a later
+			// selectRelevant call would never find this embedding.
+			if (LLMPrompt.useMessageHistory === "semantic") {
+				LLMSemanticHistory.embedNewMessage({ role: replyLabel, time: finalReplyTime, text: finalReplyText });
+			}
 			this.log(`Received response from ${providerLabel} model ${result.model}`);
 		}
 		catch (e) {

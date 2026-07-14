@@ -1,24 +1,38 @@
 // "Index All" -- runs the full extraction pipeline (tables, figures,
-// references, equations, citation/paragraph embeddings) for every PDF
-// attachment in "My Library", so a user can pre-warm every paper's caches
-// in one go instead of paying the extraction cost the first time they ask
-// a question about each one. Triggered from ui/advanced.js's Cache
-// section; reports progress via a fixed-position overlay built directly
+// references, equations, citation/paragraph embeddings) for a PDF
+// attachment, so a user can pre-warm a paper's caches in one go instead of
+// paying the extraction cost the first time they ask a question about it.
+//
+// _indexItem (the actual per-paper extraction work) is reused directly by
+// ui/advanced.js's Cache section "Index All" button, which runs it over
+// just the currently-UNINDEXED papers in "My Library" and reports progress
+// through the Cache section's own "Library index status" bar -- see
+// advanced.js's own comment for why that button doesn't call run() below.
+//
+// run()/_showProgressOverlay (the rest of this file) is a separate,
+// still-available whole-overlay flow -- re-indexes EVERY PDF unconditionally
+// (not just unindexed ones), via a fixed-position overlay built directly
 // into the item pane's own document (see _showProgressOverlay) plus a
 // live-updating Logs panel line, rather than a separate top-level window --
 // four different window-opening approaches were tried and abandoned (see
-// _showProgressOverlay's own comment) before settling on this.
+// _showProgressOverlay's own comment) before settling on this. Not
+// currently wired to a button anywhere.
 LLMUIIndexAll = {
-	// Papers indexed at once -- same worker-pool concurrency pattern (and
-	// same default level) as LLMCitation.embedBatched's own concurrent
-	// batch submission (see its own comment), applied here one level up:
-	// each paper's own embedding calls (getCitationIndex/getParagraphIndex,
-	// the actual bottleneck -- network round-trips to whichever embedding
-	// backend is selected) are latency-bound, not CPU-bound, so running
-	// several papers' extraction pipelines at once lets those network waits
-	// overlap instead of sitting fully idle between one paper's own
-	// sequential steps.
-	CONCURRENCY_LEVEL: 8,
+	// Papers indexed at once -- same worker-pool concurrency pattern as
+	// LLMCitation.embedBatched's own concurrent batch submission (see its
+	// own comment), applied here one level up: each paper's own embedding
+	// calls (getCitationIndex/getParagraphIndex, latency-bound network
+	// round-trips) benefit from overlapping several papers' pipelines
+	// rather than sitting fully idle between one paper's own sequential
+	// steps. Lowered from 8 to 4 -- fewer PDFs open at once through
+	// whatever native path LLMPrompt.getAttachmentFullText's PDFWorker
+	// fallback goes through, as a lever against macOS's CGPDFService
+	// process's memory growth over a long Index All run (see
+	// ui/advanced.js's runIndexAll, which also periodically nudges Gecko's
+	// own memory-pressure observers). Trades some wall-clock time for
+	// that -- being tried out to see how much it actually costs in
+	// practice before deciding whether it's worth keeping permanently.
+	CONCURRENCY_LEVEL: 4,
 
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [IndexAll]: " + msg);

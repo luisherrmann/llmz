@@ -72,6 +72,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/image-paste.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/providers.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/keyboard-shortcuts.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/index-all.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/advanced.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/conversation-history.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/export.js");

@@ -194,6 +194,23 @@ LLMCitation = {
 		}
 	},
 
+	// Cheap existence check (file presence only, no content read or
+	// fingerprint/model/provider validation -- unlike _loadDiskCache's own
+	// check) for ui/advanced.js's "library index status" bar under Cache.
+	// Deliberately checks the SENTENCE index only, not paragraph (paragraph
+	// is only ever built conditionally, for a PDF long enough to need
+	// chunked context -- see ui/index-all.js's own _indexItem comment -- so
+	// a short PDF with only a sentence index is still fully indexed for
+	// RAG purposes). Also deliberately doesn't validate the cache is still
+	// fresh for the CURRENTLY selected embedding provider/model: "has this
+	// PDF ever been indexed" is a more useful/stable signal for a
+	// library-wide readout than "is it valid right now," which would flip
+	// for the whole library every time the user switches models.
+	async hasCache(item) {
+		let dir = await this._cacheDir();
+		return IOUtils.exists(PathUtils.join(dir, `${item.id}-sentence.json`));
+	},
+
 	async getRelevantChunks(index, query, topK) {
 		let queryEmbedding = await this.getEmbedding(query, index.model, index.provider);
 		let scored = index.embeddings.map((embedding, i) => ({

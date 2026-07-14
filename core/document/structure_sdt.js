@@ -15,32 +15,6 @@ LLMStructureSDT = {
 		return PathUtils.join(LLMReferences._extensionRoot, "scripts", this._scriptName);
 	},
 
-	async _runNode(...scriptArgs) {
-		if (!LLMReferences._extensionRoot) {
-			throw new Error("Extension root path unavailable; cannot run SDT structure computation");
-		}
-		let nodePath = await LLMReferences._nodePath();
-		let scriptPath = this._scriptPath();
-		let setupPath = LLMReferences._pdfjsSetupPath();
-		let stderrPath = scriptArgs[scriptArgs.length - 1] + ".err";
-		let quotedArgs = scriptArgs.map(a => JSON.stringify(a)).join(" ");
-		let cmd = `${JSON.stringify(nodePath)} --import ${JSON.stringify(setupPath)} ${JSON.stringify(scriptPath)} ${quotedArgs} 2>${JSON.stringify(stderrPath)}`;
-
-		this.log(`_runNode: ${this._scriptName}`);
-		let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
-		let proc = await Subprocess.call({ command: "/bin/sh", arguments: ["-c", cmd] });
-		let { exitCode } = await proc.wait();
-
-		let stderr = "";
-		try { stderr = (await IOUtils.readUTF8(stderrPath)).trim(); } catch (e) {}
-		IOUtils.remove(stderrPath).catch(() => {});
-		if (stderr) this.log(`${this._scriptName} stderr: ${stderr}`);
-
-		if (exitCode !== 0) {
-			throw new Error(`${this._scriptName} failed (exit ${exitCode}): ${stderr || "(no stderr)"}`);
-		}
-	},
-
 	async _structureCacheDir() {
 		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "citation-structure");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
@@ -84,7 +58,7 @@ LLMStructureSDT = {
 				throw new Error("Item has no attached file path");
 			}
 			onMessage?.("Computing document structure (this may take a moment)...");
-			await this._runNode(pdfPath, structureCachePath);
+			await LLMReferences._runNode(this._scriptPath(), this._scriptName, pdfPath, structureCachePath);
 			onMessage?.("Computed document structure.");
 			return structureCachePath;
 		})();

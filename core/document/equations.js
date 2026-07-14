@@ -26,39 +26,13 @@ LLMEquations = {
 		return PathUtils.join(LLMReferences._extensionRoot, "scripts", this._scriptName);
 	},
 
-	async _runNode(...scriptArgs) {
-		if (!LLMReferences._extensionRoot) {
-			throw new Error("Extension root path unavailable; cannot run SDT-based extraction");
-		}
-		let nodePath = await LLMReferences._nodePath();
-		let scriptPath = this._scriptPath();
-		let setupPath = LLMReferences._pdfjsSetupPath();
-		let stderrPath = scriptArgs[scriptArgs.length - 1] + ".err";
-		let quotedArgs = scriptArgs.map(a => JSON.stringify(a)).join(" ");
-		let cmd = `${JSON.stringify(nodePath)} --import ${JSON.stringify(setupPath)} ${JSON.stringify(scriptPath)} ${quotedArgs} 2>${JSON.stringify(stderrPath)}`;
-
-		this.log(`_runNode: ${this._scriptName}`);
-		let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
-		let proc = await Subprocess.call({ command: "/bin/sh", arguments: ["-c", cmd] });
-		let { exitCode } = await proc.wait();
-
-		let stderr = "";
-		try { stderr = (await IOUtils.readUTF8(stderrPath)).trim(); } catch (e) {}
-		IOUtils.remove(stderrPath).catch(() => {});
-		if (stderr) this.log(`${this._scriptName} stderr: ${stderr}`);
-
-		if (exitCode !== 0) {
-			throw new Error(`${this._scriptName} failed (exit ${exitCode}): ${stderr || "(no stderr)"}`);
-		}
-	},
-
 	async _extractRaw(item, onMessage) {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
 		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `equations_${item.id}.json`);
 		await IOUtils.makeDirectory(PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts"), { ignoreExisting: true, createAncestors: true });
 		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item, onMessage);
-		await this._runNode(pdfPath, outputPath, structureCachePath);
+		await LLMReferences._runNode(this._scriptPath(), this._scriptName, pdfPath, outputPath, structureCachePath);
 		let equations = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
 		this.log(`_extractRaw: extracted ${equations.length} equations`);

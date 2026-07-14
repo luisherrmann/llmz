@@ -28,6 +28,7 @@ var LLMTableExport;
 var LLMInterfaces;
 var LLMIntent;
 var LLMPrompt;
+var LLMPythonSetup;
 
 function log(msg) {
 	Zotero.debug("LLM Chat Pane: " + msg);
@@ -57,6 +58,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "core/document/equations.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/notes.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/citations.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/python-setup.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/reference-retrieval.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/reference-linker.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/table-export.js");
@@ -79,6 +81,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "core/llm/request.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/chat-pane.js");
 	await LLMReferences.init(rootURI);
+	LLMPythonSetup.init(rootURI);
 	LLMChatPane.init({ id, version, rootURI });
 	LLMReferenceRetrieval.init(LLMInterfaces.streamModel.bind(LLMInterfaces));
 	// Awaited before main() so any item-pane render that happens once main()

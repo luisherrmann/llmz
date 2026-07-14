@@ -92,7 +92,7 @@
 // header comment for the fuller rationale (same one applies here: an LLM
 // asked to pick a figure needs a small, always-unambiguous integer to
 // answer with, not its own possibly long/comma-containing label text). See
-// llm-prompt.js's selectFiguresWithLLM for where figure_id is actually used;
+// llm/prompt.js's selectFiguresWithLLM for where figure_id is actually used;
 // this script only assigns it.
 // image_data is always null here -- no PyMuPDF, so no image rendering; see
 // document/figures.js's own comment for why (unlike tables) this plugin

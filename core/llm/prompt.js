@@ -5,13 +5,13 @@
 // "pick the most relevant X for this question" selection helpers
 // (select{Figure,Table,Equation}WithLLM) plus their corresponding
 // <TABLE_CONTEXT>/<REFERENCE_CONTEXT>/<EQUATION_CONTEXT> formatting helpers.
-// Split out from llm-chat-pane.js since this is a self-contained concern
+// Split out from chat-pane.js since this is a self-contained concern
 // (what goes into the prompt, and how) distinct from the chat pane's own
 // UI/rendering logic and Zotero-reader-interaction plumbing
-// (getActiveReaderAttachment etc., which stay in llm-chat-pane.js since
+// (getActiveReaderAttachment etc., which stay in chat-pane.js since
 // they're used well beyond prompt-building -- e.g. message-history keying --
 // and are called back into from here where needed) -- same rationale as the
-// llm-interfaces.js split.
+// llm/interfaces.js split.
 LLMPrompt = {
 	// The properties below (through maxHistoryMessages) are the "advanced
 	// settings" tunable via ui/advanced.js's Context/Message history
@@ -36,7 +36,7 @@ LLMPrompt = {
 	// selectTablesWithLLM/selectEquationsWithLLM will attach as context for a
 	// single request, even if the model's own selection response names more
 	// than this -- each attached figure in particular is a rendered image
-	// (request.js's _buildImageContext), so a higher cap trades more context
+	// (llm/request.js's _buildImageContext), so a higher cap trades more context
 	// for a larger, more expensive prompt.
 	maxSelectedFigures: 10,
 	maxSelectedTables: 20,
@@ -50,7 +50,7 @@ LLMPrompt = {
 	//                 past turn ever gets resent.
 	//   "last-k"   -- the last maxHistoryMessages transcript entries, plain
 	//                 recency cutoff (the ORIGINAL always-on behavior, from
-	//                 back when this was a plain boolean -- see request.js's
+	//                 back when this was a plain boolean -- see llm/request.js's
 	//                 own handling of a stale persisted `true`/`false` from
 	//                 before this became a 3-way enum).
 	//   "semantic" -- union(last maxHistoryMessages entries, top
@@ -66,7 +66,7 @@ LLMPrompt = {
 	//                 it -- there's no way to select "semantic" without
 	//                 message history itself being on, by construction.
 	useMessageHistory: "last-k",
-	// Caps history to just the last N transcript entries (see request.js,
+	// Caps history to just the last N transcript entries (see llm/request.js,
 	// Array.prototype.slice(-N)) -- used directly by "last-k" mode, and as
 	// the recency half of "semantic" mode's own union (see
 	// LLMSemanticHistory.selectRelevant) -- rather than resending the ENTIRE
@@ -109,7 +109,7 @@ LLMPrompt = {
 	// takes effect for anything nobody's touched yet.
 	_advancedSettingsByPair: {},
 	// Per-item one-shot marker set by ui/advanced.js when a user clears one
-	// or more caches. request.js consumes this on the next prompt for that
+	// or more caches. llm/request.js consumes this on the next prompt for that
 	// same PDF and emits a System message so recomputation is explicitly
 	// visible as a consequence of the clear action.
 	_pendingCacheRecomputeByItem: new Map(), // item.id -> string[] (cache labels)
@@ -156,7 +156,7 @@ LLMPrompt = {
 	// _advancedSettingDefaults for any key that pair has never customized.
 	// Called from loadAdvancedSettings above at startup, and again whenever
 	// the CHAT provider/model selection changes (see ui/provider-model-select.js's
-	// onChange, wired up in llm-chat-pane.js's onRender) so switching models
+	// onChange, wired up in chat-pane.js's onRender) so switching models
 	// mid-session immediately switches to that model's own tuned settings
 	// rather than silently keeping whatever the PREVIOUS model had. The
 	// actual read path (buildPromptWithActivePDFContext, selectFiguresWithLLM,
@@ -172,7 +172,7 @@ LLMPrompt = {
 		// plain on/off toggle before it became this 3-way "none"/"last-k"/
 		// "semantic" enum) -- without this, a pair whose pref blob still has
 		// the old `true`/`false` would silently fail every string comparison
-		// against it (request.js's own mode checks), effectively landing in
+		// against it (llm/request.js's own mode checks), effectively landing in
 		// neither "none" nor "semantic" and behaving unpredictably. Maps
 		// true -> "last-k" (the old always-on behavior) and false -> "none".
 		if (typeof this.useMessageHistory === "boolean") {
@@ -327,7 +327,7 @@ LLMPrompt = {
 		return selected;
 	},
 
-	// One line per figure attached as image context (see request.js's
+	// One line per figure attached as image context (see llm/request.js's
 	// _buildImageContext), telling the model exactly which ref: token to
 	// cite it with -- a numbered figure's own printed caption is visible
 	// right there in the attached crop, so the model could in principle
@@ -579,9 +579,9 @@ LLMPrompt = {
 
 	// Builds the lookup _renderMarkdown uses to resolve `ref:table:N` /
 	// `ref:figure:N` / `ref:reference:N` / `ref:equation:N` / `ref:formula:N`
-	// / `ref:note:KEY` links -- shared by request.js (a live request, with
+	// / `ref:note:KEY` links -- shared by llm/request.js (a live request, with
 	// `selectedNotes`, this message's own LLM-picked subset) and
-	// llm-chat-pane.js's onImport (a historical message, which instead
+	// chat-pane.js's onImport (a historical message, which instead
 	// passes EVERY current annotation on the PDF via LLMNotes.getNotes(),
 	// since there's no way to know which ones were actually shown to the
 	// model that produced the original text). Both work because notes are
@@ -656,7 +656,7 @@ LLMPrompt = {
 				caption: n.caption,
 			}])),
 			// Fallback lookup by the table's/figure's own LABEL text (e.g.
-			// "table d.1", "figure f.8"), used by llm-chat-pane.js's
+			// "table d.1", "figure f.8"), used by chat-pane.js's
 			// _renderMarkdown ONLY when the primary table/tableExtra/figure/
 			// figureExtra numeric lookup above fails -- a model that gets a
 			// ref:table:N/ref:figure:N token wrong (wrong ref TYPE, e.g.
@@ -693,12 +693,12 @@ LLMPrompt = {
 
 	// `systemPrompt` (the citation/table/figure/equation formatting
 	// instructions -- see _systemPrompt above) is returned SEPARATELY from
-	// `prompt` now, rather than concatenated into it -- request.js passes
+	// `prompt` now, rather than concatenated into it -- llm/request.js passes
 	// it through to LLMInterfaces.streamModel as its own field (Anthropic's
 	// Messages API takes it as a dedicated top-level `system` parameter,
 	// not a message in the `messages` array; OpenAI-compatible endpoints
 	// and Ollama's /api/chat get it prepended as a {role: "system"} message
-	// instead -- see llm-interfaces.js). Everything else here (PDF/page/
+	// instead -- see llm/interfaces.js). Everything else here (PDF/page/
 	// selection context, the actual question) stays turn-specific, since
 	// it's naturally query-dependent (retrieved chunks, selected text,
 	// etc.) rather than something that'd make sense to send once for a

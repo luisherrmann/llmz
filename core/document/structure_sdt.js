@@ -51,7 +51,7 @@ LLMStructureSDT = {
 		return PathUtils.join(await this._structureCacheDir(), `${item.id}.json`);
 	},
 
-	// `request.js` kicks off getReferenceIndex/getEquationIndex/
+	// `llm/request.js` kicks off getReferenceIndex/getEquationIndex/
 	// getTableIndex/getFigureIndex together (Promise.all) -- on a cold
 	// cache (a newly opened PDF), all four would otherwise see "no cache
 	// yet" and independently spawn their own compute_document_structure.js

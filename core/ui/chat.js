@@ -1,10 +1,10 @@
 // The main conversation area: the "Messages" label + scrollable message list
 // holding the user's own messages and the model's replies (as opposed to
 // ui/logs.js's separate Logs panel, which holds System-level status messages
-// instead). Split out of llm-chat-pane.js's onRender for the same reason as
+// instead). Split out of chat-pane.js's onRender for the same reason as
 // ui/logs.js. Despite the "Messages" label, the module/file/global names
 // still say "chat"/"Chat" throughout -- renamed only where the user actually
-// sees it, not the internal plumbing, when llm-chat-pane.js's onRender was
+// sees it, not the internal plumbing, when chat-pane.js's onRender was
 // restructured to put a separate top-level "Conversation" header above the
 // whole Conversation History/Prompt/Messages grouping (this label alone
 // would otherwise be ambiguous with that).
@@ -23,13 +23,13 @@ LLMUIChat = {
 	//                                         historical timestamp (e.g. when
 	//                                         rebuilding from an imported
 	//                                         conversation, see
-	//                                         llm-chat-pane.js's onImport),
+	//                                         chat-pane.js's onImport),
 	//                                         to capture the EXACT moment of
 	//                                         submission for a "You" message
 	//                                         rather than whenever this call
 	//                                         happens to run (which can be
 	//                                         noticeably later -- see
-	//                                         request.js's own submissionTime),
+	//                                         llm/request.js's own submissionTime),
 	//                                         or "" for a reply bubble that
 	//                                         shouldn't show a timestamp yet
 	//                                         (see setMessageTime below).
@@ -38,7 +38,7 @@ LLMUIChat = {
 	//                                         plain-text updates (streaming
 	//                                         tokens) or a later swap to
 	//                                         rendered HTML (done at the
-	//                                         call site in llm-chat-pane.js,
+	//                                         call site in chat-pane.js,
 	//                                         since that requires citation/
 	//                                         link resolution this module
 	//                                         doesn't know about)
@@ -99,7 +99,7 @@ LLMUIChat = {
 	//                                         (see appendMessage above), so
 	//                                         it shows no timestamp until
 	//                                         the reply is actually
-	//                                         complete (request.js calls
+	//                                         complete (llm/request.js calls
 	//                                         this once streaming finishes),
 	//                                         rather than when it merely
 	//                                         started.
@@ -108,7 +108,7 @@ LLMUIChat = {
 	//                                         - hh:mm:ss" format, for a
 	//                                         caller that needs to capture
 	//                                         a timestamp itself (e.g.
-	//                                         request.js snapshotting the
+	//                                         llm/request.js snapshotting the
 	//                                         exact moment of submission,
 	//                                         before any async work, to
 	//                                         pass into appendMessage's own
@@ -156,11 +156,11 @@ LLMUIChat = {
 	//                                         markdown+link HTML, in place
 	//                                         -- the click-delegation half
 	//                                         of what a live streamed reply
-	//                                         does (see request.js), used
+	//                                         does (see llm/request.js), used
 	//                                         here so an imported historical
 	//                                         message can get the same
 	//                                         treatment (see
-	//                                         llm-chat-pane.js's import
+	//                                         chat-pane.js's import
 	//                                         handling) without duplicating
 	//                                         the LLMCitation click-dispatch
 	//                                         logic a second time. Falls
@@ -190,7 +190,7 @@ LLMUIChat = {
 		// business ending up in an export), and separate from `content`
 		// itself since timeEl lives in the sibling labelRow, not inside
 		// content, so it survives a later content swap (e.g. reply.replaceWith
-		// in request.js, once a streamed reply finishes and gets swapped from
+		// in llm/request.js, once a streamed reply finishes and gets swapped from
 		// its plain-text <pre> to rendered markdown <div> -- the OLD content
 		// element is still a valid WeakMap key even after being detached).
 		let timeElByContent = new WeakMap();
@@ -217,7 +217,7 @@ LLMUIChat = {
 		showPlaceholder();
 
 		// Overwrites the placeholder's own text in place -- e.g.
-		// llm-chat-pane.js's onLoadConversation uses this to show "Parsing
+		// chat-pane.js's onLoadConversation uses this to show "Parsing
 		// file X..." while a saved conversation is being read/parsed,
 		// reusing the already-visible placeholder instead of spawning a
 		// throwaway message bubble that would just get wiped by the next
@@ -245,7 +245,7 @@ LLMUIChat = {
 			let message = doc.createElement("div");
 			// role is "You" for the user, or a provider/feature label (e.g.
 			// "Ollama", "OpenAI - gpt-5.4", "Zotero") for everything else --
-			// System messages never reach here, see llm-chat-pane.js's
+			// System messages never reach here, see chat-pane.js's
 			// appendMessage, which routes those to ui/logs.js instead.
 			message.className = `llm-message ${role === "You" ? "llm-message-user" : "llm-message-assistant"}`;
 
@@ -280,7 +280,7 @@ LLMUIChat = {
 			// margin-left: auto (see style.css). Looks up the CURRENT content
 			// node via message.querySelector rather than closing over
 			// `content` directly, since a reply's content element gets
-			// swapped out from under this (request.js's own reply.replaceWith,
+			// swapped out from under this (llm/request.js's own reply.replaceWith,
 			// or renderMarkdownMessage below) once rendering finishes --
 			// every version (streaming <pre>, rendered <div>, this toggle's
 			// own raw <pre>) keeps the shared .llm-message-content class, so
@@ -381,7 +381,7 @@ LLMUIChat = {
 
 		// Sets a message's timestamp AFTER the fact -- for a reply bubble
 		// created with an empty `time` (see appendMessage's own doc comment),
-		// so it displays no timestamp until request.js calls this once the
+		// so it displays no timestamp until llm/request.js calls this once the
 		// reply is actually complete, rather than showing when the reply
 		// merely STARTED (misleading for a response that streams over
 		// several seconds). Updates both the visible time label and the
@@ -427,7 +427,7 @@ LLMUIChat = {
 				rendered.textContent = fallbackText;
 			}
 			// Same LLMCitation click-dispatch as a live streamed reply (see
-			// request.js) -- annotationKey (notes only) beats position beats
+			// llm/request.js) -- annotationKey (notes only) beats position beats
 			// a page number beats a caption text-search.
 			rendered.addEventListener("click", (e) => {
 				let anchor = e.target.closest(".llm-find-link");

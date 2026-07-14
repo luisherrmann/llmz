@@ -300,9 +300,9 @@ LLMTables = {
 		// comment) -- image_data is always null from the SDT-only script
 		// (no PyMuPDF rendering), so _embedRaw would have nothing real to
 		// embed, and neither embedding is on the live selection path anyway
-		// (selectTablesWithLLM doesn't use them -- see llm-prompt.js;
+		// (selectTablesWithLLM doesn't use them -- see llm/prompt.js;
 		// getBestMatchingTableByImage/ByTextMax, which do, aren't called
-		// from request.js). contentText itself, though, is cheap (no
+		// from llm/request.js). contentText itself, though, is cheap (no
 		// network call, just a local join -- see _flattenTableData) and is
 		// a real dependency of tools/table-export.js's CSV-conversion
 		// prompt, so it's still computed unconditionally here rather than

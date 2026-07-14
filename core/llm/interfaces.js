@@ -1,7 +1,7 @@
 // Talks to the actual LLM backends (Ollama, LM Studio, LiteLLM, and --
 // directly, with no proxy involved -- OpenAI and Anthropic) -- listing
 // available models, streaming completions, and checking vision-capability
-// support. Split out from llm-chat-pane.js since this is a self-contained
+// support. Split out from chat-pane.js since this is a self-contained
 // concern (which HTTP API to call and how to parse its streaming response
 // format) distinct from the chat pane's own UI/rendering logic. Owns the
 // provider selection state itself (_provider, _selectedModel, the base
@@ -382,14 +382,14 @@ LLMInterfaces = {
 	// turns, not just the current one. Like every other backend, Ollama's
 	// server itself is still stateless -- it remembers nothing between
 	// calls, so the full history has to be resent every time (see
-	// request.js, which builds `messages`).
+	// llm/request.js, which builds `messages`).
 	// `tools` (same normalized [{name, description, schema}] shape as
 	// streamOpenAICompatible/streamAnthropic take) has been supported by
 	// Ollama's native /api/chat since 2024 -- confirmed against
 	// https://ollama.com/blog/tool-support and ollama-js's own
 	// examples/tools/calculator.ts, using the exact same OpenAI-shaped
 	// {type:"function", function:{name, description, parameters}} tool
-	// definitions the OpenAI-compatible providers already use. intent.js
+	// definitions the OpenAI-compatible providers already use. llm/intent.js
 	// (the only caller) always passes `tools` unconditionally now -- an
 	// earlier per-model capability gate was tried and removed after
 	// confirming empirically it was never once needed across every model
@@ -406,7 +406,7 @@ LLMInterfaces = {
 			let m = messages[i];
 			let entry = { role: m.role, content: m.content };
 			// Only the LAST message (the current turn) can carry images --
-			// see request.js, which only ever attaches pasted images to the
+			// see llm/request.js, which only ever attaches pasted images to the
 			// newest prompt; historical turns' images were never persisted
 			// anywhere reusable (chat.exportTranscript() only tracks text).
 			if (i === messages.length - 1 && images?.length) {
@@ -528,7 +528,7 @@ LLMInterfaces = {
 	},
 
 	// `messages` is [{role: "user"|"assistant", content: string}, ...] --
-	// see request.js, which builds this from chat.exportTranscript() (prior
+	// see llm/request.js, which builds this from chat.exportTranscript() (prior
 	// turns, when LLMPrompt.useMessageHistory is on) plus the current
 	// turn's full context-stuffed prompt as the last entry. The server
 	// itself is stateless regardless of provider -- resending the whole
@@ -553,7 +553,7 @@ LLMInterfaces = {
 		for (let i = 0; i < messages.length; i++) {
 			let m = messages[i];
 			// Only the LAST message (the current turn) can carry images --
-			// see request.js, which only ever attaches pasted images to the
+			// see llm/request.js, which only ever attaches pasted images to the
 			// newest prompt; historical turns' images were never persisted
 			// anywhere reusable (chat.exportTranscript() only tracks text).
 			if (i === messages.length - 1 && images?.length) {
@@ -875,7 +875,7 @@ LLMInterfaces = {
 
 	// `messages` is [{role: "user"|"assistant", content: string}, ...] --
 	// same shape/source as streamOpenAICompatible's own `messages` (see
-	// request.js). `systemPrompt`, unlike the OpenAI-compatible backends
+	// llm/request.js). `systemPrompt`, unlike the OpenAI-compatible backends
 	// (which get it prepended as a {role: "system"} message), goes in
 	// Anthropic's own dedicated top-level `system` field instead -- its
 	// Messages API has no "system" role within `messages` at all. `tools`
@@ -889,7 +889,7 @@ LLMInterfaces = {
 
 		let apiMessages = messages.map((m, i) => {
 			// Only the LAST message (the current turn) can carry images --
-			// see request.js, which only ever attaches pasted images to the
+			// see llm/request.js, which only ever attaches pasted images to the
 			// newest prompt; historical turns' images were never persisted
 			// anywhere reusable (chat.exportTranscript() only tracks text).
 			if (i !== messages.length - 1 || !images?.length) {
@@ -1010,10 +1010,10 @@ LLMInterfaces = {
 	// `messages` accepts either a plain string (wrapped into a single
 	// {role: "user"} entry below, for backward compatibility with every
 	// one-off/classification-style caller -- tools/reference-retrieval.js's
-	// _callModel, and llm-prompt.js's several selectXWithLLM helpers --
+	// _callModel, and llm/prompt.js's several selectXWithLLM helpers --
 	// none of which are part of the visible chat conversation and
 	// shouldn't carry history or a custom system prompt) or an array of
-	// {role, content} entries (request.js's actual chat flow, built from
+	// {role, content} entries (llm/request.js's actual chat flow, built from
 	// chat.exportTranscript() plus the current turn).
 	// `opts.tools`, if given, is passed straight through to whichever
 	// provider function ends up handling this call -- normalized
@@ -1052,8 +1052,8 @@ LLMInterfaces = {
 	},
 
 	// Human-readable display name for a chat provider ID -- shared by
-	// request.js's own reply-bubble labeling and any other caller (e.g.
-	// llm-chat-pane.js's onLoadConversation) that needs to show which
+	// llm/request.js's own reply-bubble labeling and any other caller (e.g.
+	// chat-pane.js's onLoadConversation) that needs to show which
 	// provider/model a plugin-generated status bubble is "speaking as",
 	// rather than each call site keeping its own copy of this mapping.
 	getProviderLabel(provider) {
@@ -1133,14 +1133,14 @@ LLMInterfaces = {
 	// time, so batching multiple chunks into one request is both faster
 	// (one round trip instead of N) and cheaper than embedding one at a
 	// time. See LLMCitation.embedBatched for the concurrency-limited
-	// batch-splitting/dispatch built on top of this (used by llm-citation.js/
+	// batch-splitting/dispatch built on top of this (used by citation.js/
 	// document/figures.js's own embedding loops) -- this method itself does
 	// NOT cap how many texts it sends in one request, so callers are
 	// responsible for keeping batches within whatever size a given
 	// provider/model can actually handle in one request.
 	//
 	// `model`/`provider`, if given, override the CURRENT embedding
-	// selection -- needed by llm-citation.js to re-embed a query against
+	// selection -- needed by citation.js to re-embed a query against
 	// whichever provider+model an already-built citation index was actually
 	// embedded with (see its own comment), since embeddings from two
 	// different models (or the same model name under two different

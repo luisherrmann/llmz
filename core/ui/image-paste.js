@@ -1,6 +1,6 @@
 // Images pasted (⌘V) into the prompt textarea, shown as a row of removable
 // thumbnails and attached as context for the next request(s). Split out of
-// llm-chat-pane.js's onRender for the same reason as the other ui/ modules.
+// chat-pane.js's onRender for the same reason as the other ui/ modules.
 LLMUIImagePaste = {
 	// Capped at maxPastedImages since providers' per-request image limits,
 	// while generous, aren't unlimited, and a runaway paste of a large batch
@@ -27,8 +27,8 @@ LLMUIImagePaste = {
 	// `onMessage(text)` is called for user-facing status text ("That image
 	// is already attached.", the per-request limit message) -- routing this
 	// (e.g. to the Logs panel) is the caller's concern, not this module's.
-	// `discardIconURL` is a plain file:/jar: URL (see llm-chat-pane.js's
-	// onRender, rootURI + "icons/remove_selection_*.svg"), rendered via
+	// `discardIconURL` is a plain file:/jar: URL (see chat-pane.js's
+	// onRender, rootURI + "res/icons/remove_selection_*.svg"), rendered via
 	// LLMUIIcon.create.
 	create(doc, input, onMessage, discardIconURL) {
 		// Each entry is { dataUri, fingerprint } -- fingerprint is a SHA-256

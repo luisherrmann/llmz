@@ -52,7 +52,7 @@
 // text exactly (fragile -- a lettered/synthetic label can be long, and a
 // model paraphrasing or mistyping punctuation used to require a whole tier
 // of fuzzy-matching just to recover from). See document/tables.js/
-// llm-prompt.js/tools/table-export.js for where table_id is actually used;
+// llm/prompt.js/tools/table-export.js for where table_id is actually used;
 // this script only assigns it.
 // image_data is always null here -- no PyMuPDF, so no image rendering;
 // data is SDT's own table content (a real row/column grid when SDT's grid

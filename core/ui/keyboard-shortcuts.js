@@ -1,10 +1,10 @@
 // The collapsible "Keyboard Shortcuts" reference panel -- purely
 // informational (no hover/focus/click affordances), same disclosure pattern
-// as ui/advanced.js/ui/providers.js. Split out of llm-chat-pane.js's onRender
+// as ui/advanced.js/ui/providers.js. Split out of chat-pane.js's onRender
 // for the same reason as the other ui/ modules.
 LLMUIKeyboardShortcuts = {
 	// ⌃/⌘ (Ctrl-or-Cmd) is both accepted, on every platform (not just the
-	// OS-conventional one) -- see llm-chat-pane.js's addToWindow/onRender
+	// OS-conventional one) -- see chat-pane.js's addToWindow/onRender
 	// keydown handlers, which check `event.metaKey || event.ctrlKey` for
 	// every one of these rather than picking one based on Zotero.isMac.
 	// "Paste Image" is the one exception: it's not a custom keydown handler

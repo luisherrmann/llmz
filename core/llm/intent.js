@@ -1,6 +1,6 @@
 // Central "which tool (if any) does this message want" router, checked by
-// request.js before the normal chat flow runs. Always uses native tool-
-// calling (see llm-interfaces.js's streamOpenAICompatible/streamAnthropic/
+// llm/request.js before the normal chat flow runs. Always uses native tool-
+// calling (see llm/interfaces.js's streamOpenAICompatible/streamAnthropic/
 // streamOllama, all of which support it -- Ollama natively since 2024) --
 // there used to be a prompt-based-classifier fallback for a non-tool-
 // capable Ollama model, removed after confirming empirically across every
@@ -10,17 +10,17 @@ LLMIntent = {
 		Zotero.debug("LLM Chat Pane [Intent]: " + msg);
 	},
 
-	// One entry per registered tool -- the short key request.js switches on
+	// One entry per registered tool -- the short key llm/request.js switches on
 	// (its own internal vocabulary), paired with that tool's own
 	// {name, description, schema, resolver} descriptor (see
 	// tools/reference-retrieval.js's/tools/reference-linker.js's/
 	// tools/table-export.js's own intentTool -- `resolver` bundles the
-	// four functions request.js's _resolveIntentIndices needs to turn a
+	// four functions llm/request.js's _resolveIntentIndices needs to turn a
 	// resolved intent into concrete numbers). THE single registry for
-	// "what tools exist" -- request.js used to keep its own second,
+	// "what tools exist" -- llm/request.js used to keep its own second,
 	// separate per-tool map (keyed by these same short keys) just for
 	// resolvers, which had to be updated by hand in lockstep with this one
-	// every time a tool was added; now request.js reads resolvers from
+	// every time a tool was added; now llm/request.js reads resolvers from
 	// here instead (see getResolver below), so there's exactly one place
 	// to register a new tool. Listed explicitly here, rather than
 	// discovered automatically by scanning globals, so registration is
@@ -32,7 +32,7 @@ LLMIntent = {
 	],
 
 	// Every registered tool's own {name, description, schema} descriptor,
-	// in the shape llm-interfaces.js's streamModel `opts.tools` expects
+	// in the shape llm/interfaces.js's streamModel `opts.tools` expects
 	// (resolver isn't part of the wire format -- only detectIntent/
 	// getResolver below read it, streamModel never sees it).
 	_tools() {
@@ -40,13 +40,13 @@ LLMIntent = {
 	},
 
 	// Maps a tool's own API-level `name` (what the model actually sees)
-	// back to the short key request.js switches on.
+	// back to the short key llm/request.js switches on.
 	_keyForName(name) {
 		return this._registry.find(r => r.tool.name === name)?.key ?? null;
 	},
 
 	// Returns the resolver bundle (see each intentTool's own `resolver`)
-	// for the tool request.js is currently handling, keyed by the same
+	// for the tool llm/request.js is currently handling, keyed by the same
 	// short key detectIntent returns as `tool`.
 	getResolver(key) {
 		return this._registry.find(r => r.key === key)?.tool.resolver ?? null;
@@ -55,7 +55,7 @@ LLMIntent = {
 	// Detects which tool (if any) `prompt` is asking for -- a single
 	// streamModel call carrying every registered tool, letting the model
 	// pick at most one itself. `prompt` is passed as a plain string (see
-	// llm-interfaces.js's streamModel, which wraps it into a single
+	// llm/interfaces.js's streamModel, which wraps it into a single
 	// {role:"user"} entry with no history/system prompt) -- this is a one-
 	// off, non-conversational classification call, not part of the visible
 	// chat. onToken is a no-op -- never streamed to the visible chat, only
@@ -64,11 +64,11 @@ LLMIntent = {
 	// reference-tool request at all -- result.toolCalls is empty either
 	// way, so no separate "none" check is needed for it.
 	// `onProgress(msg)`, if given, is called once a call is actually made
-	// -- surfaced by the caller (request.js) to the Logs panel (see
+	// -- surfaced by the caller (llm/request.js) to the Logs panel (see
 	// ui/logs.js), same convention tools/reference-retrieval.js's
 	// downloadReferenceToLibrary already uses for its own progress
 	// messages. Returns { tool: "download"|"link"|"tables", intent:
-	// <six-shape intent object -- see request.js's _resolveIntentIndices
+	// <six-shape intent object -- see llm/request.js's _resolveIntentIndices
 	// for how it's consumed, against whichever index (reference or table)
 	// the matched tool operates on> } or null if no tool applies (a normal
 	// chat message).
@@ -91,8 +91,8 @@ LLMIntent = {
 	},
 
 	// Coerces a tool call's already-parsed `arguments` object (see
-	// llm-interfaces.js's _finalizeToolCalls) into the six-shape intent
-	// object request.js's _resolveIntentIndices consumes -- { type:
+	// llm/interfaces.js's _finalizeToolCalls) into the six-shape intent
+	// object llm/request.js's _resolveIntentIndices consumes -- { type:
 	// "single", index } | { type: "describe"|"select", description } |
 	// { type: "list", indices } | { type: "range", from, to } |
 	// { type: "all" }. Validates rather than trusting the model's

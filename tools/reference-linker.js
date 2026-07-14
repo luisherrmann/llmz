@@ -14,7 +14,7 @@ LLMReferenceLinker = {
 		Zotero.debug("LLM Chat Pane [Reference Linker]: " + msg);
 	},
 
-	// Native-tool-calling descriptor for this tool (see intent.js's
+	// Native-tool-calling descriptor for this tool (see llm/intent.js's
 	// detectIntent/_registry) -- same shape/rationale as
 	// LLMReferenceRetrieval.intentTool, see its own comment. `resolver` is
 	// the EXACT SAME object as LLMReferenceRetrieval.intentTool's own (not
@@ -23,7 +23,7 @@ LLMReferenceLinker = {
 	// is therefore already fully defined by the time this object literal
 	// is constructed. Both tools resolve against the identical reference
 	// index/methods, only diverging in what happens with the resolved
-	// numbers afterward (see request.js's _handleDownloadOrLink).
+	// numbers afterward (see llm/request.js's _handleDownloadOrLink).
 	intentTool: {
 		name: "link_reference",
 		description: [
@@ -71,7 +71,7 @@ LLMReferenceLinker = {
 	// relation. Deliberately does NOT search the web or download anything if
 	// no matching item is found -- that's downloadReferenceToLibrary's job;
 	// this only ever touches what's already in the library.
-	// `pdfItem` is the PDF ATTACHMENT (see llm-chat-pane.js's
+	// `pdfItem` is the PDF ATTACHMENT (see chat-pane.js's
 	// getActiveReaderAttachment) -- the paper being linked FROM is its
 	// parentItem, not the attachment itself, since "Related" is a relation
 	// between top-level bibliographic items (confirmed via Zotero's own

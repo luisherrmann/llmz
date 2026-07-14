@@ -24,7 +24,7 @@ LLMCitation = {
 		return paragraphs;
 	},
 
-	// Plain-text progress bar for a Logs entry (see request.js's
+	// Plain-text progress bar for a Logs entry (see llm/request.js's
 	// onEmbeddingStart) -- e.g. "[████████░░░░░░░░░░░░] 42/120 (35%)". Just
 	// arithmetic + two Unicode block characters, not worth pulling in a
 	// library for. Shared with document/figures.js's own embedding loop.
@@ -35,11 +35,11 @@ LLMCitation = {
 		return `[${bar}] ${current}/${total} (${Math.round(ratio * 100)}%)`;
 	},
 
-	// Thin delegating wrappers over LLMEmbeddings (embeddings.js), which owns
+	// Thin delegating wrappers over LLMEmbeddings (llm/embeddings.js), which owns
 	// the actual embedding-provider dispatch, batching/concurrency, and
 	// batch-size persistence -- kept here under their original names so
 	// _getIndex/getRelevantChunks/groundCitations below, and every external
-	// caller (document/tables.js, document/figures.js, request.js,
+	// caller (document/tables.js, document/figures.js, llm/request.js,
 	// semantic-history.js, ui/index-all.js), don't need to change a single
 	// call site.
 	async getEmbeddingModel() {
@@ -213,7 +213,7 @@ LLMCitation = {
 	// batching via Promise.all would have fixed just the latency) but
 	// because SDT-structure-based resolution (see document/citations.js's
 	// LLMCitationPosition, used for BOTH navigation and verification, per
-	// request.js's synchronous resolvePositions call before rendering) is
+	// llm/request.js's synchronous resolvePositions call before rendering) is
 	// a strictly better check to begin with: exact presence in the PDF's
 	// real text rather than semantic similarity (which can be "close"
 	// without the cited text actually being there), no network dependency
@@ -228,7 +228,7 @@ LLMCitation = {
 		// whole [CITE](<find:...>) token completely unmatched (silently
 		// left as literal, un-grounded text). That alone isn't quite enough
 		// though -- now that citations quote a full verbatim sentence (see
-		// llm-prompt.js's citation format instructions), a phrase can also
+		// llm/prompt.js's citation format instructions), a phrase can also
 		// contain the literal TWO-character sequence ">)" itself (e.g. "...
 		// the effect (>)5 in most cases..."), which would truncate the
 		// match at that false terminator instead of the real one. The
@@ -239,8 +239,8 @@ LLMCitation = {
 		// extending the match past any ">)" that ISN'T followed by such a
 		// boundary (e.g. followed by a digit or letter continuing the
 		// sentence) until it finds the real one. Same pattern (and same
-		// reasoning) in request.js's citation-position query extraction and
-		// llm-chat-pane.js's _renderMarkdown -- keep all three in sync.
+		// reasoning) in llm/request.js's citation-position query extraction and
+		// chat-pane.js's _renderMarkdown -- keep all three in sync.
 		let pattern = /\[CITE\]\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]]|\[|$)/g;
 		let matches = [...text.matchAll(pattern)];
 		if (!matches.length) return text;
@@ -284,7 +284,7 @@ LLMCitation = {
 	// Directly re-applies the reader's own highlight state (bypassing its
 	// _highlightPosition wrapper method, not calling it) -- best-effort
 	// reach into live reader internals, same pattern as
-	// llm-chat-pane.js's getReaderPageText/getReaderFullText. Silently
+	// chat-pane.js's getReaderPageText/getReaderFullText. Silently
 	// gives up if the reader's internal shape doesn't match what's
 	// expected (e.g. a future Zotero version renames/restructures it).
 	_reapplyHighlight(reader, position) {

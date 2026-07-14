@@ -4,7 +4,7 @@
 // (LiteLLM/OpenAI/Anthropic), and/or a Server IP + Port row for anything
 // with a configurable local/self-hosted address (Ollama/LM Studio/LiteLLM).
 // OpenAI/Anthropic are fixed cloud endpoints (openaiBaseURL/anthropicBaseURL
-// in llm-interfaces.js), so they get no server fields; Ollama/LM Studio are
+// in llm/interfaces.js), so they get no server fields; Ollama/LM Studio are
 // unauthenticated local servers, so they get no API key field. Replaces the
 // old "API Keys" panel now that the server address is also configurable,
 // not just hardcoded.
@@ -18,7 +18,7 @@
 // LLMInterfaces' current settings (which are themselves defaults unless
 // previously overridden -- see loadServerSettings), so this panel always
 // shows what's actually in effect, not blank fields. Split out of
-// llm-chat-pane.js's onRender for the same reason as the other ui/ modules.
+// chat-pane.js's onRender for the same reason as the other ui/ modules.
 LLMUIProviders = {
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Providers]: " + msg);

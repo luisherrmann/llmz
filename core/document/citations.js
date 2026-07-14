@@ -1,10 +1,10 @@
-// Resolves a grounded citation search phrase (see llm-citation.js's
+// Resolves a grounded citation search phrase (see citation.js's
 // groundCitations) directly to a page position -- { pageIndex, rects } --
 // using the SDT structure's own per-character position data (textMap)
 // rather than the reader's live find() (which has its own, separately-
 // implemented text-assembly quirks). This lets a citation click go straight
 // to a precise, possibly multi-line (non-rectangular) highlight the same
-// way a table/figure click does (see llm-citation.js's navigateToPosition),
+// way a table/figure click does (see citation.js's navigateToPosition),
 // instead of a text-search round trip through the reader.
 //
 // Three DIFFERENT caches are involved:
@@ -242,7 +242,7 @@ LLMCitationPosition = {
 	// resolution logic (see git history) -- matching/rect-computation, now
 	// run in-process instead of via a spawned Node subprocess. ----
 
-	// Same character class as llm-citation.js's own dash-stripping
+	// Same character class as citation.js's own dash-stripping
 	// normalization (see its groundCitations-era comments if still
 	// present) -- whitespace + all dash variants, since a hyphen dropped at
 	// a line-wrap becomes a bare joint between two words in the extracted
@@ -555,7 +555,7 @@ LLMCitationPosition = {
 
 	// Resolves MANY queries against ONE shared (memory-cached, see
 	// _getTextIndex) text index -- a chat reply commonly has several
-	// citations against the same PDF (see request.js's own prefetch call,
+	// citations against the same PDF (see llm/request.js's own prefetch call,
 	// right after grounding). Returns a Map of query -> ({ pageIndex,
 	// rects } or null), one entry per requested query, in the SAME order/
 	// duplication as the input array.
@@ -620,7 +620,7 @@ LLMCitationPosition = {
 		// matter how the text is normalized, but IS close in embedding
 		// space to the real sentence it's paraphrasing. The model is
 		// instructed to quote exactly one full sentence verbatim (see
-		// llm-prompt.js's citation format instructions) specifically to
+		// llm/prompt.js's citation format instructions) specifically to
 		// keep this fallback rare, not to eliminate the need for it -- a
 		// full sentence is easier for the model to reproduce verbatim than
 		// an arbitrary short fragment would be (it's a complete, coherent
@@ -647,7 +647,7 @@ LLMCitationPosition = {
 					if (citationIndex?.sentences?.length) {
 						// Batched (not one getEmbedding call per citation,
 						// sequentially) -- see groundCitations' own comment
-						// in llm-citation.js for why that mattered enough
+						// in citation.js for why that mattered enough
 						// to fix here even though this path is already the
 						// rare case.
 						let queryEmbeddings = await LLMCitation.embedBatched(
@@ -709,10 +709,10 @@ LLMCitationPosition = {
 
 	// Thin single-query convenience wrapper over resolvePositions -- used by
 	// the click handler as a fallback for a query that (for whatever reason)
-	// wasn't part of the prefetched batch for its response (see request.js).
+	// wasn't part of the prefetched batch for its response (see llm/request.js).
 	// Returns { pageIndex, rects } on success, or null if the query
 	// couldn't be resolved (caller should fall back to text-search
-	// navigation -- see llm-citation.js's navigateToText).
+	// navigation -- see citation.js's navigateToText).
 	async resolvePosition(item, query) {
 		let results = await this.resolvePositions(item, [query]);
 		return results.get(query) ?? null;

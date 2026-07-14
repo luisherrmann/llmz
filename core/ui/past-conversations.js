@@ -2,20 +2,20 @@
 // list of cards, one per conversation previously saved (via Export -- see
 // export.js/conversation-history.js) for the active PDF, one .md file per
 // card under $HOME/Zotero/LLMz/chats/<PDF_ID>/. Split out of
-// llm-chat-pane.js's onRender for the same reason as the other ui/ modules.
+// chat-pane.js's onRender for the same reason as the other ui/ modules.
 LLMUIConversationHistory = {
 	// `onLoad(conversation)` is called on a card's Load click -- rebuilding
 	// the chat pane's message list from an arbitrary saved file needs the
 	// same table/figure/reference/equation link-resolution context a live
-	// request does (see llm-chat-pane.js's loadTranscriptIntoChat), which is
+	// request does (see chat-pane.js's loadTranscriptIntoChat), which is
 	// exactly the kind of business logic this module otherwise stays out of
 	// -- same rationale as ui/button-row.js's Import staying uninvolved in
 	// that logic. Delete and the inline title editor, by contrast, ARE
 	// handled directly here (a file removal/rename + a small DOM update
 	// each), since neither needs any context this module doesn't already
 	// have. `editIconURL`/`doneIconURL`/`loadIconURL`/`deleteIconURL` are
-	// plain file:/jar: URLs (see llm-chat-pane.js's onRender, rootURI +
-	// "icons/...svg") -- rendered via LLMUIIcon.create (CSS mask-image, see
+	// plain file:/jar: URLs (see chat-pane.js's onRender, rootURI +
+	// "res/icons/...svg") -- rendered via LLMUIIcon.create (CSS mask-image, see
 	// style.css's shared .llm-icon class) rather than fetched-and-inlined
 	// SVG markup, so each icon's actual visible color is entirely
 	// controlled by background-color: currentColor regardless of whatever

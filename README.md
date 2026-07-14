@@ -8,7 +8,7 @@
 
 ---
 
-**LLMz** is a Zotero 7 item-pane plugin that adds an LLM chat pane next to the reader. Ask a question about the paper you're reading and it automatically pulls in whichever tables, figures, equations, your own highlights/notes, and bibliography entries are actually relevant, then answers with clickable citations that jump straight to the right spot in the PDF.
+**LLMz** is a Zotero 9 item-pane plugin that adds an LLM chat pane next to the reader. Ask a question about the paper you're reading and it automatically pulls in whichever tables, figures, equations, your own highlights/notes, and bibliography entries are actually relevant, then answers with clickable citations that jump straight to the right spot in the PDF.
 
 ## Features
 
@@ -25,8 +25,13 @@
 
 - Zotero 7.
 - A running LLM backend: [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) locally, a [LiteLLM](https://www.litellm.ai) proxy, or an OpenAI/Anthropic API key.
-- Node.js, for the bundled document-structure pipeline (`sdt/document-worker/`) used to extract equations, references, and notes.
-- A Python 3 virtual environment at `~/Zotero/LLMz/venv`, used to extract and crop tables and figures, with dependencies from [`requirements.txt`](requirements.txt):
+- Node.js, for the bundled document-structure pipeline (`sdt/document-worker/`, vendored at pinned upstream commits -- see [`sdt/document-worker/VENDORED.md`](sdt/document-worker/VENDORED.md)) used to extract equations, references, and notes. Its own runtime dependencies are installed locally (once) via npm:
+  ```bash
+  cd sdt/document-worker
+  npm install
+  ```
+  `npm install` resolves the correct native binary for your platform automatically (macOS/Windows/Linux, x64/arm64) -- no manual steps needed beyond running it.
+- A Python 3 virtual environment at `~/Zotero/LLMz/venv`, used to extract and crop figures, with dependencies from [`requirements.txt`](requirements.txt):
   ```bash
   python3 -m venv ~/Zotero/LLMz/venv
   ~/Zotero/LLMz/venv/bin/pip install -r requirements.txt
@@ -36,7 +41,7 @@
 
 1. Download the latest `llmz.xpi`, or build one yourself from source:
    ```bash
-   cd plugins/llm-chat-pane
+   mkdir build
    zip -r build/llmz.xpi . -x ".*" -x "*.xpi" -x "scripts/__pycache__/*"
    ```
 2. In Zotero, go to **Tools → Add-ons**, click the gear icon, choose **Install Add-on From File...**, and select the `.xpi`.

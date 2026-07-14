@@ -1,6 +1,6 @@
 // Ranks a conversation's own prior turns by embedding similarity to the
 // current user query, for LLMPrompt's "semantic" message-history mode (see
-// llm-prompt.js's own comment on useMessageHistory for the
+// llm/prompt.js's own comment on useMessageHistory for the
 // union(last K, top-L-by-similarity) rationale this implements). Reuses
 // LLMCitation's existing embedding API (getEmbedding/embedBatched/
 // cosineSimilarity) -- this module owns only the conversation-message-
@@ -10,7 +10,7 @@
 // (role+time+text), not a plain array position-aligned with
 // chat.exportTranscript()'s own transcript array -- transcript entries have
 // no stable ID of their own, and messages get created/finished from several
-// different code paths in request.js (a normal reply, an empty-response
+// different code paths in llm/request.js (a normal reply, an empty-response
 // reply, a cancelled request, an error bubble), not all of which are
 // guaranteed to call embedNewMessage. A content-keyed Map degrades
 // gracefully under that: a message that was never embedded (or whose
@@ -52,7 +52,7 @@ LLMSemanticHistory = {
 	},
 
 	// Embeds exactly one message and stores it -- call right after a "You"
-	// message is appended (request.js's _handleNormalChat) or right after a
+	// message is appended (llm/request.js's _handleNormalChat) or right after a
 	// reply finishes (same file, once its final text/timestamp are known).
 	// Deliberately NOT awaited by callers (fire-and-forget) -- embedding
 	// runs in the background and simply isn't ready yet for a
@@ -75,7 +75,7 @@ LLMSemanticHistory = {
 	// call (LLMCitation.embedBatched, the same machinery LLMCitation's own
 	// PDF paragraph index uses) rather than one embedNewMessage call per
 	// entry -- call once right after loading a past conversation into the
-	// chat (llm-chat-pane.js's loadTranscriptIntoChat), after chat.clear()
+	// chat (chat-pane.js's loadTranscriptIntoChat), after chat.clear()
 	// (which this does NOT call itself -- see reset()'s own comment on
 	// where that happens instead) and after every entry has actually been
 	// appended. `onProgress(current, total)`, if given, is forwarded

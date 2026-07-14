@@ -1,13 +1,13 @@
 // Generic text-embedding API: which backend/model to embed with, batched+
 // concurrent embedding requests, and cosine similarity -- split out of
-// llm-citation.js, which now just DELEGATES to this module for the widely-
+// citation.js, which now just DELEGATES to this module for the widely-
 // used methods (getEmbedding/getEmbeddings/embedBatched/cosineSimilarity/
 // getEmbeddingModel stay as thin wrappers there, so document/tables.js,
-// document/figures.js, semantic-history.js, request.js etc. don't need to
+// document/figures.js, semantic-history.js, llm/request.js etc. don't need to
 // change a single call site) while keeping citation-index building/caching
 // (getCitationIndex/getParagraphIndex/getRelevantChunks/groundCitations),
 // which is a genuinely different, citation-specific concern, in
-// llm-citation.js itself.
+// citation.js itself.
 LLMEmbeddings = {
 	// Default batch size for embedBatched below -- exposed as an Advanced
 	// setting (ui/advanced.js's Embeddings section). Persisted per

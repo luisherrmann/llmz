@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="res/LLMz.svg" alt="LLMz" width="300">
+  <img src="res/img/LLMz.svg" alt="LLMz" width="300">
 </p>
 
 <p align="center">
@@ -63,15 +63,20 @@ Click any `[Table N]` / `[Figure N]` / page-number link in a response to jump to
 ## Project structure
 
 ```
-document/      PDF content extraction: tables, figures, equations, references, notes
-tools/         Native tool-calling features: reference download/link, table export
-ui/            Chat pane UI components (chat log, provider settings, history, etc.)
-llm-interfaces.js   Talks to the actual model backends (Ollama, LM Studio, LiteLLM, OpenAI, Anthropic)
-llm-prompt.js       Prompt construction and context selection
-request.js          Orchestrates a single chat request end to end
-intent.js           Routes a message to a tool (download/link/export) or normal chat
-sdt/document-worker  Vendored ML-based PDF layout classification pipeline
-scripts/            Python/Node extraction scripts run as subprocesses
+core/                    Plugin logic
+core/document/           PDF content extraction: tables, figures, equations, references, notes
+core/ui/                 Chat pane UI components (chat log, provider settings, history, etc.)
+core/interfaces.js       Talks to the actual model backends (Ollama, LM Studio, LiteLLM, OpenAI, Anthropic)
+core/prompt.js           Prompt construction and context selection
+core/request.js          Orchestrates a single chat request end to end
+core/intent.js           Routes a message to a tool (download/link/export) or normal chat
+core/chat-pane.js        Main plugin entry point (item pane registration, onRender)
+core/citation.js         Citation-index building and cosine-similarity search
+tools/                   Native tool-calling features: reference download/link, table export
+res/icons/, res/img/     SVG icons and the LLMz logo
+styles/style.css         Pane stylesheet
+sdt/document-worker      Vendored ML-based PDF layout classification pipeline
+scripts/                 Python/Node extraction scripts run as subprocesses
 ```
 
 ## License

@@ -1,9 +1,9 @@
 // The "Logs" panel: a collapsible <details> in the chat pane's controls that
 // collects System-level status messages (extraction/selection results,
 // download-reference progress, errors, etc.) separately from the actual
-// user/assistant conversation -- see llm-chat-pane.js's appendMessage, which
+// user/assistant conversation -- see chat-pane.js's appendMessage, which
 // routes anything with role "System" here instead of into the message list
-// (ui/chat.js). Split out of llm-chat-pane.js's onRender (previously built
+// (ui/chat.js). Split out of chat-pane.js's onRender (previously built
 // inline as several of the many closures in one large render function)
 // since it's a self-contained DOM component with its own append/format
 // logic, no different in spirit from ui/chat.js.

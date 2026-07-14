@@ -1,22 +1,22 @@
 // Two button rows: `element` (Submit/Stop, plus ui/image-paste.js's own
 // "Discard All" button), placed under the Prompt textarea, and `messagesRow`
 // (Clear/Export/Import), placed right under the Messages header instead --
-// see llm-chat-pane.js's onRender, which places the two in different parts
+// see chat-pane.js's onRender, which places the two in different parts
 // of the layout despite both being built here together. Split out of
-// llm-chat-pane.js's onRender for the same reason as the other ui/ modules.
+// chat-pane.js's onRender for the same reason as the other ui/ modules.
 // Clear Cache moved to ui/advanced.js (it's a debug/maintenance action, not
 // a per-message one) -- not built here anymore.
 //
 // Submit/Stop's actual click BEHAVIOR is deliberately NOT wired up here --
 // it's tightly coupled to the request/cancellation state machine in
-// llm-chat-pane.js's submit handler (cancelStream/cancelled/rejectCancel/
+// chat-pane.js's submit handler (cancelStream/cancelled/rejectCancel/
 // history), which this module has no business knowing about. This module
 // only creates the buttons and hands them back for the caller to attach
 // listeners to and toggle .disabled on. Export's handler IS self-contained
 // (LLMExport.exportConversation + a status message), so it's wired up here
 // directly. Import's is NOT -- rebuilding the conversation from an imported
 // file needs the same table/figure/reference/equation link-resolution
-// context a live request does (see llm-chat-pane.js's onImport), which is
+// context a live request does (see chat-pane.js's onImport), which is
 // exactly the kind of business logic this module otherwise stays out of.
 LLMUIButtonRow = {
 	// `getActiveItem()` resolves the PDF attachment to clear cache for /
@@ -33,8 +33,8 @@ LLMUIButtonRow = {
 	// a Clear click -- wired directly to ui/chat.js's clear(), which this
 	// module doesn't hold a reference to itself. `sendIconURL`/
 	// `cancelIconURL`/`uploadIconURL`/`fileExportIconURL`/`clearAllIconURL`
-	// are plain file:/jar: URLs (see llm-chat-pane.js's onRender, rootURI +
-	// "icons/...svg"), rendered via LLMUIIcon.create -- `uploadIconURL`
+	// are plain file:/jar: URLs (see chat-pane.js's onRender, rootURI +
+	// "res/icons/...svg"), rendered via LLMUIIcon.create -- `uploadIconURL`
 	// covers Import (same icon LLMUIConversationHistory's Load button uses,
 	// per the same "bringing something INTO the current view" idea).
 	create(doc, { getActiveItem, onMessage, discardImagesButton, getTranscript, onImport, onExported, onClearConversation, sendIconURL, cancelIconURL, uploadIconURL, fileExportIconURL, clearAllIconURL } = {}) {
@@ -93,7 +93,7 @@ LLMUIButtonRow = {
 
 		// Imports a conversation previously written by Export, REPLACING
 		// whatever's currently in the conversation area -- see
-		// llm-chat-pane.js's onImport for the actual file-picking/parsing/
+		// chat-pane.js's onImport for the actual file-picking/parsing/
 		// rebuilding.
 		let importButton = doc.createElement("button");
 		importButton.className = "llm-import";
@@ -106,7 +106,7 @@ LLMUIButtonRow = {
 		element.append(submitButton, stopButton, discardImagesButton);
 
 		// Clear/Export/Import -- placed under the Messages header instead
-		// (see llm-chat-pane.js's onRender), not alongside Submit/Stop above.
+		// (see chat-pane.js's onRender), not alongside Submit/Stop above.
 		let messagesRow = doc.createElement("div");
 		messagesRow.className = "llm-button-row llm-messages-actions-row";
 		messagesRow.append(clearConversationButton, exportButton, importButton);

@@ -13,7 +13,7 @@
 // where an uncaptioned one isn't worth surfacing at all -- but as a distinct,
 // separately-numbered "Formula N" series (equation_num: null, formula_num: N,
 // ascending in document order), since there's no real-paper number for the
-// model to cite them by -- see llm-chat-pane.js's ref:formula:N handling.
+// model to cite them by -- see chat-pane.js's ref:formula:N handling.
 //
 // Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_equations.js <pdf_path> <output_json_path> [structure_cache_path]
 // Output: JSON array of { page_num, equation_num, formula_num, label, text,

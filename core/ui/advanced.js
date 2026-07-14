@@ -3,7 +3,7 @@
 // tunables), Message history (the "Use message history" none/last-k/semantic
 // mode select, and its two accompanying caps -- Max history messages, Max
 // semantic history messages -- all on LLMPrompt), and Cache (the Clear Cache
-// checkbox list + button). Split out of llm-chat-pane.js's onRender for the
+// checkbox list + button). Split out of chat-pane.js's onRender for the
 // same reason as the other ui/ modules.
 LLMUIAdvanced = {
 	// A second <tr> placed right after a setting's own row, its description
@@ -143,8 +143,8 @@ LLMUIAdvanced = {
 	// caller's LLMChatPane.getActiveReaderAttachment()). `onMessage(text)` is
 	// called for user-facing status text -- routing this (e.g. to the Logs
 	// panel) is the caller's concern, not this module's. `clearCacheIconURL`/
-	// `refreshIconURL` are plain file:/jar: URLs (see llm-chat-pane.js's
-	// onRender, rootURI + "icons/...svg"), rendered via LLMUIIcon.create.
+	// `refreshIconURL` are plain file:/jar: URLs (see chat-pane.js's
+	// onRender, rootURI + "res/icons/...svg"), rendered via LLMUIIcon.create.
 	create(doc, { getActiveItem, onMessage, clearCacheIconURL, refreshIconURL } = {}) {
 		let details = doc.createElement("details");
 		details.className = "llm-advanced-details";
@@ -268,7 +268,7 @@ LLMUIAdvanced = {
 		// only inside onChange, which never fires before the whole render
 		// function (and therefore batchSizeRow's own assignment) has
 		// finished, same reasoning as the chat Settings row's own onChange
-		// in llm-chat-pane.js.
+		// in chat-pane.js.
 		let batchSizeRow;
 		let embeddingProviderModelSelect = LLMUIProviderModelSelect.create(doc, {
 			refreshIconURL,
@@ -288,7 +288,7 @@ LLMUIAdvanced = {
 			// Keeps LLMEmbeddings' per-(embedding provider,embedding model)
 			// "Batch size" in sync with whichever pair is actually selected --
 			// same rationale/pattern as the chat Settings row's own onChange
-			// in llm-chat-pane.js, just for the embedding pair instead.
+			// in chat-pane.js, just for the embedding pair instead.
 			onChange: (provider, model) => {
 				LLMEmbeddings.applyAdvancedSettingsFor(provider, model);
 				batchSizeRow?.refresh();
@@ -408,7 +408,7 @@ LLMUIAdvanced = {
 		// current values -- call after LLMPrompt.applyAdvancedSettingsFor
 		// runs (i.e. whenever the CHAT provider/model selection changes;
 		// see ui/provider-model-select.js's onChange, wired up in
-		// llm-chat-pane.js's onRender), so an already-rendered Advanced
+		// chat-pane.js's onRender), so an already-rendered Advanced
 		// panel reflects the newly-selected pair's own saved settings
 		// instead of silently keeping the previous pair's values on screen.
 		let refreshPairSettings = () => pairSettingRows.forEach(refresh => refresh());

@@ -10,7 +10,7 @@
 // the same "## Conversation" format this module writes. Split out as its
 // own top-level module (not ui/) since the markdown building + filesystem/
 // file-picker interaction is a self-contained feature, not UI construction
-// -- same rationale as request.js.
+// -- same rationale as llm/request.js.
 LLMExport = {
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Export]: " + msg);

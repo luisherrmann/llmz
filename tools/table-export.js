@@ -15,7 +15,7 @@
 // bibliography and can name outright, e.g. "download reference 5" -> just
 // extract the digit, no lookup needed), a table's `table_id` is an internal
 // identifier the user has never seen -- LLMIntent.detectIntent (see
-// intent.js) classifies the tool call from the raw prompt text ALONE, with
+// llm/intent.js) classifies the tool call from the raw prompt text ALONE, with
 // no access to this paper's actual table list, so a user naming a table by
 // its own printed label ("D.2", "D1") can only ever be captured as a STRING
 // at that stage; resolving which table_id it actually refers to needs a
@@ -53,10 +53,10 @@ LLMTableExport = {
 		return (result.text || "").trim();
 	},
 
-	// Native-tool-calling descriptor for this tool (see intent.js's
+	// Native-tool-calling descriptor for this tool (see llm/intent.js's
 	// detectIntent/_registry) -- same shape/rationale as
 	// LLMReferenceRetrieval.intentTool, see its own comment, including
-	// `resolver` bundling the four functions request.js's
+	// `resolver` bundling the four functions llm/request.js's
 	// _resolveIntentIndices needs.
 	intentTool: {
 		name: "export_tables",
@@ -150,7 +150,7 @@ LLMTableExport = {
 	// integer already shown next to the table it picked.
 	//
 	// `pageNum`, if given, adds the same "user is currently viewing page N"
-	// reader-context line llm-prompt.js's selectXWithLLM family already
+	// reader-context line llm/prompt.js's selectXWithLLM family already
 	// shows (reused directly via LLMPrompt._buildReaderContextLines, rather
 	// than duplicating that phrasing here), and each table's own page
 	// number is shown alongside its listing entry -- together these let a
@@ -300,7 +300,7 @@ LLMTableExport = {
 	// exceeding the model's context window (especially with images
 	// attached) or simply degrading output quality as the prompt grows.
 	// Batches run sequentially, not in parallel, unlike most other multi-
-	// item work in this plugin (e.g. request.js's _runReferenceWorkerPool)
+	// item work in this plugin (e.g. llm/request.js's _runReferenceWorkerPool)
 	// -- each batch is its own full (potentially large, potentially
 	// multimodal) model call, and firing several of those at once risks
 	// tripping a provider's per-minute rate limit in a way the smaller,
@@ -456,7 +456,7 @@ LLMTableExport = {
 		return fp;
 	},
 
-	// Resolves `tableIds` (already-resolved table_ids -- see request.js's
+	// Resolves `tableIds` (already-resolved table_ids -- see llm/request.js's
 	// _resolveIntentIndices) to their (label, caption, content) tuples,
 	// asks the model to format ALL of them as CSV in ONE call (see
 	// _buildCSVPrompt), splits the result on "[NEXT_TABLE]", and writes one

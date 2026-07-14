@@ -30,7 +30,7 @@ LLMFigures = {
 	// every getFigureIndex extraction, because a figure's image_data is a
 	// hard dependency of TWO things on the normal chat path, not just an
 	// occasional export: _embedRaw below (nomic-embed-vision needs a real
-	// image to embed) and request.js's "attach this figure as image context
+	// image to embed) and llm/request.js's "attach this figure as image context
 	// for a vision-capable model" feature (the image itself, not just a
 	// caption, is what gets sent) -- there's no realistic "figure resolved
 	// but its image never needed" case for figures the way there is for
@@ -200,7 +200,7 @@ LLMFigures = {
 			}
 			// figures.captionEmbedding was computed via LLMCitation.getEmbedding,
 			// which now routes through whichever embedding provider/model was
-			// selected AT THAT TIME (see llm-interfaces.js's getEmbedding) -- a
+			// selected AT THAT TIME (see llm/interfaces.js's getEmbedding) -- a
 			// cache built under a different provider/model is silently
 			// incompatible (not comparable via cosine similarity, even if the
 			// vector happens to be the same length), so it must invalidate here
@@ -325,7 +325,7 @@ LLMFigures = {
 	// Index shape: { figures: [{ page_num, figure_num, figure_extra_num, figure_id, label, caption, embedding, captionEmbedding, image_data, position }] }
 	// `onEmbeddingStart(provider, model)`, if given, is called ONLY when a
 	// cache miss/staleness actually forces the caption embeddings to be
-	// recomputed (see llm-citation.js's _getIndex, same pattern) -- its
+	// recomputed (see citation.js's _getIndex, same pattern) -- its
 	// return value (e.g. a Logs entry's content element) is updated in
 	// place with a completion line once recomputation finishes, rather
 	// than logging start/done as two separate messages.
@@ -393,8 +393,8 @@ LLMFigures = {
 	// correctly handles explicit "figure N" references, since the caption text
 	// itself starts with "Figure N:".
 	// `progress`, if given, has its setProgress(current, total) called as
-	// batches complete -- same in-place progress reporting llm-citation.js's
-	// _getIndex does for its own embedding loop (see request.js's
+	// batches complete -- same in-place progress reporting citation.js's
+	// _getIndex does for its own embedding loop (see llm/request.js's
 	// onEmbeddingStart for what setProgress actually does to the Logs/reply
 	// bubble). Batched+concurrency-limited via LLMCitation.embedBatched
 	// rather than one request per figure -- see its own comment.

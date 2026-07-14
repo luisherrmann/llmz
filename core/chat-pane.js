@@ -205,7 +205,7 @@ LLMChatPane = {
 		await LLMTables.init(this.rootURI);
 		try {
 			let hljsCss = await Zotero.File.getContentsFromURL(this.rootURI + "vendor/atom-one-dark.min.css");
-			let markdownCss = await Zotero.File.getContentsFromURL(this.rootURI + "style.css");
+			let markdownCss = await Zotero.File.getContentsFromURL(this.rootURI + "styles/style.css");
 			this._css = hljsCss + markdownCss;
 		}
 		catch (e) {
@@ -415,7 +415,7 @@ LLMChatPane = {
 	// `citationPositions`, if given, is a Map of citation phrase -> resolved
 	// { pageIndex, rects } | null (see document/citations.js's
 	// LLMCitationPosition.resolvePositions, called synchronously by
-	// request.js BEFORE rendering -- fast, in-process, no network calls,
+	// llm/request.js BEFORE rendering -- fast, in-process, no network calls,
 	// see its own comment for why). Doubles as citation VERIFICATION, not
 	// just navigation: a phrase that resolves to an actual position was
 	// found verbatim (modulo whitespace/hyphen normalization) somewhere in
@@ -469,7 +469,7 @@ LLMChatPane = {
 			//
 			// The find: lazy match, up to the literal ">)" close rather than
 			// any bare ">" -- a "find" payload can be a citation phrase
-			// grounded to a verbatim PDF sentence (see llm-citation.js's
+			// grounded to a verbatim PDF sentence (see citation.js's
 			// groundCitations), which can itself contain a literal ">" (e.g.
 			// "values >20"). With a bare-">" terminator, that truncates the
 			// match early and the whole token fails to match at all (regex
@@ -483,7 +483,7 @@ LLMChatPane = {
 			// grounding to a PDF sentence with a stray ">" in it).
 			//
 			// That alone isn't quite enough either, now that citations quote
-			// a full verbatim sentence (see llm-prompt.js's citation format
+			// a full verbatim sentence (see llm/prompt.js's citation format
 			// instructions): a phrase can contain the literal TWO-character
 			// sequence ">)" itself (e.g. "...the effect (>)5 in most
 			// cases..."), which would truncate the match at that false
@@ -496,7 +496,7 @@ LLMChatPane = {
 			// extending the match past any ">)" that ISN'T followed by such
 			// a boundary (e.g. followed by a digit or letter continuing the
 			// sentence) until it finds the real one. Same pattern (and same
-			// reasoning) in llm-citation.js's groundCitations and request.js's
+			// reasoning) in citation.js's groundCitations and llm/request.js's
 			// citation-position query extraction -- keep all three in sync.
 			/\$\$[\s\S]+?\$\$|\$(?!\s)[^$\n]*?[^\s$]\$(?!\d)|\[([^\]]+)\]\(<(find|ref):([\s\S]+?)>\)(?=[\s.,;:!?)\]]|\[|$)/g,
 			(whole, label, kind, payload) => {
@@ -696,8 +696,8 @@ LLMChatPane = {
 
 	registerItemPane() {
 		if (this.paneID) return;
-		// icons/robot_2_pane.svg -- NOT the same file as the plain
-		// icons/robot_2_24dp_*.svg used elsewhere (buttons, via iconURL()
+		// res/icons/robot_2_pane.svg -- NOT the same file as the plain
+		// res/icons/robot_2_24dp_*.svg used elsewhere (buttons, via iconURL()
 		// in onRender below). Material Symbols glyphs are exported
 		// "full-bleed" (the glyph fills essentially the whole 24x24 box),
 		// which reads fine at button size but got clipped at the corners
@@ -710,11 +710,11 @@ LLMChatPane = {
 			pluginID: this.id,
 			header: {
 				l10nID: "llm-chat-pane-header",
-				icon: this.rootURI + "icons/robot_2_pane.svg",
+				icon: this.rootURI + "res/icons/robot_2_pane.svg",
 			},
 			sidenav: {
 				l10nID: "llm-chat-pane-sidenav",
-				icon: this.rootURI + "icons/robot_2_pane.svg",
+				icon: this.rootURI + "res/icons/robot_2_pane.svg",
 				orderable: true,
 			},
 			onItemChange: ({ item, setEnabled }) => {
@@ -742,10 +742,10 @@ LLMChatPane = {
 				input.placeholder = "Type here...";
 				input.className = "llm-input";
 
-				// Every icons/*.svg file follows the same Material Symbols
+				// Every res/icons/*.svg file follows the same Material Symbols
 				// export naming pattern -- this just saves repeating that
 				// suffix at every one of the many call sites below.
-				let iconURL = (name) => this.rootURI + `icons/${name}_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg`;
+				let iconURL = (name) => this.rootURI + `res/icons/${name}_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg`;
 
 				let imagePaste = LLMUIImagePaste.create(doc, input, (text) => appendMessage("System", text), iconURL("remove_selection"));
 
@@ -761,7 +761,7 @@ LLMChatPane = {
 					refreshIconURL: iconURL("refresh"),
 					// Keeps LLMPrompt's per-(provider,model) advanced settings
 					// (Max PDF context, Max selected figures, etc. -- see
-					// llm-prompt.js's own comment) in sync with the CHAT
+					// llm/prompt.js's own comment) in sync with the CHAT
 					// provider/model pair specifically -- fires on every
 					// actual pair change, including the auto-select that
 					// happens when switching provider, not just an explicit
@@ -937,7 +937,7 @@ LLMChatPane = {
 					// candidate yet (same fallback embedNewMessage already
 					// relies on -- see its own comment). A Logs entry tracks
 					// progress (same "[bar] current/total (pct%)" format as
-					// request.js's own onEmbeddingStart) so a slow re-embed
+					// llm/request.js's own onEmbeddingStart) so a slow re-embed
 					// of a long conversation is at least visible, not just
 					// silently pending.
 					let embedTranscript = chat.exportTranscript();
@@ -978,7 +978,7 @@ LLMChatPane = {
 					let pdfItem = this.getActiveReaderAttachment();
 					let markdown = await IOUtils.readUTF8(conv.path);
 					// Mirrored onto a chat bubble as well as Logs -- same
-					// reasoning as request.js's own onEmbeddingStart -- so
+					// reasoning as llm/request.js's own onEmbeddingStart -- so
 					// the in-progress status is visible immediately in the
 					// conversation, not just the Logs panel. The bubble
 					// itself is transient: loadTranscriptIntoChat's own
@@ -1213,7 +1213,7 @@ LLMChatPane = {
 					// above stopButton's click listener.
 					stopButton.disabled = false;
 
-					// See request.js for the actual request flow (download-
+					// See llm/request.js for the actual request flow (download-
 					// reference lookup or normal chat, through to the rendered
 					// reply) -- everything below is just: kick it off, wait for
 					// it, report how it ended, and reset button state.

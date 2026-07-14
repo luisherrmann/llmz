@@ -45,39 +45,39 @@ async function startup({ id, version, rootURI }) {
 	// LLMCitation's own embedding methods (getEmbedding/embedBatched/
 	// cosineSimilarity/getEmbeddingModel) just delegate to LLMEmbeddings --
 	// must load before it.
-	Services.scriptloader.loadSubScript(rootURI + "embeddings.js");
-	Services.scriptloader.loadSubScript(rootURI + "llm-citation.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/llm/embeddings.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/citation.js");
 	// Depends on LLMCitation's own embedding API (getEmbedding/embedBatched/
 	// cosineSimilarity) -- must load after it.
-	Services.scriptloader.loadSubScript(rootURI + "semantic-history.js");
-	Services.scriptloader.loadSubScript(rootURI + "document/figures.js");
-	Services.scriptloader.loadSubScript(rootURI + "document/tables.js");
-	Services.scriptloader.loadSubScript(rootURI + "document/references.js");
-	Services.scriptloader.loadSubScript(rootURI + "document/structure_sdt.js");
-	Services.scriptloader.loadSubScript(rootURI + "document/equations.js");
-	Services.scriptloader.loadSubScript(rootURI + "document/notes.js");
-	Services.scriptloader.loadSubScript(rootURI + "document/citations.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/semantic-history.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/document/figures.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/document/tables.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/document/references.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/document/structure_sdt.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/document/equations.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/document/notes.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/document/citations.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/reference-retrieval.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/reference-linker.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/table-export.js");
-	Services.scriptloader.loadSubScript(rootURI + "llm-interfaces.js");
-	Services.scriptloader.loadSubScript(rootURI + "intent.js");
-	Services.scriptloader.loadSubScript(rootURI + "llm-prompt.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/icon.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/logs.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/chat.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/provider-model-select.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/image-paste.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/providers.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/keyboard-shortcuts.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/advanced.js");
-	Services.scriptloader.loadSubScript(rootURI + "conversation-history.js");
-	Services.scriptloader.loadSubScript(rootURI + "export.js");
-	Services.scriptloader.loadSubScript(rootURI + "import.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/past-conversations.js");
-	Services.scriptloader.loadSubScript(rootURI + "ui/button-row.js");
-	Services.scriptloader.loadSubScript(rootURI + "request.js");
-	Services.scriptloader.loadSubScript(rootURI + "llm-chat-pane.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/llm/interfaces.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/llm/intent.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/llm/prompt.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/icon.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/logs.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/chat.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/provider-model-select.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/image-paste.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/providers.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/keyboard-shortcuts.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/advanced.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/conversation-history.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/export.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/import.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/past-conversations.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/ui/button-row.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/llm/request.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/chat-pane.js");
 	await LLMReferences.init(rootURI);
 	LLMChatPane.init({ id, version, rootURI });
 	LLMReferenceRetrieval.init(LLMInterfaces.streamModel.bind(LLMInterfaces));

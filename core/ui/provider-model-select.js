@@ -1,6 +1,6 @@
 // The provider + model dropdown row (e.g. "OpenAI" + "gpt-5.4" + a refresh
 // button) at the top of the chat pane's controls. Split out of
-// llm-chat-pane.js's onRender for the same reason as ui/logs.js/ui/chat.js --
+// chat-pane.js's onRender for the same reason as ui/logs.js/ui/chat.js --
 // self-contained DOM + behavior that only needs LLMInterfaces (the
 // provider/model registry + persisted selection), not anything else in the
 // pane.
@@ -81,13 +81,13 @@ LLMUIProviderModelSelect = {
 	},
 
 	// Builds the provider+model dropdown row for one item-pane render.
-	// `refreshIconURL` is a plain file:/jar: URL (see llm-chat-pane.js's
-	// onRender, rootURI + "icons/refresh_*.svg"), rendered via the shared
+	// `refreshIconURL` is a plain file:/jar: URL (see chat-pane.js's
+	// onRender, rootURI + "res/icons/refresh_*.svg"), rendered via the shared
 	// CSS mask-image .llm-icon class (see style.css) -- same technique as
 	// ui/past-conversations.js's edit/done_outline toggle icons.
 	// All the state hooks (`getProvider`/`saveProvider`/`getSelectedModel`/
 	// `saveSelectedModel`/`listModels`) default to LLMInterfaces' CHAT
-	// provider/model state, so existing call sites (llm-chat-pane.js's
+	// provider/model state, so existing call sites (chat-pane.js's
 	// Settings row) need no changes. ui/advanced.js's Embeddings section
 	// passes the `_embeddingProvider`/`_selectedEmbeddingModel` equivalents
 	// instead, so the exact same row (options list, sorting, refresh
@@ -123,7 +123,7 @@ LLMUIProviderModelSelect = {
 		// separate modelSelect "change" event of its own). Undefined by
 		// default so the Embeddings row (ui/advanced.js, which reuses this
 		// same create() with its own get/save hooks) stays a no-op here --
-		// only the main chat Settings row (llm-chat-pane.js's onRender)
+		// only the main chat Settings row (chat-pane.js's onRender)
 		// passes this, to keep LLMPrompt's per-(provider,model) advanced
 		// settings in sync with whichever pair is actually selected.
 		onChange,

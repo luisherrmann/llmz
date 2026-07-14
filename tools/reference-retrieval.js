@@ -1,7 +1,7 @@
 // Resolves a bibliography entry from the paper currently open in the reader
 // to an online source, and saves it into the user's Zotero library (with a
 // PDF attached directly, when one can be found). Split out from
-// llm-chat-pane.js since this whole pipeline is self-contained -- distinct
+// chat-pane.js since this whole pipeline is self-contained -- distinct
 // from document/references.js, which only extracts/parses the bibliography
 // list itself -- and needs only a single narrow hook back into the chat pane: a
 // way to call the currently active LLM (see init()).
@@ -25,11 +25,11 @@ LLMReferenceRetrieval = {
 		return (result.text || "").trim();
 	},
 
-	// Native-tool-calling descriptor for this tool (see intent.js's
+	// Native-tool-calling descriptor for this tool (see llm/intent.js's
 	// detectIntent/_registry) -- {name, description, schema, resolver} in
-	// the shape intent.js's registry expects: name/description/schema are
-	// llm-interfaces.js's streamModel `opts.tools` shape; `resolver`
-	// bundles the four functions request.js's _resolveIntentIndices needs
+	// the shape llm/intent.js's registry expects: name/description/schema are
+	// llm/interfaces.js's streamModel `opts.tools` shape; `resolver`
+	// bundles the four functions llm/request.js's _resolveIntentIndices needs
 	// to turn a resolved intent into concrete reference numbers, so
 	// everything about this tool -- including how to resolve it, not just
 	// how to detect it -- lives in one place instead of being split across
@@ -39,9 +39,9 @@ LLMReferenceRetrieval = {
 	// methods, only diverging in what happens with the resolved numbers
 	// afterward.
 	// `schema`'s six-shape `type` enum is what `resolver` and
-	// downstream request.js consume -- see intent.js's _argumentsToIntent,
+	// downstream llm/request.js consume -- see llm/intent.js's _argumentsToIntent,
 	// which coerces a tool call's parsed `arguments` (see
-	// llm-interfaces.js's _finalizeToolCalls) into that same shape.
+	// llm/interfaces.js's _finalizeToolCalls) into that same shape.
 	intentTool: {
 		name: "download_reference",
 		description: [
@@ -85,7 +85,7 @@ LLMReferenceRetrieval = {
 		},
 	},
 
-	// Expands a LIST/RANGE/ALL intent (see intent.js's detectIntent) into a
+	// Expands a LIST/RANGE/ALL intent (see llm/intent.js's detectIntent) into a
 	// concrete, deduplicated, sorted list of reference numbers -- pure
 	// arithmetic against the paper's own reference list, no model call
 	// needed, since the numbers are already explicit (or trivially
@@ -148,7 +148,7 @@ LLMReferenceRetrieval = {
 	// being overzealous) could otherwise match a large fraction of a long
 	// bibliography, turning one chat message into dozens of sequential
 	// downloads. A literal "download ALL references" request doesn't go
-	// through this path at all (see intent.js's dedicated "all" intent,
+	// through this path at all (see llm/intent.js's dedicated "all" intent,
 	// resolved by resolveExplicitIndices with no cap and no model call),
 	// so this limit only ever affects the fuzzier criterion case.
 	_MAX_SELECTION_RESULTS: 10,
@@ -378,7 +378,7 @@ LLMReferenceRetrieval = {
 	},
 
 	// Serializes DuckDuckGo search calls across however many references are
-	// being downloaded concurrently (see request.js, which now runs several
+	// being downloaded concurrently (see llm/request.js, which now runs several
 	// downloadReferenceToLibrary calls in parallel rather than one at a
 	// time) -- confirmed empirically that _searchWeb's shared HTML endpoint,
 	// unlike per-candidate HEAD requests/HiddenBrowser page loads (which hit
@@ -858,15 +858,15 @@ LLMReferenceRetrieval = {
 	// than a second full translate+save that might duplicate the item.
 	// `onProgress(msg)`, if given, is called at the start of every stage
 	// below (and, within stage 2/4's web search, once per query/candidate --
-	// see _findPDFViaWebSearch) -- surfaced by the caller (request.js) to
+	// see _findPDFViaWebSearch) -- surfaced by the caller (llm/request.js) to
 	// both the Logs panel and the reply bubble, so a slow lookup shows WHICH
 	// stage it's actually stuck in, rather than a single opaque "searching"
 	// message for the whole multi-stage pipeline.
 	// onProgress(msg)  -- fine-grained, one call per stage/query/candidate,
-	//                     for the Logs panel only (see request.js).
+	//                     for the Logs panel only (see llm/request.js).
 	// onStage(msg)     -- coarse, one call per major stage transition, using
 	//                     short generic phrasing -- for the visible reply
-	//                     bubble (see request.js), which shouldn't churn
+	//                     bubble (see llm/request.js), which shouldn't churn
 	//                     through every query/candidate onProgress reports.
 	async downloadReferenceToLibrary(index, pdfItem, onProgress, onStage) {
 		if (!pdfItem) {

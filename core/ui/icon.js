@@ -9,8 +9,8 @@
 // (refresh), and ui/button-row.js/ui/image-paste.js (send/cancel/delete/
 // upload/file_export/remove_selection).
 LLMUIIcon = {
-	// `iconURL` is a plain file:/jar: URL (see llm-chat-pane.js's onRender,
-	// rootURI + "icons/*.svg"). Falls back to a plain, imageless span if
+	// `iconURL` is a plain file:/jar: URL (see chat-pane.js's onRender,
+	// rootURI + "res/icons/*.svg"). Falls back to a plain, imageless span if
 	// omitted, rather than throwing -- same as every call site's previous
 	// `if (iconURL) ...` guard.
 	create(doc, iconURL) {

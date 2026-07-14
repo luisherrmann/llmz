@@ -8,8 +8,8 @@
 // these four intents is handled by its own method (_handleDownload/
 // _handleLink/_handleTableExport/_handleNormalChat) -- send() itself is
 // just a thin orchestrator: set up cancellation state, detect which intent
-// applies (see intent.js's detectIntent), and dispatch to the matching
-// handler. Split out of llm-chat-pane.js's submitButton click handler,
+// applies (see llm/intent.js's detectIntent), and dispatch to the matching
+// handler. Split out of chat-pane.js's submitButton click handler,
 // which used to contain this whole flow inline -- what's left there now is
 // just reading/validating the prompt, input history bookkeeping, and
 // Submit/Stop button state, all of which are UI concerns distinct from the
@@ -33,7 +33,7 @@
 //   doc -- for creating the rendered-reply <div>.
 //   imagePaste -- ui/image-paste.js's instance, for getDataUris().
 //   takeCapturedSelection() -- reads-and-clears the reader-text-selection
-//     snapshot the caller stashes on input focus (see llm-chat-pane.js's
+//     snapshot the caller stashes on input focus (see chat-pane.js's
 //     `capturedSelection`), needed as a fallback for when the reader's live
 //     selection has already been cleared by the time this request runs
 //     (e.g. focusing the prompt textarea can itself clear a page
@@ -74,10 +74,10 @@ LLMRequest = {
 	// linking strictly needs, but shared for simplicity.
 	_REFERENCE_CONCURRENCY: 8,
 
-	// Resolves `intent` (see intent.js's detectIntent) down to a concrete
+	// Resolves `intent` (see llm/intent.js's detectIntent) down to a concrete
 	// list of numbers, against whichever index `tool`'s own resolver bundle
-	// (see intent.js's getResolver -- each tool's intentTool.resolver,
-	// registered alongside its name/description/schema in intent.js's
+	// (see llm/intent.js's getResolver -- each tool's intentTool.resolver,
+	// registered alongside its name/description/schema in llm/intent.js's
 	// _registry, rather than a second per-tool map kept here) operates on.
 	// Shared across every tool, since this resolution step is structurally
 	// identical for all of them -- only which INDEX it resolves against,
@@ -105,7 +105,7 @@ LLMRequest = {
 	// (single/describe/select/list -- NOT explicit, which is pure
 	// arithmetic with no model call), so a page-scoped table request
 	// ("export the table on this page") has something to match against --
-	// same reader-context signal llm-prompt.js's selectXWithLLM family
+	// same reader-context signal llm/prompt.js's selectXWithLLM family
 	// already gets. References/etc. simply ignore the extra argument (a
 	// bibliography entry has no page of its own).
 	async _resolveIntentIndices(tool, intent, pdfItem, pageNum) {
@@ -676,7 +676,7 @@ LLMRequest = {
 			// conversation, not just the Logs panel) -- only when a cache
 			// miss/staleness actually forces embeddings to be recomputed
 			// (e.g. after switching providers in Advanced settings), not on
-			// every request -- see llm-citation.js's _getIndex/
+			// every request -- see citation.js's _getIndex/
 			// document/figures.js's getFigureIndex, which both only call
 			// this on that path. `setProgress(current, total)` is called
 			// once per item as recomputation runs -- the Logs line gets the
@@ -801,7 +801,7 @@ LLMRequest = {
 			// `ref:figure:N` / `ref:reference:N` / `ref:equation:N` /
 			// `ref:formula:N` / `ref:note:KEY` handling. Built via
 			// LLMPrompt.buildLinkIndex so import (see import.js and
-			// llm-chat-pane.js's onImport) can reconstruct identical links
+			// chat-pane.js's onImport) can reconstruct identical links
 			// for a historical message too, from the same PDF's cached
 			// indexes (and, for notes, its still-existing annotations) --
 			// see buildLinkIndex's own comment for how.
@@ -901,13 +901,13 @@ LLMRequest = {
 				// citation the exact matcher can't anchor at all -- a
 				// genuine paraphrase, which the model is instructed to keep
 				// rare by quoting one full verbatim sentence (see
-				// llm-prompt.js's citation format instructions) but can't
+				// llm/prompt.js's citation format instructions) but can't
 				// eliminate -- so this can occasionally cost one batched
 				// network round trip, not per-citation ones.
 				let citationPositions = null;
 				if (pdfItem) {
 					// Boundary lookahead (matching _renderMarkdown's own
-					// regex and llm-citation.js's groundCitations exactly --
+					// regex and citation.js's groundCitations exactly --
 					// see either one's comment for why) so a citation
 					// phrase that happens to contain a literal ">)" doesn't
 					// get truncated at that false terminator. Must extract
@@ -1102,7 +1102,7 @@ LLMRequest = {
 			// reference N"/"export table N as CSV" request short-circuits
 			// the normal chat flow entirely, since the main model has
 			// nothing useful to add to a request this specific.
-			// LLMIntent.detectIntent (see intent.js) owns deciding WHICH of
+			// LLMIntent.detectIntent (see llm/intent.js) owns deciding WHICH of
 			// the three tools (if any) applies, via native tool-calling.
 			try {
 				let detected = await LLMIntent.detectIntent(prompt, (msg) => {

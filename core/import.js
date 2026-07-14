@@ -1,6 +1,6 @@
 // Reads a conversation previously written by export.js's LLMExport back into
 // [{ role, time, text }] entries, for repopulating ui/chat.js's message list
-// (see llm-chat-pane.js's onImport, which also rebuilds table/figure/
+// (see chat-pane.js's onImport, which also rebuilds table/figure/
 // reference/equation links for each imported message using the active PDF's
 // cached extraction indexes, and passes `time` back into
 // chat.appendMessage() to preserve the original timestamp instead of
@@ -58,7 +58,7 @@ LLMImport = {
 	// basic shape buildMarkdown produces. Falls back to the older
 	// "**Role:**" heading (no timestamp) for files exported before
 	// timestamps were added, leaving `time` empty in that case -- see
-	// llm-chat-pane.js's onImport, which substitutes the current time when
+	// chat-pane.js's onImport, which substitutes the current time when
 	// `time` comes back empty. Any block that doesn't match either shape is
 	// skipped (and logged), rather than aborting the whole import over one
 	// bad block.

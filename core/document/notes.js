@@ -1,7 +1,7 @@
 // Retrieves the user's own annotations on the current PDF -- sticky notes,
 // highlights, and underlines -- as a selectable context source alongside
 // figures/tables/equations/references (selection itself lives in
-// llm-prompt.js's selectNoteWithLLM, following the same "ask the LLM to pick
+// llm/prompt.js's selectNoteWithLLM, following the same "ask the LLM to pick
 // the single best match" pattern as selectTableWithLLM/selectFigureWithLLM/
 // selectEquationWithLLM).
 //

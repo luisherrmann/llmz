@@ -1,5 +1,4 @@
 LLMTables = {
-	_embedScriptName: "embed_tables.py",
 	// SDT-only detection (see scripts/extract_tables_sdt.js) -- replaced the
 	// old caption-anchored PyMuPDF pipeline (extract_tables.py, since
 	// removed), which structurally couldn't find tables with no caption at
@@ -18,14 +17,13 @@ LLMTables = {
 	// image-grounded CSV conversion), against the bounding box SDT already
 	// found -- avoids paying rendering cost on every chat message for
 	// tables that never end up needing a rendered image at all. Stays
-	// PyMuPDF (via _runPython, like _embedScriptName) rather than Zotero's
-	// own document-worker pdf.js rendering pipeline -- that was prototyped
-	// too, but measured ~2.5-3x slower even after matching render scale and
-	// JPEG output (Node/ESM/canvas startup overhead, not encode work, so it
-	// doesn't shrink with tuning), and this plugin already requires the
-	// Python venv regardless for figure extraction/embedding
-	// (document/figures.js), so PyMuPDF here isn't adding a new dependency
-	// either way.
+	// PyMuPDF (via _runPython) rather than Zotero's own document-worker
+	// pdf.js rendering pipeline -- that was prototyped too, but measured
+	// ~2.5-3x slower even after matching render scale and JPEG output
+	// (Node/ESM/canvas startup overhead, not encode work, so it doesn't
+	// shrink with tuning), and this plugin already requires the Python venv
+	// regardless for figure extraction (document/figures.js), so PyMuPDF
+	// here isn't adding a new dependency either way.
 	_renderScriptName: "render_crops.py",
 	_cacheVersion: 3, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_indexCache: new Map(),
@@ -51,7 +49,7 @@ LLMTables = {
 		try {
 			let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
 			await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
-			for (let name of [this._embedScriptName, this._renderScriptName]) {
+			for (let name of [this._renderScriptName]) {
 				let src = await Zotero.File.getContentsFromURL(rootURI + "scripts/" + name);
 				let destPath = this._scriptPath(name);
 				// Skipped when unchanged -- an unconditional rewrite here bumps
@@ -114,9 +112,9 @@ LLMTables = {
 	async _scriptFingerprint() {
 		try {
 			// Only the SDT script matters -- detection is SDT-only (see
-			// _extractRaw/getTableIndex), and embed_tables.py isn't invoked
-			// right now either, so their mtimes shouldn't affect cache
-			// validity.
+			// _extractRaw/getTableIndex); render_crops.py's own mtime
+			// shouldn't affect cache validity since it only ever fills in
+			// image_data lazily, on demand, after the index is already built.
 			let stat = await IOUtils.stat(this._nodeScriptPath(this._sdtScriptName));
 			return `v${this._cacheVersion}|${stat.size}:${stat.lastModified}`;
 		}
@@ -166,24 +164,6 @@ LLMTables = {
 		IOUtils.remove(outputPath).catch(() => {});
 		this.log(`_extractRaw: extracted ${tables.length} tables`);
 		return tables;
-	},
-
-	// Embeds each table's cropped image using nomic-embed-vision (image embedding).
-	async _embedRaw(item, tables) {
-		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
-		let inputPath = PathUtils.join(scriptsDir, `embed_in_${item.id}.json`);
-		let outputPath = PathUtils.join(scriptsDir, `embed_out_${item.id}.json`);
-		await IOUtils.writeUTF8(inputPath, JSON.stringify(tables));
-		try {
-			await this._runPython(this._embedScriptName, inputPath, outputPath);
-		}
-		finally {
-			IOUtils.remove(inputPath).catch(() => {});
-		}
-		let embedded = JSON.parse(await IOUtils.readUTF8(outputPath));
-		IOUtils.remove(outputPath).catch(() => {});
-		this.log(`_embedRaw: embedded ${embedded.length} tables`);
-		return embedded;
 	},
 
 	// Lazily renders image_data for whichever of `tables` don't already have
@@ -239,7 +219,7 @@ LLMTables = {
 
 	// Embeds each table's "label: caption" and its flattened cell content as text
 	// (nomic-embed-text), so a query can be matched against either via text-to-text
-	// similarity, alongside the image embedding from _embedRaw.
+	// similarity.
 	async _addTextEmbeddings(tables) {
 		if (!tables.length) return tables;
 		let textModel = await LLMCitation.getEmbeddingModel();
@@ -269,18 +249,15 @@ LLMTables = {
 		}
 
 		let tables = await this._extractRaw(item, onMessage);
-		// The embedding CALLS in _embedRaw/_addTextEmbeddings are skipped
-		// while the Python path is bypassed (see _sdtScriptName's own
-		// comment) -- image_data is always null from the SDT-only script
-		// (no PyMuPDF rendering), so _embedRaw would have nothing real to
-		// embed, and neither embedding is on the live selection path anyway
-		// (selectTablesWithLLM doesn't use them -- see llm/prompt.js;
-		// getBestMatchingTableByImage/ByTextMax, which do, aren't called
-		// from llm/request.js). contentText itself, though, is cheap (no
-		// network call, just a local join -- see _flattenTableData) and is
-		// a real dependency of tools/table-export.js's CSV-conversion
-		// prompt, so it's still computed unconditionally here rather than
-		// only as a side effect of the (now-skipped) embedding step.
+		// _addTextEmbeddings is deliberately never called here -- neither it
+		// nor the (since-removed) image-embedding step is on the live
+		// selection path (selectTablesWithLLM doesn't use them -- see
+		// llm/prompt.js; getBestMatchingTableByImage/ByTextMax, which do,
+		// aren't called from llm/request.js). contentText itself, though, is
+		// cheap (no network call, just a local join -- see
+		// _flattenTableData) and is a real dependency of
+		// tools/table-export.js's CSV-conversion prompt, so it's still
+		// computed unconditionally here.
 		for (let tab of tables) {
 			tab.contentText = this._flattenTableData(tab.data);
 		}

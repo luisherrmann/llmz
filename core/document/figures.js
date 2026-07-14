@@ -28,19 +28,16 @@ LLMFigures = {
 	// document/tables.js's own use of this same script (invoked lazily,
 	// only on-demand for a table export), this runs EAGERLY, right after
 	// every getFigureIndex extraction, because a figure's image_data is a
-	// hard dependency of TWO things on the normal chat path, not just an
-	// occasional export: _embedRaw below (nomic-embed-vision needs a real
-	// image to embed) and llm/request.js's "attach this figure as image context
-	// for a vision-capable model" feature (the image itself, not just a
-	// caption, is what gets sent) -- there's no realistic "figure resolved
-	// but its image never needed" case for figures the way there is for
-	// tables (whose image is only needed for the comparatively rare
+	// hard dependency of llm/request.js's "attach this figure as image
+	// context for a vision-capable model" feature (the image itself, not
+	// just a caption, is what gets sent) -- there's no realistic "figure
+	// resolved but its image never needed" case for figures the way there
+	// is for tables (whose image is only needed for the comparatively rare
 	// image-grounded CSV export), so deferring it here would just mean
 	// paying the same render cost anyway, on every relevant chat request
 	// rather than once at extraction time.
 	_renderScriptName: "render_crops.py",
-	_embedScriptName: "embed_figures.py",
-	_cacheVersion: 4, // bump when the cached index schema changes (JS-side, not just Python scripts)
+	_cacheVersion: 5, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_venvMissing: false,
 	_indexCache: new Map(),
 
@@ -62,17 +59,16 @@ LLMFigures = {
 	},
 
 	async init(rootURI) {
-		// Still required -- render_crops.py needs PyMuPDF, embed_figures.py
-		// needs transformers/torch/Pillow/einops -- even though DETECTION
-		// itself (extract_figures_sdt.js, deployed separately by
+		// Still required -- render_crops.py needs PyMuPDF -- even though
+		// DETECTION itself (extract_figures_sdt.js, deployed separately by
 		// LLMReferences alongside its own sdt/ copy) no longer needs it.
 		let pythonPath = this._pythonPath();
 		if (!await IOUtils.exists(pythonPath)) {
 			this._venvMissing = true;
 			this.log(`init: venv not found at ${pythonPath}`);
-			this.log("init: set it up with:");
-			this.log("  /opt/homebrew/bin/python3 -m venv ~/Zotero/LLMz/venv");
-			this.log("  ~/Zotero/LLMz/venv/bin/pip install pymupdf transformers torch Pillow einops");
+			this.log("init: set it up with the \"venv\" button, or manually:");
+			this.log("  python3 -m venv ~/Zotero/LLMz/venv");
+			this.log("  ~/Zotero/LLMz/venv/bin/pip install -r requirements.txt");
 		}
 		else {
 			this._venvMissing = false;
@@ -82,7 +78,7 @@ LLMFigures = {
 		try {
 			let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
 			await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
-			for (let name of [this._imageListScriptName, this._renderScriptName, this._embedScriptName]) {
+			for (let name of [this._imageListScriptName, this._renderScriptName]) {
 				let src = await Zotero.File.getContentsFromURL(rootURI + "scripts/" + name);
 				let destPath = this._scriptPath(name);
 				// Skipped when unchanged -- an unconditional rewrite here bumps
@@ -150,7 +146,7 @@ LLMFigures = {
 			let parts = [`v${this._cacheVersion}`];
 			let sdtStat = await IOUtils.stat(this._nodeScriptPath(this._sdtScriptName));
 			parts.push(`${sdtStat.size}:${sdtStat.lastModified}`);
-			for (let name of [this._imageListScriptName, this._renderScriptName, this._embedScriptName]) {
+			for (let name of [this._imageListScriptName, this._renderScriptName]) {
 				let stat = await IOUtils.stat(this._scriptPath(name));
 				parts.push(`${stat.size}:${stat.lastModified}`);
 			}
@@ -276,29 +272,8 @@ LLMFigures = {
 		return figures;
 	},
 
-	// Embed figures using nomic-embed-vision-v1.5.
-	// Returns entries with embedding vector, image_data kept (see
-	// embed_figures.py's own docstring -- needed so a cached figure can
-	// still be sent as image context to vision-capable models).
-	async _embedRaw(item, figures) {
-		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
-		let inputPath = PathUtils.join(scriptsDir, `embed_in_${item.id}.json`);
-		let outputPath = PathUtils.join(scriptsDir, `embed_out_${item.id}.json`);
-		await IOUtils.writeUTF8(inputPath, JSON.stringify(figures));
-		try {
-			await this._runPython(this._embedScriptName, inputPath, outputPath);
-		}
-		finally {
-			IOUtils.remove(inputPath).catch(() => {});
-		}
-		let embedded = JSON.parse(await IOUtils.readUTF8(outputPath));
-		IOUtils.remove(outputPath).catch(() => {});
-		this.log(`_embedRaw: embedded ${embedded.length} figures`);
-		return embedded;
-	},
-
 	// Returns the figure index for an item, using memory/disk cache where possible.
-	// Index shape: { figures: [{ page_num, figure_num, figure_extra_num, figure_id, label, caption, embedding, captionEmbedding, image_data, position }] }
+	// Index shape: { figures: [{ page_num, figure_num, figure_extra_num, figure_id, label, caption, captionEmbedding, image_data, position }] }
 	// `onEmbeddingStart(provider, model)`, if given, is called ONLY when a
 	// cache miss/staleness actually forces the caption embeddings to be
 	// recomputed (see citation.js's _getIndex, same pattern) -- its
@@ -308,9 +283,9 @@ LLMFigures = {
 	async getFigureIndex(item, onEmbeddingStart, onMessage) {
 		if (this._venvMissing) {
 			throw new Error(
-				"Python venv not found. Set it up with:\n"
-				+ "  /opt/homebrew/bin/python3 -m venv ~/Zotero/LLMz/venv\n"
-				+ "  ~/Zotero/LLMz/venv/bin/pip install pymupdf transformers torch Pillow einops"
+				"Python venv not found. Set it up with the \"venv\" button, or manually:\n"
+				+ "  python3 -m venv ~/Zotero/LLMz/venv\n"
+				+ "  ~/Zotero/LLMz/venv/bin/pip install -r requirements.txt"
 			);
 		}
 
@@ -336,9 +311,8 @@ LLMFigures = {
 
 		let figures = await this._extractRaw(item, onMessage);
 		if (figures.length) await this._renderImages(item, figures);
-		let embedded = figures.length ? await this._embedRaw(item, figures) : [];
-		let progress = embedded.length ? onEmbeddingStart?.(embeddingProvider, embeddingModel) : null;
-		embedded = await this._addCaptionEmbeddings(embedded, embeddingModel, progress, embeddingProvider);
+		let progress = figures.length ? onEmbeddingStart?.(embeddingProvider, embeddingModel) : null;
+		let embedded = await this._addCaptionEmbeddings(figures, embeddingModel, progress, embeddingProvider);
 		if (progress) progress.textContent = `Recomputed ${embedded.length} figure caption embedding${embedded.length === 1 ? "" : "s"} using ${embeddingProvider} ${embeddingModel}.`;
 		let index = { figures: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);

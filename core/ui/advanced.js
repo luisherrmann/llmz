@@ -177,12 +177,15 @@ LLMUIAdvanced = {
 	// are plain file:/jar: URLs (see chat-pane.js's onRender, rootURI +
 	// "res/icons/...svg"), rendered via LLMUIIcon.create. `cancelIconURL` is
 	// what Index All swaps to (becoming an Abort button) once running -- see
-	// runIndexAll's own comment.
+	// runIndexAll's own comment. `getTranscript()` (chat.exportTranscript,
+	// same as ui/button-row.js's own Export button uses) backfills
+	// LLMSemanticHistory when the "Use message history" mode switches TO
+	// "semantic" -- see the mode row below.
 	// Returns { contextElement, messageHistoryElement, embeddingsElement,
 	// cacheElement, clearCacheButton, refreshPairSettings } -- four
 	// independent <details> panels for the caller to place wherever it
 	// wants in the pane's controls (see chat-pane.js's onRender).
-	create(doc, { getActiveItem, onMessage, clearCacheIconURL, refreshIconURL, indexAllIconURL, clearAllIconURL, cancelIconURL } = {}) {
+	create(doc, { getActiveItem, onMessage, clearCacheIconURL, refreshIconURL, indexAllIconURL, clearAllIconURL, cancelIconURL, getTranscript } = {}) {
 		// Rows built from LLMPrompt's per-(provider,model) advanced settings
 		// (see its own comment) -- collected here so create()'s returned
 		// refreshPairSettings() can re-sync every one of these inputs after
@@ -237,8 +240,26 @@ LLMUIAdvanced = {
 			doc, "Use message history",
 			() => LLMPrompt.useMessageHistory,
 			(value) => {
+				let wasSemantic = LLMPrompt.useMessageHistory === "semantic";
 				LLMPrompt.saveAdvancedSetting("useMessageHistory", value);
 				updateHistoryRowsEnabled();
+				// Backfills the CURRENT conversation's embeddings in one
+				// batched call right when switching TO "semantic" --
+				// LLMSemanticHistory.embedNewMessage only runs going
+				// forward while mode is "semantic" (see llm/request.js),
+				// so without this, every message already in the transcript
+				// from before the switch would have no embedding and be
+				// silently invisible to selectRelevant's similarity
+				// ranking for the rest of this session (it only skips
+				// entries with no cached embedding, it doesn't recompute
+				// them on a cache miss -- see semantic-history.js's own
+				// comment). Skipped if it was ALREADY "semantic" (a no-op
+				// reselect, though a plain <select> wouldn't even fire
+				// onChange for that) to avoid re-embedding on every
+				// unrelated settings tweak.
+				if (value === "semantic" && !wasSemantic) {
+					LLMSemanticHistory.embedAll(getTranscript?.() ?? []);
+				}
 			},
 			[
 				{ value: "none", label: "None" },

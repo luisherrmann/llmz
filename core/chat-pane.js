@@ -749,10 +749,12 @@ LLMChatPane = {
 
 				let imagePaste = LLMUIImagePaste.create(doc, input, (text) => appendMessage("System", text), iconURL("remove_selection"));
 
-				// Header for the provider/model select + Providers/Keyboard
-				// Shortcuts/Advanced/Logs grouping below -- all
+				// Header for the provider/model select + Providers/Context/
+				// Message History/Embeddings/Cache grouping below -- all
 				// configuration, as opposed to the Conversation grouping
-				// (Conversation header onward) below it.
+				// (Conversation header onward) below it. Keyboard Shortcuts
+				// and Logs sit elsewhere now (promptSection and the Messages
+				// grouping respectively, see below), not in this group.
 				let settingsLabel = doc.createElement("div");
 				settingsLabel.className = "llm-section-label";
 				settingsLabel.textContent = "Settings";
@@ -1265,12 +1267,15 @@ LLMChatPane = {
 				// computed from controls.offsetHeight (see the
 				// section-height calculation right after), which needs to
 				// cover everything EXCEPT the scrollable area itself.
-				// logs.element sits below the "Prompt" header and above the
-				// textarea itself, inside promptSection -- not in the
-				// Settings group above.
+				// keyboardShortcuts.element sits below the "Prompt" header and
+				// above the textarea itself, inside promptSection -- not in
+				// the Settings group above. logs.element moved out of here
+				// too -- it now sits below the "Messages" label and above
+				// conversationHistory.element (Past Conversations), see the
+				// controls.append(...) call below.
 				let promptSection = doc.createElement("div");
 				promptSection.className = "llm-prompt-section";
-				promptSection.append(inputLabel, logs.element, input, imagePaste.row, buttonRow);
+				promptSection.append(inputLabel, keyboardShortcuts.element, input, imagePaste.row, buttonRow);
 
 				// Plain <hr>s (see style.css's .llm-section-divider) between
 				// Settings/Prompt/History -- a bit more visual separation
@@ -1283,20 +1288,26 @@ LLMChatPane = {
 				let promptDivider = doc.createElement("hr");
 				promptDivider.className = "llm-section-divider";
 
-				// Settings group, divider, Prompt section (header, Logs,
-				// textarea, pasted-image row, button row), divider,
-				// Messages label, History, Messages row -- a contiguous run
-				// within controls, in that order.
+				// Settings group (provider/model select, Embeddings,
+				// Providers, Context, Message History, Cache -- Keyboard
+				// Shortcuts moved into promptSection above), divider, Prompt
+				// section (header, Keyboard Shortcuts, textarea,
+				// pasted-image row, button row), divider, Messages label,
+				// Logs, History, Messages row -- a contiguous run within
+				// controls, in that order.
 				controls.append(
 					settingsLabel,
 					providerModelSelect.element,
+					advanced.embeddingsElement,
 					providers.element,
-					keyboardShortcuts.element,
-					advanced.element,
+					advanced.contextElement,
+					advanced.messageHistoryElement,
+					advanced.cacheElement,
 					settingsDivider,
 					promptSection,
 					promptDivider,
 					chat.label,
+					logs.element,
 					conversationHistory.element,
 					messagesRow
 				);

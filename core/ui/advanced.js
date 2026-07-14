@@ -1,20 +1,26 @@
-// The collapsible "Advanced" settings panel, split into three labeled
-// subsections (see _makeSection): Context (the two PDF-context-retrieval
-// tunables), Message history (the "Use message history" none/last-k/semantic
-// mode select, and its two accompanying caps -- Max history messages, Max
-// semantic history messages -- all on LLMPrompt), and Cache (the Clear Cache
-// checkbox list + button). Split out of chat-pane.js's onRender for the
-// same reason as the other ui/ modules.
+// Four standalone collapsible settings panels -- Context (the two
+// PDF-context-retrieval tunables), Message History (the "Use message
+// history" none/last-k/semantic mode select, and its two accompanying caps
+// -- Max history messages, Max semantic history messages -- all on
+// LLMPrompt), Embeddings (its own provider/model select, pointed at
+// LLMInterfaces' separate embedding-provider state, plus the Batch size
+// tunable), and Cache (the Clear Cache checkbox list + button). Used to be
+// one single "Advanced" dropdown with these as nested subsections; split
+// into four independent top-level dropdowns (same disclosure pattern as
+// Providers/Keyboard Shortcuts/Logs, see style.css's .llm-advanced-details)
+// so each can be opened/collapsed on its own instead of all-or-nothing.
+// Split out of chat-pane.js's onRender for the same reason as the other
+// ui/ modules.
 LLMUIAdvanced = {
 	// A second <tr> placed right after a setting's own row, its description
 	// in a single colspan="3" cell -- same visible-caption styling
-	// (.llm-advanced-field-hint) as the Embeddings section's existing
-	// "Batch size" hint, just per-ROW instead of one hint below a whole
-	// table, since Context has several described rows mixed with
-	// undescribed ones. Spans all 3 columns (the label/input columns PLUS
-	// the dummy third column every row gets -- see _makeIntegerSettingRow's
-	// own comment) rather than just 2, so the description can wrap across
-	// the section's FULL width instead of being squeezed into just the
+	// (.llm-advanced-field-hint) as the Embeddings panel's existing "Batch
+	// size" hint, just per-ROW instead of one hint below a whole table,
+	// since Context has several described rows mixed with undescribed
+	// ones. Spans all 3 columns (the label/input columns PLUS the dummy
+	// third column every row gets -- see _makeIntegerSettingRow's own
+	// comment) rather than just 2, so the description can wrap across the
+	// panel's FULL width instead of being squeezed into just the
 	// label+input columns' own (shrink-to-fit) content width.
 	_makeHintRow(doc, text) {
 		let tr = doc.createElement("tr");
@@ -34,12 +40,12 @@ LLMUIAdvanced = {
 	// straight into a <tbody>.append(...) call. `input` is the raw
 	// <input>/<select> element itself, for a caller that needs to do more
 	// than get/set/refresh it -- e.g. toggling `.disabled` based on some
-	// OTHER row's own value (see create()'s own Message history section,
+	// OTHER row's own value (see create()'s own Message History panel,
 	// where the "Use message history" mode controls whether the other two
 	// rows are editable at all).
 	// Every row gets a third, empty, unconstrained <td> after the label/input
 	// columns (both of which use `width: 1px` -- shrink-to-fit, see
-	// style.css) -- with .llm-advanced-table now stretched to the section's
+	// style.css) -- with .llm-advanced-table now stretched to the panel's
 	// full width, this dummy column is what actually ABSORBS the leftover
 	// horizontal space, which is what lets _makeHintRow's colspan="3"
 	// description cell stretch across the whole page instead of stopping at
@@ -123,20 +129,20 @@ LLMUIAdvanced = {
 		return tr;
 	},
 
-	// One subsection within "Advanced" -- a header (flush left, same
-	// baseline as "Advanced" itself) followed by a padded wrapper (see
-	// style.css's .llm-advanced-section-body, the same 1em padding
-	// .llm-advanced-body/.llm-providers-body/.llm-shortcuts-body all use)
-	// so the subsection's own settings read as visually indented relative
-	// to its header. Returns the wrapper -- the caller appends whatever
-	// belongs in that subsection to it.
-	_makeSection(doc, labelText) {
-		let label = doc.createElement("div");
-		label.className = "llm-advanced-section-label";
-		label.textContent = labelText;
-		let sectionBody = doc.createElement("div");
-		sectionBody.className = "llm-advanced-section-body";
-		return { label, sectionBody };
+	// One standalone collapsible panel -- same disclosure pattern as
+	// ui/providers.js/ui/keyboard-shortcuts.js (see style.css's
+	// .llm-advanced-details, shared across all of them). Returns the
+	// <details> element (for the caller to place in the pane's controls)
+	// and the body <div> the caller appends that panel's own settings to.
+	_makeDetails(doc, title) {
+		let details = doc.createElement("details");
+		details.className = "llm-advanced-details";
+		let summary = doc.createElement("summary");
+		summary.textContent = title;
+		let body = doc.createElement("div");
+		body.className = "llm-collapsible-body llm-advanced-body";
+		details.append(summary, body);
+		return { details, body };
 	},
 
 	// `getActiveItem()` resolves the PDF attachment to clear cache for (the
@@ -145,19 +151,16 @@ LLMUIAdvanced = {
 	// panel) is the caller's concern, not this module's. `clearCacheIconURL`/
 	// `refreshIconURL` are plain file:/jar: URLs (see chat-pane.js's
 	// onRender, rootURI + "res/icons/...svg"), rendered via LLMUIIcon.create.
+	// Returns { contextElement, messageHistoryElement, embeddingsElement,
+	// cacheElement, clearCacheButton, refreshPairSettings } -- four
+	// independent <details> panels for the caller to place wherever it
+	// wants in the pane's controls (see chat-pane.js's onRender).
 	create(doc, { getActiveItem, onMessage, clearCacheIconURL, refreshIconURL } = {}) {
-		let details = doc.createElement("details");
-		details.className = "llm-advanced-details";
-		let summary = doc.createElement("summary");
-		summary.textContent = "Advanced";
-		let body = doc.createElement("div");
-		body.className = "llm-collapsible-body llm-advanced-body";
-
 		// Rows built from LLMPrompt's per-(provider,model) advanced settings
 		// (see its own comment) -- collected here so create()'s returned
 		// refreshPairSettings() can re-sync every one of these inputs after
 		// LLMPrompt.applyAdvancedSettingsFor runs on a provider/model change,
-		// rather than needing each section to track its own list.
+		// rather than needing each panel to track its own list.
 		let pairSettingRows = [];
 		let makePairIntegerRow = (labelText, key, opts) => {
 			let { rows, refresh } = this._makeIntegerSettingRow(
@@ -171,7 +174,7 @@ LLMUIAdvanced = {
 		};
 
 		// --- Context ---
-		let { label: contextLabel, sectionBody: contextBody } = this._makeSection(doc, "Context");
+		let { details: contextDetails, body: contextBody } = this._makeDetails(doc, "Context");
 		let contextTable = doc.createElement("table");
 		contextTable.className = "llm-advanced-table";
 		let contextTbody = doc.createElement("tbody");
@@ -190,15 +193,15 @@ LLMUIAdvanced = {
 		contextTable.appendChild(contextTbody);
 		contextBody.appendChild(contextTable);
 
-		// --- Message history ---
-		let { label: historyLabel, sectionBody: historyBody } = this._makeSection(doc, "Message history");
+		// --- Message History ---
+		let { details: messageHistoryDetails, body: historyBody } = this._makeDetails(doc, "Message History");
 		let historyTable = doc.createElement("table");
 		historyTable.className = "llm-advanced-table";
 		let historyTbody = doc.createElement("tbody");
 
 		// Built directly via _makeSelectSettingRow/_makeIntegerSettingRow
 		// (not the makePairSelectRow/makePairIntegerRow convenience
-		// wrappers those other sections use) since these three rows need to
+		// wrappers those other panels use) since these three rows need to
 		// reach each other's own `input` elements directly -- toggling
 		// maxHistoryRow's/maxSemanticHistoryRow's own `disabled` based on
 		// modeRow's current value, something the wrappers (which only
@@ -261,7 +264,7 @@ LLMUIAdvanced = {
 		// for chat but Ollama for embeddings, so these are never tied
 		// together. Anthropic is excluded from providerOptions here since
 		// it has no embeddings API of its own (see LLMInterfaces.getEmbedding).
-		let { label: embeddingsLabel, sectionBody: embeddingsBody } = this._makeSection(doc, "Embeddings");
+		let { details: embeddingsDetails, body: embeddingsBody } = this._makeDetails(doc, "Embeddings");
 		// batchSizeRow assigned further down (Batch size is built AFTER this
 		// select, since it needs `embeddingProviderModelSelect` to exist for
 		// its own row-building helper's sake -- see below) -- referenced here
@@ -339,7 +342,7 @@ LLMUIAdvanced = {
 		// (there's no way to get a cleared cache back short of re-running
 		// extraction), hence the confirm prompt before actually clearing
 		// anything.
-		let { label: cacheLabel, sectionBody: cacheBody } = this._makeSection(doc, "Cache");
+		let { details: cacheDetails, body: cacheBody } = this._makeDetails(doc, "Cache");
 		let cacheTypes = [
 			{
 				label: "Citations",
@@ -401,17 +404,21 @@ LLMUIAdvanced = {
 		});
 		cacheBody.appendChild(clearCacheButton);
 
-		body.append(contextLabel, contextBody, historyLabel, historyBody, embeddingsLabel, embeddingsBody, cacheLabel, cacheBody);
-
-		details.append(summary, body);
-		// Re-syncs every Context/Message history input to LLMPrompt's
+		// Re-syncs every Context/Message History input to LLMPrompt's
 		// current values -- call after LLMPrompt.applyAdvancedSettingsFor
 		// runs (i.e. whenever the CHAT provider/model selection changes;
 		// see ui/provider-model-select.js's onChange, wired up in
-		// chat-pane.js's onRender), so an already-rendered Advanced
-		// panel reflects the newly-selected pair's own saved settings
-		// instead of silently keeping the previous pair's values on screen.
+		// chat-pane.js's onRender), so an already-rendered panel reflects
+		// the newly-selected pair's own saved settings instead of silently
+		// keeping the previous pair's values on screen.
 		let refreshPairSettings = () => pairSettingRows.forEach(refresh => refresh());
-		return { element: details, clearCacheButton, refreshPairSettings };
+		return {
+			contextElement: contextDetails,
+			messageHistoryElement: messageHistoryDetails,
+			embeddingsElement: embeddingsDetails,
+			cacheElement: cacheDetails,
+			clearCacheButton,
+			refreshPairSettings,
+		};
 	},
 };

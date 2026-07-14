@@ -49,12 +49,13 @@
 }
 
 /* Shared base for every collapsible <details>'s body (Providers, Keyboard
-   Shortcuts, Advanced, Logs) -- the same inset (1em padding) and top gap
-   (6px margin) for all four, so they read as one consistent family of
-   dropdowns rather than each having its own slightly-different spacing.
-   Each one's own class (.llm-providers-body etc., applied ALONGSIDE this
-   one, not instead of it) layers on top for whatever's specific to it --
-   gap (varies per panel), or Logs' fixed height/scroll/background/font. */
+   Shortcuts, Logs, Context, Message History, Embeddings, Cache) -- the same
+   inset (1em padding) and top gap (6px margin) for all of them, so they
+   read as one consistent family of dropdowns rather than each having its
+   own slightly-different spacing. Each one's own class (.llm-providers-body
+   etc., applied ALONGSIDE this one, not instead of it) layers on top for
+   whatever's specific to it -- gap (varies per panel), or Logs' fixed
+   height/scroll/background/font. */
 .llm-collapsible-body {
 	display: flex;
 	flex-direction: column;
@@ -481,27 +482,8 @@
 	color: -moz-nativehyperlinktext;
 }
 
-/* Subsection headers/settings get a further indent on top of
-   .llm-collapsible-body's own padding, via .llm-advanced-section-body's
-   own padding below. */
 .llm-advanced-body {
 	gap: 4px;
-}
-
-.llm-advanced-section-label {
-	font-weight: 600;
-}
-
-/* Same 1em padding convention as .llm-providers-body/.llm-shortcuts-body --
-   applied per-subsection on top of .llm-advanced-body's own padding above,
-   so each subsection's settings read as indented under its own (flush-left
-   within the body) label. */
-.llm-advanced-section-body {
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-	padding: 1em;
-	box-sizing: border-box;
 }
 
 /* A real <table> (same technique as ui/providers.js) so the input column

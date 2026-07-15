@@ -790,6 +790,7 @@ LLMChatPane = {
 					clearCacheIconURL: iconURL("delete_forever"),
 					refreshIconURL: iconURL("refresh"),
 					indexAllIconURL: iconURL("library_books"),
+					indexIconURL: iconURL("library_add"),
 					clearAllIconURL: iconURL("clear_all"),
 					cancelIconURL: iconURL("cancel"),
 					// `chat` is assigned further down, but this is only ever

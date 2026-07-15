@@ -96,16 +96,26 @@ LLMUIIndexAll = {
 				await LLMCitation.getCitationIndex(item, text, undefined, onMessage).catch((e) => {
 					this.log(`getCitationIndex failed for ${item.libraryKey}: ${e.message}`);
 				});
-				// Only built when the live query path would actually need it
-				// (see buildPromptWithActivePDFContext's own chunking
-				// condition, keyed on the SAME maxPDFContextChars) -- a short
-				// PDF never needs retrieval-chunked context, so building this
-				// too would just be wasted embedding cost.
-				if (text.length > LLMPrompt.maxPDFContextChars) {
-					await LLMCitation.getParagraphIndex(item, text, undefined, onMessage).catch((e) => {
-						this.log(`getParagraphIndex failed for ${item.libraryKey}: ${e.message}`);
-					});
-				}
+				// Unlike buildPromptWithActivePDFContext's own chunking
+				// condition (which only retrieves paragraph-level chunks for
+				// THIS paper's own single-paper context when its full text
+				// exceeds maxPDFContextChars -- a short paper just gets shown
+				// in full there, no retrieval needed), the paragraph index is
+				// built here UNCONDITIONALLY, regardless of paper length.
+				// LLMCitation.getCrossLibraryChunks (cross-library retrieval,
+				// see llm/prompt.js's shouldIncludeCrossLibraryWithLLM) only
+				// ever searches source:"paragraph" embeddings -- confirmed
+				// concretely that gating this the same way as the single-
+				// paper path left every paper short enough to fit under
+				// maxPDFContextChars permanently unfindable via cross-library
+				// search, even after a full (re-)index, since it would never
+				// get a paragraph index at all. Indexing (this function, via
+				// either "Index" or "Index All") is exactly the place that
+				// should pre-warm for BOTH use cases, not just the single-
+				// paper one.
+				await LLMCitation.getParagraphIndex(item, text, undefined, onMessage).catch((e) => {
+					this.log(`getParagraphIndex failed for ${item.libraryKey}: ${e.message}`);
+				});
 			}
 			await Promise.all([
 				LLMTables.getTableIndex(item).catch((e) => this.log(`getTableIndex failed for ${item.libraryKey}: ${e.message}`)),

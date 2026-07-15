@@ -317,6 +317,29 @@ LLMFigures = {
 		let index = { figures: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
+		// Mirrors the disk-cache write into the consolidated embeddings.sqlite
+		// too (see core/llm/embeddings-db.js) -- source_id is figure_id
+		// (already a stable, always-present per-figure identifier, see
+		// extract_figures_sdt.js's own header comment), not array position,
+		// since that's the same handle callers already use to look a figure
+		// back up in this cache file. Filtered to figures that actually got
+		// a captionEmbedding -- _addCaptionEmbeddings' own try/catch means a
+		// total embedding-call failure leaves EVERY figure without one, not
+		// a partial set, but this stays defensive rather than assuming that.
+		// Best-effort, same reasoning as citation.js's own sync -- the disk
+		// cache above is already the source of truth LLMFigures itself
+		// reads from; this DB is an additional, non-authoritative mirror
+		// for now.
+		try {
+			let withEmbeddings = embedded.filter(f => f.captionEmbedding);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "figure",
+				withEmbeddings.map(f => ({ sourceId: f.figure_id, embedding: f.captionEmbedding })));
+			onMessage?.(`Synced ${withEmbeddings.length} figure embedding${withEmbeddings.length === 1 ? "" : "s"} to embeddings.sqlite for item ${item.id}.`);
+		}
+		catch (e) {
+			this.log(`getFigureIndex: failed to sync to embeddings DB: ${e.message}`);
+			onMessage?.(`Failed to sync figure embeddings to embeddings.sqlite for item ${item.id}: ${e.message}`);
+		}
 		return index;
 	},
 

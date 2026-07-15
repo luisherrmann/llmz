@@ -533,7 +533,7 @@ LLMCitationPosition = {
 	// right after grounding). Returns a Map of query -> ({ pageIndex,
 	// rects } or null), one entry per requested query, in the SAME order/
 	// duplication as the input array.
-	async resolvePositions(item, queries, onEmbeddingStart) {
+	async resolvePositions(item, queries, onEmbeddingStart, onMessage) {
 		let cache = await this._loadPositionCache(item);
 		let results = new Map();
 		let toResolve = []; // [{ query, key }], only queries not already cached
@@ -617,7 +617,7 @@ LLMCitationPosition = {
 			try {
 				let text = await LLMPrompt.getAttachmentFullText(item);
 				if (text?.trim()) {
-					let citationIndex = await LLMCitation.getCitationIndex(item, text, onEmbeddingStart);
+					let citationIndex = await LLMCitation.getCitationIndex(item, text, onEmbeddingStart, onMessage);
 					if (citationIndex?.sentences?.length) {
 						// Batched (not one getEmbedding call per citation,
 						// sequentially) -- see groundCitations' own comment

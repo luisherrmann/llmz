@@ -801,7 +801,7 @@ LLMUIAdvanced = {
 					while (nextIndex < needsIndexing.length) {
 						if (runState.cancelled) return;
 						let { item, oldStatus } = needsIndexing[nextIndex++];
-						let result = await LLMUIIndexAll._indexItem(item);
+						let result = await LLMUIIndexAll._indexItem(item, onMessage);
 						if (!result.ok) failed++;
 						completed++;
 						// Every _indexItem call that hits LLMPrompt.getAttachmentFullText's

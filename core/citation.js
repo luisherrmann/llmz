@@ -116,7 +116,7 @@ LLMCitation = {
 	// entry's content element) that gets passed to onEmbeddingDone below so
 	// the caller can update the SAME message in place with a completion
 	// line, rather than the two ever appearing as separate messages.
-	async _getIndex(item, text, kind, chunkFn, onEmbeddingStart) {
+	async _getIndex(item, text, kind, chunkFn, onEmbeddingStart, onMessage) {
 		let cacheKey = `${item.id}:${kind}`;
 
 		// Captured alongside the model, not just the model name alone --
@@ -153,6 +153,26 @@ LLMCitation = {
 		let index = { sentences, embeddings, model, provider };
 		this._citationIndexCache.set(cacheKey, index);
 		await this._saveDiskCache(item, fingerprint, index, kind);
+		// Mirrors the disk-cache write into the consolidated embeddings.sqlite
+		// too (see core/llm/embeddings-db.js) -- `source` is `kind`
+		// ("sentence"/"paragraph"), `sourceId` is the chunk's own position in
+		// `sentences`/`embeddings` (parallel arrays, so that position is
+		// already a stable, direct pointer back into THIS cache file -- no
+		// separate id field needed the way figure_id/table_id are, since
+		// there's no filtering/reordering between here and _loadDiskCache
+		// that could shift a chunk's position). Best-effort, same as
+		// _saveDiskCache above -- a sync failure here shouldn't fail the
+		// whole citation-index computation, the disk cache write already
+		// succeeded and remains the source of truth LLMCitation itself reads
+		// from; this DB is an additional, non-authoritative mirror for now.
+		try {
+			await LLMEmbeddingsDB.replaceForPaper(item.id, model, kind, sentences.map((s, i) => ({ sourceId: i, embedding: embeddings[i] })));
+			onMessage?.(`Synced ${embeddings.length} ${kind} embedding${embeddings.length === 1 ? "" : "s"} to embeddings.sqlite for item ${item.id}.`);
+		}
+		catch (e) {
+			this.log(`_getIndex(${kind}): failed to sync to embeddings DB: ${e.message}`);
+			onMessage?.(`Failed to sync ${kind} embeddings to embeddings.sqlite for item ${item.id}: ${e.message}`);
+		}
 		return index;
 	},
 
@@ -166,12 +186,12 @@ LLMCitation = {
 	// matcher (since it's real extracted text, that succeeds), so the
 	// fallback still ends up with a real position, not just a plausible
 	// sentence with nowhere to navigate to.
-	async getCitationIndex(item, text, onEmbeddingStart) {
-		return this._getIndex(item, text, "sentence", t => this.splitIntoSentences(t), onEmbeddingStart);
+	async getCitationIndex(item, text, onEmbeddingStart, onMessage) {
+		return this._getIndex(item, text, "sentence", t => this.splitIntoSentences(t), onEmbeddingStart, onMessage);
 	},
 
-	async getParagraphIndex(item, text, onEmbeddingStart) {
-		return this._getIndex(item, text, "paragraph", t => this.splitIntoParagraphs(t), onEmbeddingStart);
+	async getParagraphIndex(item, text, onEmbeddingStart, onMessage) {
+		return this._getIndex(item, text, "paragraph", t => this.splitIntoParagraphs(t), onEmbeddingStart, onMessage);
 	},
 
 	// Debug affordance ("Clear Cache" in Advanced) -- drops both the memory

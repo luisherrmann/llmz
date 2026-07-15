@@ -712,9 +712,9 @@ LLMRequest = {
 					},
 				};
 			};
-			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText, onEmbeddingStart);
-			if (isCancelled()) return;
 			let onStructureMessage = (text) => appendMessage("System", text);
+			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText, onEmbeddingStart, onStructureMessage);
+			if (isCancelled()) return;
 			let tableIndexPromise = pdfItem
 				? LLMTables.getTableIndex(pdfItem, onStructureMessage).catch((e) => {
 					this.log(`getTableIndex failed: ${e.message}`);
@@ -927,7 +927,7 @@ LLMRequest = {
 					let queries = [...groundedText.matchAll(/\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]]|\[|$)/g)].map(m => m[1]);
 					if (queries.length) {
 						try {
-							citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries, onEmbeddingStart);
+							citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries, onEmbeddingStart, onStructureMessage);
 						}
 						catch (e) {
 							this.log(`Citation position resolution failed: ${e.message}`);

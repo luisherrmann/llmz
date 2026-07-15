@@ -177,6 +177,21 @@ LLMEmbeddingsDB = {
 		return result.deleted;
 	},
 
+	// Drops whatever was previously stored for this EXACT (paperId, model,
+	// source) combo, then inserts the fresh batch -- the usual pattern for
+	// "recomputed this paper's embeddings from scratch, replace what was
+	// there" (as opposed to insert() alone, which always adds new rows and
+	// would leave stale duplicates behind on a recompute -- e.g. a paper
+	// re-embedded after its text changed, or after switching embedding
+	// model). `items` is [{ sourceId, embedding }, ...] -- no per-item
+	// `source` needed (unlike insert()'s own shape) since it's fixed for
+	// the whole call. Returns the newly assigned ids.
+	async replaceForPaper(paperId, model, source, items) {
+		await this.deleteForPaper(paperId, { model, source });
+		if (!items.length) return [];
+		return this.insert(paperId, model, items.map(item => ({ ...item, source })));
+	},
+
 	// Cheap existence check -- mirrors the hasCache(item) pattern already
 	// used throughout this plugin (LLMCitation.hasCache and friends, see
 	// ui/advanced.js's getIndexStatus) for the library-index-status bar.

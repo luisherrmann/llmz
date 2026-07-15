@@ -190,8 +190,74 @@ LLMCitation = {
 		return this._getIndex(item, text, "sentence", t => this.splitIntoSentences(t), onEmbeddingStart, onMessage);
 	},
 
+	// Paragraph-level index, used by llm/prompt.js's
+	// buildPromptWithActivePDFContext for a PDF too long to fit whole. Unlike
+	// getCitationIndex above, this index carries NO embeddings array of its
+	// own -- getRelevantChunks below ranks paragraphs via a direct sqlite-vec
+	// MATCH query (LLMEmbeddingsDB.query) against embeddings.sqlite instead
+	// of an in-JS cosine-similarity scan, so all this needs to hand back is
+	// `sentences` (the paragraph text -- the DB stores no text, see db.py's
+	// own header comment) plus enough to run that query (`model`/`provider`/
+	// `paperId`). The disk cache is still consulted for `sentences`; its own
+	// `embeddings` field, once the JSON cache stops storing embeddings at
+	// all, is ignored here. Whether the DB already has this paper's
+	// paragraph embeddings is checked via a cheap COUNT(*) (hasEmbeddings)
+	// against the plain `embeddings` table, NOT a fetch of the vectors
+	// themselves -- fetching every vector by rowid turned out to be very
+	// slow against embeddings.sqlite once it's accumulated enough
+	// delete/reinsert churn (see replaceForPaper's own comment) to fragment
+	// sqlite-vec's chunked storage, which a plain COUNT(*) never touches. A
+	// count mismatch (no rows yet, or a failed previous sync) is treated
+	// the same as a full cache miss: (re)embed and resync.
 	async getParagraphIndex(item, text, onEmbeddingStart, onMessage) {
-		return this._getIndex(item, text, "paragraph", t => this.splitIntoParagraphs(t), onEmbeddingStart, onMessage);
+		let kind = "paragraph";
+		let cacheKey = `${item.id}:${kind}`;
+
+		let provider = LLMInterfaces._embeddingProvider;
+		let model = await this.getEmbeddingModel();
+
+		let cached = this._citationIndexCache.get(cacheKey);
+		if (cached && cached.provider === provider && cached.model === model) return cached;
+
+		let fingerprint = this._textFingerprint(text);
+
+		let diskCached = await this._loadDiskCache(item, fingerprint, model, provider, kind);
+		let sentences = diskCached ? diskCached.sentences : this.splitIntoParagraphs(text);
+		if (!sentences.length) return null;
+
+		let dbCount = 0;
+		try {
+			({ count: dbCount } = await LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: kind }));
+		}
+		catch (e) {
+			this.log(`getParagraphIndex: DB lookup failed for item ${item.id}: ${e.message}`);
+		}
+		if (dbCount === sentences.length) {
+			let index = { sentences, model, provider, paperId: item.id, source: kind };
+			this._citationIndexCache.set(cacheKey, index);
+			this.log(`getParagraphIndex: found ${dbCount} paragraph embeddings in embeddings.sqlite for item ${item.id}`);
+			return index;
+		}
+
+		let progress = onEmbeddingStart?.(provider, model);
+		this.log(`getParagraphIndex: embedding ${sentences.length} chunks with ${provider}/${model}`);
+		let embeddings = await this.embedBatched(sentences, model, provider, {
+			onProgress: (completed, total) => progress?.setProgress?.(completed, total),
+		});
+		if (progress) progress.textContent = `Recomputed ${embeddings.length} paragraph embedding${embeddings.length === 1 ? "" : "s"} using ${provider} ${model}.`;
+
+		let index = { sentences, model, provider, paperId: item.id, source: kind };
+		this._citationIndexCache.set(cacheKey, index);
+		await this._saveDiskCache(item, fingerprint, { sentences, embeddings, model, provider }, kind);
+		try {
+			await LLMEmbeddingsDB.replaceForPaper(item.id, model, kind, sentences.map((s, i) => ({ sourceId: i, embedding: embeddings[i] })));
+			onMessage?.(`Synced ${embeddings.length} paragraph embeddings to embeddings.sqlite for item ${item.id}.`);
+		}
+		catch (e) {
+			this.log(`getParagraphIndex: failed to sync to embeddings DB: ${e.message}`);
+			onMessage?.(`Failed to sync paragraph embeddings to embeddings.sqlite for item ${item.id}: ${e.message}`);
+		}
+		return index;
 	},
 
 	// Debug affordance ("Clear Cache" in Advanced) -- drops both the memory
@@ -231,15 +297,23 @@ LLMCitation = {
 		return IOUtils.exists(PathUtils.join(dir, `${item.id}-sentence.json`));
 	},
 
+	// Ranks via a direct sqlite-vec MATCH query against embeddings.sqlite
+	// (LLMEmbeddingsDB.query) rather than pulling every paragraph's
+	// embedding into JS and scanning cosineSimilarity over all of them --
+	// `index` (from getParagraphIndex) carries no embeddings array of its
+	// own precisely so this is the only ranking path. `query()` returns
+	// nearest-first; re-sorted back to original paragraph order (`sourceId`
+	// ascending) here so the joined chunks read in document order, same as
+	// the old JS-side top.sort((a, b) => a.i - b.i) did.
 	async getRelevantChunks(index, query, topK) {
 		let queryEmbedding = await this.getEmbedding(query, index.model, index.provider);
-		let scored = index.embeddings.map((embedding, i) => ({
-			i,
-			score: this.cosineSimilarity(queryEmbedding, embedding),
-		}));
-		scored.sort((a, b) => b.score - a.score);
-		let top = scored.slice(0, topK).sort((a, b) => a.i - b.i);
-		return top.map(({ i }) => index.sentences[i]);
+		let results = await LLMEmbeddingsDB.query(index.model, queryEmbedding, topK, {
+			paperId: index.paperId,
+			source: index.source,
+		});
+		return results
+			.sort((a, b) => a.sourceId - b.sourceId)
+			.map(r => index.sentences[r.sourceId]);
 	},
 
 	// Numbers each [CITE](<find:phrase>) token in order -- [1], [2], etc,

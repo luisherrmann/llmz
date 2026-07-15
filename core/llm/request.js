@@ -227,20 +227,45 @@ LLMRequest = {
 			let { reply, onProgress, onStage } = this._createReferenceReply(refNum, ctx);
 			let result = await LLMReferenceRetrieval.downloadReferenceToLibrary(refNum, pdfItem, onProgress, onStage);
 			if (ctx.isCancelled()) return;
+			// Looked up fresh here rather than threaded through
+			// downloadReferenceToLibrary's own result -- getReferenceIndex is
+			// memoized in-memory per item (see document/references.js), and
+			// was already computed once inside downloadReferenceToLibrary
+			// itself, so this is a cheap Map lookup, not a re-extraction.
+			// `position` can be null (see references.js's own comment on
+			// when a reference entry has none), in which case no link is
+			// shown -- same fallback-to-plain-text treatment as every other
+			// makeMessageClickable/finalizeRichMessage caller in this file.
+			let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem).catch(() => null);
+			let ref = referenceIndex?.references?.find(r => LLMReferences.displayNumber(r) === refNum);
+			let referenceLink = ref?.position
+				// "[N]" -- same bracket notation llm/prompt.js's own
+				// _formatReferenceContext uses for a reference's label
+				// elsewhere in this plugin.
+				? { label: `[${refNum}]`, title: "Jump to this reference in the paper", onClick: () => LLMCitation.navigateToPosition(ref.position) }
+				: null;
+
 			if (result.alreadyInLibrary) {
-				chat.finalizeRichMessage(reply, [
+				let parts = [
 					{ text: "The paper is already included in your Zotero library: " },
+				];
+				if (referenceLink) parts.push(referenceLink, { text: " " });
+				parts.push(
 					{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-					{ text: "." },
-				]);
+				);
+				parts.push({ text: "." });
+				chat.finalizeRichMessage(reply, parts);
 			}
 			else if (result.success) {
 				let statusText = result.hasPDF ? " with its PDF" : " (metadata only — no PDF could be found)";
 				let parts = [
-					{ text: `Added "` },
-					{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
-					{ text: `"${statusText}` },
+					{ text: "Added " },
 				];
+				if (referenceLink) parts.push(referenceLink, { text: " " });
+				parts.push(
+					{ label: result.item.getField("title"), title: "Open in Zotero", onClick: () => chatPane._openLibraryItem(result.item) },
+					{ text: statusText },
+				);
 				if (result.sourceURL) {
 					parts.push(
 						{ text: " (source: " },

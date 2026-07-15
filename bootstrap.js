@@ -47,6 +47,9 @@ async function startup({ id, version, rootURI }) {
 	// cosineSimilarity/getEmbeddingModel) just delegate to LLMEmbeddings --
 	// must load before it.
 	Services.scriptloader.loadSubScript(rootURI + "core/llm/embeddings.js");
+	// Not depended on by anything yet (see its own header comment) -- just
+	// needs to be loaded before its own init() call below.
+	Services.scriptloader.loadSubScript(rootURI + "core/llm/embeddings-db.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/citation.js");
 	// Depends on LLMCitation's own embedding API (getEmbedding/embedBatched/
 	// cosineSimilarity) -- must load after it.
@@ -83,6 +86,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "core/chat-pane.js");
 	await LLMReferences.init(rootURI);
 	LLMPythonSetup.init(rootURI);
+	await LLMEmbeddingsDB.init(rootURI);
 	LLMChatPane.init({ id, version, rootURI });
 	LLMReferenceRetrieval.init(LLMInterfaces.streamModel.bind(LLMInterfaces));
 	// Awaited before main() so any item-pane render that happens once main()

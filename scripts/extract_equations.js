@@ -16,10 +16,17 @@
 // model to cite them by -- see chat-pane.js's ref:formula:N handling.
 //
 // Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_equations.js <pdf_path> <output_json_path> [structure_cache_path]
-// Output: JSON array of { page_num, equation_num, formula_num, label, text,
-//   position }. page_num is the plain 1-indexed page number (null if this
-//   block had no anchor at all), same convention/field name
-//   extract_tables_sdt.js/extract_figures_sdt.js already use.
+// Output: JSON array of { equation_id, page_num, equation_num, formula_num,
+//   label, text, position }. page_num is the plain 1-indexed page number
+//   (null if this block had no anchor at all), same convention/field name
+//   extract_tables_sdt.js/extract_figures_sdt.js already use. equation_id is
+//   a THIRD, distinct numbering from equation_num/formula_num -- a plain
+//   1..N sequential id, in document (block) order, assigned to EVERY
+//   equation regardless of which of the two series it landed in (mirrors
+//   extract_figures_sdt.js's own figure_id/extract_tables_sdt.js's own
+//   table_id, see either one's header comment for the fuller rationale: an
+//   always-present, stable identifier neither number-or-null field can be
+//   used as directly).
 
 import fs from 'fs';
 import { getMathBlocks } from '../sdt/document-worker/src/pdf/structure/math.js';
@@ -93,6 +100,16 @@ function getEquations(structure) {
 			});
 		}
 	}
+
+	// equation_id: a plain 1..N sequential id in document (block) order,
+	// assigned to EVERY equation regardless of which series (equation_num
+	// vs. formula_num) it landed in -- see this file's own header comment
+	// for why this is separate from both. Safe to assign directly here (no
+	// sort needed first, unlike extract_tables_sdt.js's own table_id) since
+	// `equations` is already pushed in structure.content's own document
+	// order by the loop above -- there's no second, separately-ordered
+	// group to interleave back in.
+	equations.forEach((e, i) => { e.equation_id = i + 1; });
 
 	return equations;
 }

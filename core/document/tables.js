@@ -16,16 +16,22 @@ LLMTables = {
 	// actually needs an image (currently: tools/table-export.js's
 	// image-grounded CSV conversion), against the bounding box SDT already
 	// found -- avoids paying rendering cost on every chat message for
-	// tables that never end up needing a rendered image at all. Stays
-	// PyMuPDF (via _runPython) rather than Zotero's own document-worker
-	// pdf.js rendering pipeline -- that was prototyped too, but measured
-	// ~2.5-3x slower even after matching render scale and JPEG output
-	// (Node/ESM/canvas startup overhead, not encode work, so it doesn't
-	// shrink with tuning), and this plugin already requires the Python venv
-	// regardless for figure extraction (document/figures.js), so PyMuPDF
-	// here isn't adding a new dependency either way.
+	// tables that never end up needing a rendered image at all. Never
+	// persisted to the disk cache either (see _saveDiskCache) -- a rendered
+	// JPEG is cheaply regenerable on demand from the already-cached
+	// `position` bbox, so a table gets re-rendered fresh each time an
+	// export actually needs it rather than accumulating rendered bytes in
+	// the cache file, same reasoning as document/figures.js's own
+	// renderMissingImages. Stays PyMuPDF (via _runPython) rather than
+	// Zotero's own document-worker pdf.js rendering pipeline -- that was
+	// prototyped too, but measured ~2.5-3x slower even after matching
+	// render scale and JPEG output (Node/ESM/canvas startup overhead, not
+	// encode work, so it doesn't shrink with tuning), and this plugin
+	// already requires the Python venv regardless for figure extraction
+	// (document/figures.js), so PyMuPDF here isn't adding a new dependency
+	// either way.
 	_renderScriptName: "render_crops.py",
-	_cacheVersion: 3, // bump when the cached index schema changes (JS-side, not just Python scripts)
+	_cacheVersion: 4, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_indexCache: new Map(),
 
 	log(msg) {
@@ -144,7 +150,19 @@ LLMTables = {
 	async _saveDiskCache(item, index) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
-			await IOUtils.writeUTF8(path, JSON.stringify(index, null, 2));
+			// image_data is stripped before writing -- it's a real rendered
+			// JPEG (base64), regenerable on demand from `position` (the
+			// bounding box) via renderMissingImages whenever actually needed,
+			// so persisting it here would just be dead weight bloating this
+			// cache file for tables that never end up exported. A shallow
+			// per-table copy, not a mutation of `index.tables` itself -- the
+			// caller keeps holding (and memory-caching) that same object,
+			// image_data and all, unrelated to what actually lands on disk.
+			let diskIndex = {
+				...index,
+				tables: index.tables.map(({ image_data, ...rest }) => rest),
+			};
+			await IOUtils.writeUTF8(path, JSON.stringify(diskIndex, null, 2));
 			this.log(`_saveDiskCache: saved ${index.tables.length} tables for item ${item.id}`);
 		}
 		catch (e) {
@@ -173,11 +191,14 @@ LLMTables = {
 	// a caller like tools/table-export.js's image-grounded CSV conversion
 	// can get real renders without every table paying that cost up front.
 	// Mutates the given table objects in place (image_data set directly on
-	// each), and -- since `tables` are normally the SAME object references
-	// getTableIndex's cache holds, not copies -- persists the newly-rendered
-	// images back to the disk cache too, so a second export of the same
-	// table(s) doesn't re-render. No-ops (no subprocess call at all) if
-	// every table already has an image.
+	// each) and returns them. Does NOT persist the render back to the disk
+	// cache -- image_data is deliberately stripped before every
+	// _saveDiskCache write (see its own comment), so a table gets
+	// re-rendered fresh each time it's actually needed within THIS session
+	// (still cheap: the memory-cached `tables` objects getTableIndex holds
+	// keep whatever's already been rendered for the rest of the session,
+	// same as document/figures.js's own renderMissingImages). No-ops (no
+	// subprocess call at all) if every table already has an image.
 	async renderMissingImages(item, tables) {
 		let missing = tables.filter(t => !t.image_data && t.position?.rects?.[0]);
 		if (!missing.length) return tables;
@@ -204,10 +225,6 @@ LLMTables = {
 			missing[r.index].image_data = r.image_data;
 		}
 		this.log(`renderMissingImages: rendered ${rendered.length}/${missing.length} table image(s)`);
-
-		let cached = this._indexCache.get(item.id);
-		if (cached) await this._saveDiskCache(item, cached);
-
 		return tables;
 	},
 

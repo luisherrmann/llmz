@@ -45,9 +45,13 @@ LLMTableExport = {
 	},
 
 	// `images`, if given, is passed straight through to streamModel -- an
-	// array of data URIs, attached to this same one-off prompt (see
-	// _buildCSVPrompt/exportTablesToZip, the only caller that ever passes
-	// any).
+	// array of { label, dataUri } entries (see _formatTablesBatch, the only
+	// caller that ever passes any), attached to this same one-off prompt
+	// (see _buildCSVPrompt/exportTablesToZip) with each image's own label
+	// interleaved right before it (see llm/interfaces.js's
+	// streamOpenAICompatible/streamAnthropic) so the model has an explicit
+	// anchor for "which image is which table" instead of a purely
+	// positional guess across however many tables got batched together.
 	async _callModel(prompt, images) {
 		let result = await LLMInterfaces.streamModel(prompt, () => {}, {}, images);
 		return (result.text || "").trim();
@@ -249,16 +253,11 @@ LLMTableExport = {
 	// in, since the response is split back apart purely by position (see
 	// exportTablesToZip) -- there's no per-table tagging in the requested
 	// output, just the [NEXT_TABLE] separator and matching order.
-	// `withImages` adds a paragraph telling the model each table's own
-	// cropped rendering is attached, in the SAME order as the tuples below
+	// `withImages` switches which instruction paragraph is used (see below)
 	// -- see exportTablesToZip, which actually attaches tab.image_data (the
 	// bounding-box crop, rendered lazily on demand via
 	// LLMTables.renderMissingImages against SDT's own detected bbox -- see
-	// document/tables.js) as `images` on this same streamModel call. The raw
-	// extracted `contentText` can be messy (SDT's table content is often an
-	// unstructured flattened-text fallback rather than a real grid) -- the
-	// actual rendered image is the more reliable ground truth for resolving
-	// that, so the model's told explicitly to prefer it.
+	// document/tables.js) as `images` on this same streamModel call.
 	_buildCSVPrompt(tables, withImages) {
 		let tuples = tables.map((t, i) =>
 			`${i + 1}. (label=${t.label}, caption="${t.caption}")\n${t.contentText}`
@@ -267,27 +266,64 @@ LLMTableExport = {
 			"Below are tables extracted from a scientific paper, given as (label,",
 			"caption) tuples followed by that table's own raw content, listed in",
 			"sequential order. For EACH table, produce a single, well-formed CSV",
-			"representation of its data -- reproduce the actual rows/columns given",
-			"below exactly; do not invent, omit, merge, or reorder any data. Output",
-			"ONLY the CSV tables, in the SAME order as listed below, with each one",
+			"representation of its data.",
+		];
+		if (withImages) {
+			// The raw extracted `contentText` can be messy (SDT's table
+			// content is often an unstructured flattened-text fallback --
+			// no row/column breaks at all, every cell run together in
+			// reading order -- rather than a real grid, confirmed
+			// concretely on real papers) -- the older wording here told the
+			// model to both "reproduce the rows/columns given below exactly"
+			// AND prefer the image, which competed badly on exactly these
+			// flattened tables: "do not merge/reorder" reads as a strong
+			// directive anchored to the text's own (structure-less) word
+			// order. Still keeps "reproduce exactly / do not invent, omit,
+			// merge, or reorder any data" as an instruction -- the fix is
+			// telling the model WHERE structure must come from (the image,
+			// always) vs. where it must not (the raw text's word order),
+			// not softening the exactness requirement itself.
+			lines.push(
+				"",
+				"You are also given each table's own cropped image, attached in the SAME",
+				"order as the tuples below (the first image is the first table's crop, and",
+				"so on). Reproduce the table exactly as shown in the image -- do not invent,",
+				"omit, merge, or reorder any data. Use the IMAGE as the primary source of",
+				"truth for the table's STRUCTURE: how many rows/columns it has, multi-row/",
+				"multi-column headers, and which cells belong together. The raw content text",
+				"below is often flattened/unstructured by automated extraction (merged cells,",
+				"misaligned columns, or every cell run together with no row/column breaks at",
+				"all) -- do NOT rely on its word order for structure. Use the text only to",
+				"help confirm individual field values where the image is hard to read."
+			);
+		}
+		else {
+			lines.push(
+				"",
+				"Reproduce the actual rows/columns given below exactly; do not invent,",
+				"omit, merge, or reorder any data."
+			);
+		}
+		lines.push(
+			"",
+			// Academic tables routinely have an in-cell citation like
+			// "(Smith et al., 2020)" -- a literal comma inside a field
+			// value, not a column break. Confirmed concretely this needed
+			// spelling out: left unstated, a comma like that silently
+			// shifts every later column in that row, corrupting the row
+			// rather than merely mis-rendering one cell.
+			"Wrap any field value that itself contains a comma in double quotes",
+			'(e.g. the field XU ET AL., 2019 becomes "XU ET AL., 2019").',
+			"",
+			"Output ONLY the CSV tables, in the SAME order as listed below, with each one",
 			"separated from the next by a line containing EXACTLY:",
 			"[NEXT_TABLE]",
 			"Do not include the table label, caption, any explanation, or markdown",
 			"code fences in your output -- only the raw CSV content for each table, and",
 			"the separator between them.",
-		];
-		if (withImages) {
-			lines.push(
-				"",
-				"You are also given each table's own cropped image, attached in the SAME",
-				"order as the tuples below (the first image is the first table's crop, and",
-				"so on). The raw content below was extracted programmatically and can be",
-				"messy (merged cells, misaligned columns, multi-row headers) -- use the",
-				"image as the source of truth for the table's actual structure and values",
-				"whenever it disagrees with the raw content."
-			);
-		}
-		lines.push("", tuples);
+			"",
+			tuples
+		);
 		return lines.join("\n");
 	},
 
@@ -413,7 +449,17 @@ LLMTableExport = {
 	// this function) logs/reports that, since only the caller knows which
 	// batch number this was, for a useful message.
 	async _formatTablesBatch(batchTables, batchImages) {
-		let raw = await this._callModel(this._buildCSVPrompt(batchTables, !!batchImages), batchImages);
+		// Labeled with the EXACT SAME "N. (label=...)" numbering
+		// _buildCSVPrompt uses for this same batch's tuples (both derived
+		// from batchTables' own index), so the label interleaved before
+		// each image in the actual API call (see llm/interfaces.js's
+		// streamOpenAICompatible/streamAnthropic) points the model straight
+		// back to the matching tuple instead of leaving it to count
+		// positionally through a same-length, separately-listed image list.
+		let labeledImages = batchImages
+			? batchTables.map((t, i) => ({ label: `Image for table ${i + 1} (${t.label}):`, dataUri: batchImages[i] }))
+			: null;
+		let raw = await this._callModel(this._buildCSVPrompt(batchTables, !!batchImages), labeledImages);
 		return raw
 			.split(/\n?\[NEXT_TABLE\]\n?/)
 			// Defensive, same reasoning as _extractCitationMetadata's own
@@ -504,12 +550,13 @@ LLMTableExport = {
 		//
 		// Checked BEFORE rendering (not after) so a model with no image
 		// support skips rendering entirely, rather than paying for it and
-		// throwing the result away. image_data itself is no longer
-		// guaranteed to already be cached -- the SDT-only detection pipeline
-		// (see document/tables.js/scripts/extract_tables_sdt.js) only
-		// caches each table's bounding box, not a rendering of it, so
-		// renderMissingImages lazily renders (and caches back) whichever of
-		// `tables` don't have one yet, against that cached bbox.
+		// throwing the result away. image_data is never persisted to disk at
+		// all -- the SDT-only detection pipeline (see document/tables.js/
+		// scripts/extract_tables_sdt.js) only caches each table's bounding
+		// box, not a rendering of it, so renderMissingImages lazily renders
+		// (in memory only, for the rest of THIS session -- see its own
+		// comment) whichever of `tables` don't have one yet, against that
+		// cached bbox.
 		let images = null;
 		let model = await LLMInterfaces.getCurrentModel().catch(() => null);
 		let supportsImages = model ? await LLMInterfaces.modelSupportsImages(model).catch(() => false) : false;

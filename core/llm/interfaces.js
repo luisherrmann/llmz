@@ -19,6 +19,19 @@ LLMInterfaces = {
 		Zotero.debug("LLM Chat Pane [Interfaces]: " + msg);
 	},
 
+	// Every `images` entry is either a plain data URI string (the common
+	// case -- a single pasted image, or one attached figure, where there's
+	// nothing to disambiguate) or a { label, dataUri } object -- used by a
+	// caller batching SEVERAL images into one call that need explicit
+	// correspondence to their own place in the prompt text (e.g.
+	// tools/table-export.js, one image per table). Normalizing here once
+	// keeps streamOpenAICompatible/streamAnthropic's own content-array-
+	// building code below from each re-deriving this same "is it a string
+	// or a labeled object" check.
+	_normalizeImage(image) {
+		return typeof image === "string" ? { label: null, dataUri: image } : image;
+	},
+
 	// User-configurable host/port for the three backends that run as a local
 	// (or at least self-hosted, for LiteLLM) server rather than a fixed
 	// cloud endpoint -- OpenAI/Anthropic have no equivalent, since
@@ -410,8 +423,20 @@ LLMInterfaces = {
 			// newest prompt; historical turns' images were never persisted
 			// anywhere reusable (chat.exportTranscript() only tracks text).
 			if (i === messages.length - 1 && images?.length) {
-				// Ollama wants raw base64, not a data: URI
-				entry.images = images.map(dataUri => dataUri.split(",")[1] || dataUri);
+				// Ollama wants raw base64, not a data: URI. Unlike
+				// streamOpenAICompatible/streamAnthropic, there's no way to
+				// interleave a text label between images here -- Ollama's
+				// native /api/chat protocol has no content-block array at
+				// all, just a flat `images` list alongside the message's own
+				// plain-string `content`, with no mechanism to anchor image
+				// N to any particular point in the text. A labeled { label,
+				// dataUri } entry (see _normalizeImage) still works here,
+				// its label is just silently dropped -- only the dataUri is
+				// ever used.
+				entry.images = images.map((image) => {
+					let { dataUri } = this._normalizeImage(image);
+					return dataUri.split(",")[1] || dataUri;
+				});
 			}
 			ollamaMessages.push(entry);
 		}
@@ -557,13 +582,24 @@ LLMInterfaces = {
 			// newest prompt; historical turns' images were never persisted
 			// anywhere reusable (chat.exportTranscript() only tracks text).
 			if (i === messages.length - 1 && images?.length) {
-				apiMessages.push({
-					role: m.role,
-					content: [
-						{ type: "text", text: m.content },
-						...images.map(dataUri => ({ type: "image_url", image_url: { url: dataUri } })),
-					],
-				});
+				// Each image is preceded by its own { type: "text" } label
+				// block, if it has one (see _normalizeImage) -- rather than
+				// bunching every image together in one flat list AFTER the
+				// whole text block, with nothing anchoring image N to its
+				// own place in the prompt. Confirmed concretely that this
+				// bunched-with-no-anchor shape measurably hurt output once
+				// several images were batched into one call (e.g. a multi-
+				// table CSV export): the model has to track a purely
+				// positional correspondence between two separately-listed,
+				// equally long sequences (the text tuples, then the images),
+				// rather than reading each image right where it's referenced.
+				let content = [{ type: "text", text: m.content }];
+				for (let image of images) {
+					let { label, dataUri } = this._normalizeImage(image);
+					if (label) content.push({ type: "text", text: label });
+					content.push({ type: "image_url", image_url: { url: dataUri } });
+				}
+				apiMessages.push({ role: m.role, content });
 			}
 			else {
 				apiMessages.push({ role: m.role, content: m.content });
@@ -898,9 +934,19 @@ LLMInterfaces = {
 			return {
 				role: m.role,
 				content: [
-					...images.map((dataUri) => {
+					// Each image is preceded by its own { type: "text" }
+					// label block, if it has one (see _normalizeImage) --
+					// same reasoning as streamOpenAICompatible's own content
+					// array: bunching several images together with nothing
+					// anchoring image N to its own place in the prompt
+					// measurably hurt output once several images were
+					// batched into one call. Anthropic's Messages API
+					// supports arbitrary text/image block ordering within
+					// `content`, same as OpenAI's.
+					...images.flatMap((image) => {
+						let { label, dataUri } = this._normalizeImage(image);
 						let match = dataUri.match(/^data:([^;]+);base64,(.+)$/);
-						return {
+						let block = {
 							type: "image",
 							source: {
 								type: "base64",
@@ -908,6 +954,7 @@ LLMInterfaces = {
 								data: match ? match[2] : dataUri,
 							},
 						};
+						return label ? [{ type: "text", text: label }, block] : [block];
 					}),
 					{ type: "text", text: m.content },
 				],

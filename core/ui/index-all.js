@@ -84,11 +84,16 @@ LLMUIIndexAll = {
 	// rather than reading the active reader themselves.
 	// Never throws -- returns { ok: true } or { ok: false, error }, so the
 	// caller's batch loop doesn't need its own try/catch per item.
-	async _indexItem(item) {
+	// `onMessage`, if given, is forwarded to getCitationIndex/getParagraphIndex/
+	// getFigureIndex purely so their own embeddings.sqlite sync (see
+	// citation.js's/figures.js's own comments) has somewhere to report a
+	// visible confirmation line -- everything else here stays on the
+	// Debug-Output-only this.log() it already used.
+	async _indexItem(item, onMessage) {
 		try {
 			let text = await LLMPrompt.getAttachmentFullText(item);
 			if (text.trim()) {
-				await LLMCitation.getCitationIndex(item, text).catch((e) => {
+				await LLMCitation.getCitationIndex(item, text, undefined, onMessage).catch((e) => {
 					this.log(`getCitationIndex failed for ${item.libraryKey}: ${e.message}`);
 				});
 				// Only built when the live query path would actually need it
@@ -97,14 +102,14 @@ LLMUIIndexAll = {
 				// PDF never needs retrieval-chunked context, so building this
 				// too would just be wasted embedding cost.
 				if (text.length > LLMPrompt.maxPDFContextChars) {
-					await LLMCitation.getParagraphIndex(item, text).catch((e) => {
+					await LLMCitation.getParagraphIndex(item, text, undefined, onMessage).catch((e) => {
 						this.log(`getParagraphIndex failed for ${item.libraryKey}: ${e.message}`);
 					});
 				}
 			}
 			await Promise.all([
 				LLMTables.getTableIndex(item).catch((e) => this.log(`getTableIndex failed for ${item.libraryKey}: ${e.message}`)),
-				LLMFigures.getFigureIndex(item).catch((e) => this.log(`getFigureIndex failed for ${item.libraryKey}: ${e.message}`)),
+				LLMFigures.getFigureIndex(item, undefined, onMessage).catch((e) => this.log(`getFigureIndex failed for ${item.libraryKey}: ${e.message}`)),
 				LLMReferences.getReferenceIndex(item).catch((e) => this.log(`getReferenceIndex failed for ${item.libraryKey}: ${e.message}`)),
 				LLMEquations.getEquationIndex(item).catch((e) => this.log(`getEquationIndex failed for ${item.libraryKey}: ${e.message}`)),
 			]);
@@ -299,7 +304,7 @@ LLMUIIndexAll = {
 					// wait around for that).
 					if (progress.isClosed()) return;
 					let item = items[nextIndex++];
-					let result = await this._indexItem(item);
+					let result = await this._indexItem(item, onMessage);
 					if (result.ok) succeeded++;
 					else failed++;
 					completed++;

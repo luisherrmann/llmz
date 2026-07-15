@@ -907,7 +907,7 @@ LLMChatPane = {
 											},
 										};
 									};
-									citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries, onEmbeddingStart);
+									citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries, onEmbeddingStart, (text) => appendMessage("System", text));
 								}
 								catch (e) {
 									this.log(`Failed to resolve citation positions for ${logLabel}: ${e.message}`);

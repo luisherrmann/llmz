@@ -316,6 +316,86 @@ LLMCitation = {
 			.map(r => index.sentences[r.sourceId]);
 	},
 
+	// Reads just the `sentences` field of ANOTHER paper's paragraph disk
+	// cache -- none of getParagraphIndex's fingerprint/staleness machinery,
+	// since that requires the paper's freshly-extracted full text, which
+	// getCrossLibraryChunks below has no reason to re-extract for every
+	// candidate paper it might cite. A cross-library chunk is supplementary
+	// context, not the primary paper, so a missing/unreadable cache entry
+	// (e.g. a paper indexed before this cache existed, or one whose text
+	// changed since) is just skipped by the caller rather than triggering a
+	// recompute.
+	async _loadParagraphSentences(paperId) {
+		try {
+			let path = PathUtils.join(await this._cacheDir(), `${paperId}-paragraph.json`);
+			if (!await IOUtils.exists(path)) return null;
+			let raw = await IOUtils.readUTF8(path);
+			return JSON.parse(raw).sentences || null;
+		}
+		catch (e) {
+			this.log(`_loadParagraphSentences: failed for paper ${paperId}: ${e.message}`);
+			return null;
+		}
+	},
+
+	// Same institutional-vs-personal-name handling as export.js's own
+	// _formatCreatorName -- duplicated rather than shared since it's three
+	// lines and pulling in a whole other module for it isn't worth it.
+	_formatCreatorName(creator) {
+		if (creator.name) return creator.name;
+		return [creator.firstName, creator.lastName].filter(Boolean).join(" ");
+	},
+
+	// Cross-library retrieval for llm/prompt.js's <CROSS_LIBRARY_CONTEXT> --
+	// ranks paragraphs from EVERY OTHER paper in the library (excludePaperId
+	// is always the currently active PDF) against `query`, via the same
+	// sqlite-vec MATCH path getRelevantChunks uses above, then resolves each
+	// hit's paper_id back to that paper's own paragraph text (its disk
+	// cache -- see _loadParagraphSentences) and Zotero metadata. `paperId`
+	// here is always a PDF ATTACHMENT's item.id, same as everywhere else in
+	// this file -- its own title/creator fields are usually just generic
+	// translator-assigned values, not the real paper's, so metadata is read
+	// from the PARENT item instead (same `item.parentItem || item` pattern
+	// as export.js's own paperItem).
+	//
+	// Returned already ranked nearest-first (unlike getRelevantChunks, which
+	// re-sorts back to paragraph position order -- that only makes sense
+	// within a SINGLE paper's own paragraph sequence; across different
+	// papers there's no shared position to sort by, so relevance rank is
+	// the only meaningful order here). Silently skips any hit whose paper no
+	// longer exists in the library, or whose paragraph cache is missing/
+	// unreadable -- both are exactly the kind of stale state a
+	// supplementary cross-library chunk should just drop, not fail the
+	// whole request over -- so the returned list can be shorter than topK.
+	async getCrossLibraryChunks(query, model, provider, topK, excludePaperId) {
+		let queryEmbedding = await this.getEmbedding(query, model, provider);
+		let results = await LLMEmbeddingsDB.query(model, queryEmbedding, topK, {
+			source: "paragraph",
+			excludePaperId,
+		});
+
+		let chunks = [];
+		let sentencesByPaperId = new Map();
+		for (let result of results) {
+			let sentences = sentencesByPaperId.get(result.paperId);
+			if (sentences === undefined) {
+				sentences = await this._loadParagraphSentences(result.paperId);
+				sentencesByPaperId.set(result.paperId, sentences);
+			}
+			let text = sentences?.[result.sourceId];
+			if (!text) continue;
+
+			let attachment = Zotero.Items.get(result.paperId);
+			if (!attachment) continue;
+			let paperItem = attachment.parentItem || attachment;
+			let title = paperItem.getField("title") || paperItem.libraryKey;
+			let authors = paperItem.getCreatorsJSON().map(c => this._formatCreatorName(c)).filter(Boolean).join(", ");
+
+			chunks.push({ paperId: result.paperId, title, authors, text });
+		}
+		return chunks;
+	},
+
 	// Numbers each [CITE](<find:phrase>) token in order -- [1], [2], etc,
 	// per the system prompt's "numbering is assigned automatically". Used
 	// to also try replacing `phrase` with the "nearest" sentence found by

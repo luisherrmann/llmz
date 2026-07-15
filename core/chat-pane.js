@@ -394,12 +394,15 @@ LLMChatPane = {
 	//   [label](<ref:figure:N>) /
 	//   [label](<ref:figureExtra:N>) /
 	//   [label](<ref:equation:N>) /
-	//   [label](<ref:note:KEY>)    -- table/figure/equation/note mention: looked
-	//                                  up in linkIndex for precise navigation --
-	//                                  by annotation key (select + scroll, notes
-	//                                  only) if present, else by position,
-	//                                  else falling back to a caption
-	//                                  text-search (e.g. rotated tables).
+	//   [label](<ref:reference:N>) /
+	//   [label](<ref:note:KEY>)    -- table/figure/equation/reference/note
+	//                                  mention: looked up in linkIndex for
+	//                                  precise navigation -- by annotation
+	//                                  key (select + scroll, notes only) if
+	//                                  present, else by position, else
+	//                                  falling back to a caption text-search
+	//                                  (e.g. rotated tables, or a reference
+	//                                  entry whose extraction had no anchor).
 	//                                  Every ref: kind uses a numeric N
 	//                                  EXCEPT note, which uses the
 	//                                  annotation's actual (string) Zotero

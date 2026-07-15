@@ -260,8 +260,33 @@ LLMReferences = {
 		}
 	},
 
-	// Returns { references: [{ index, text }] }, index = the paper's own
-	// reference-list number (or null if unparseable).
+	// The number to show/match a reference by, wherever one is needed
+	// (download/link tool resolution, <REFERENCE_CONTEXT>/ref:reference:N
+	// citation links) -- `index` (the paper's own PRINTED bibliography
+	// number, e.g. "[17]") when the paper actually has one, but that's null
+	// for a paper whose bibliography is author-year/alphabetical with no
+	// printed numbers at all (common e.g. in ML papers using natbib-style
+	// citations -- confirmed concretely, not a hypothetical: a real paper's
+	// extraction came back with EVERY entry's `index` null). `reference_id`
+	// (this module's own 1..N extraction-order position, always present) is
+	// the only stand-in a user could mean by "reference 17" for that paper
+	// -- the same number they'd get counting down the PDF's own list by eye,
+	// since there's no printed number to read off instead. For an actually-
+	// numbered paper this always resolves to the real printed number
+	// (`index` is non-null), so this is a strict superset of the old
+	// `r.index`-only behavior, not a behavior change for that case.
+	displayNumber(ref) {
+		return ref.index ?? ref.reference_id;
+	},
+
+	// Returns { references: [{ index, reference_id, text, position }] },
+	// index = the paper's own printed reference-list number (null if the
+	// bibliography has none -- see displayNumber above for what to use
+	// instead in that case), reference_id = this extraction's own 1..N
+	// document-order position (always present), position = { pageIndex,
+	// rects } for navigateToPosition (see core/citation.js), null if the
+	// entry had no anchor at all -- see extract_references.js's own
+	// buildPosition for where this comes from.
 	async getReferenceIndex(item, onMessage) {
 		if (this._indexCache.has(item.id)) {
 			this.log(`getReferenceIndex: memory cache hit for item ${item.id}`);

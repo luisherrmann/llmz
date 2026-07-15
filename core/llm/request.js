@@ -576,6 +576,72 @@ LLMRequest = {
 		return { index: referenceIndex, addition };
 	},
 
+	// Unlike the five _buildXContext methods above (each selecting AMONG
+	// candidates already extracted from THIS paper), there's no index to
+	// await here -- LLMCitation.getCrossLibraryChunks searches the whole
+	// library's own embeddings.sqlite directly, so this only runs at all
+	// once shouldIncludeCrossLibraryWithLLM says the OTHER papers in the
+	// library are actually worth searching for this question. Skipped
+	// entirely with no active PDF (pdfItem null) -- "the current paper" and
+	// "every OTHER paper" both stop being meaningful without one.
+	async _buildCrossLibraryContext(prompt, readerContext, pdfItem, title, ctx) {
+		let { appendMessage, isCancelled } = ctx;
+		if (!pdfItem) return { addition: "" };
+
+		let includeCrossLibrary = false;
+		try {
+			includeCrossLibrary = await LLMPrompt.shouldIncludeCrossLibraryWithLLM(prompt, title, readerContext);
+		}
+		catch (e) {
+			this.log(`shouldIncludeCrossLibraryWithLLM failed: ${e.message}`);
+		}
+		this.log(`_buildCrossLibraryContext: shouldIncludeCrossLibraryWithLLM -> ${includeCrossLibrary}`);
+		if (isCancelled()) return { addition: "" };
+		// Logged either way (not just on inclusion) -- without this, "cross-
+		// library context never showed up" and "it was never even considered
+		// relevant for this question" are indistinguishable from the Logs
+		// panel alone.
+		if (!includeCrossLibrary) {
+			appendMessage("System", "Cross-library context: judged not relevant to this question, skipping.");
+			return { addition: "" };
+		}
+
+		let chunks = [];
+		try {
+			let model = await LLMCitation.getEmbeddingModel();
+			let provider = LLMInterfaces._embeddingProvider;
+			chunks = await LLMCitation.getCrossLibraryChunks(prompt, model, provider, LLMPrompt.crossLibraryTopK, pdfItem.id);
+		}
+		catch (e) {
+			this.log(`getCrossLibraryChunks failed: ${e.message}`);
+		}
+		if (isCancelled()) return { addition: "" };
+		if (!chunks.length) {
+			appendMessage("System", "Cross-library context judged relevant, but no matching paragraphs were found in other papers.");
+			return { addition: "" };
+		}
+
+		let addition = `\n\n<CROSS_LIBRARY_CONTEXT>\n${LLMPrompt._formatCrossLibraryContext(chunks)}\n</CROSS_LIBRARY_CONTEXT>`;
+		// Grouped by paper (chunks.length counts PARAGRAPHS, several of
+		// which can come from the same paper) so this reads as "which papers
+		// got pulled in" rather than a flat, possibly-repetitive per-chunk
+		// list -- exactly what to check to confirm cross-library retrieval
+		// is actually pulling from the papers you'd expect, not something
+		// misconfigured (e.g. the wrong embedding model, or a paper that
+		// silently never got indexed).
+		let byPaper = new Map();
+		for (let chunk of chunks) {
+			let entry = byPaper.get(chunk.paperId);
+			if (!entry) byPaper.set(chunk.paperId, entry = { title: chunk.title, count: 0 });
+			entry.count++;
+		}
+		appendMessage("System", `Including cross-library context (${chunks.length} paragraph${chunks.length === 1 ? "" : "s"} from ${byPaper.size} other paper${byPaper.size === 1 ? "" : "s"}).`);
+		for (let [paperId, { title, count }] of byPaper) {
+			appendMessage("System", `  - "${title}" [paper_id: ${paperId}]: ${count} paragraph${count === 1 ? "" : "s"}`);
+		}
+		return { addition };
+	},
+
 	// Handles the "no tool intent matched" case -- the full normal chat
 	// flow: PDF-context building, table/figure/equation/note/reference
 	// extraction+selection (see the five _buildXContext methods above),
@@ -804,6 +870,10 @@ LLMRequest = {
 			let referenceResult = await this._buildReferenceContext(referenceIndexPromise, prompt, readerContext, ctx);
 			if (isCancelled()) return;
 			modelPrompt += referenceResult.addition;
+
+			let crossLibraryResult = await this._buildCrossLibraryContext(prompt, readerContext, pdfItem, contextInfo?.title, ctx);
+			if (isCancelled()) return;
+			modelPrompt += crossLibraryResult.addition;
 
 			// Lets the model's own text mentions of any extracted table/figure/
 			// reference/equation/note (not just the one injected as full context)

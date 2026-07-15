@@ -500,7 +500,7 @@ LLMRequest = {
 	// linkIndex's citation-link resolution on figures the model's text
 	// mentions, regardless of whether any of them ended up attached as
 	// images here.
-	async _buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, ctx) {
+	async _buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, pdfItem, ctx) {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
 		let images = [];
 		let addition = "";
@@ -530,6 +530,27 @@ LLMRequest = {
 			if (figureIndex?.figures?.length && supportsImages && !pastedImageDataUris.length) {
 				let bestFigures = await LLMPrompt.selectFiguresWithLLM(figureIndex, prompt, readerContext);
 				if (isCancelled()) return { index: figureIndex, images, addition };
+				// image_data is no longer part of the figure index cache itself
+				// (see LLMFigures.renderMissingImages's own comment) -- rendered
+				// lazily here, on demand, only for whichever of the LLM-selected
+				// `bestFigures` don't already have one, against each figure's own
+				// cached bounding box (`position`, no re-detection needed). Same
+				// on-demand pattern as tools/table-export.js's own table
+				// rendering, just triggered by a chat turn instead of an export.
+				if (bestFigures.some(f => !f.image_data)) {
+					try {
+						await LLMFigures.renderMissingImages(pdfItem, bestFigures);
+					}
+					catch (e) {
+						// Not surfaced via appendMessage here -- same convention as
+						// _buildTableContext's own selectTablesWithLLM catch (Debug-
+						// Output-only for an internal-step failure); the "selected
+						// but couldn't render" message below already tells the user
+						// the user-visible OUTCOME (whether total or partial), which
+						// is what actually matters to them.
+						this.log(`_buildImageContext: renderMissingImages failed: ${e.message}`);
+					}
+				}
 				let figuresWithImages = bestFigures.filter(f => f.image_data);
 				if (figuresWithImages.length) {
 					images.push(...figuresWithImages.map(f => f.image_data));
@@ -538,6 +559,20 @@ LLMRequest = {
 					makeMessageClickable(msg, figuresWithImages[0]);
 					let figureBlock = figuresWithImages.map(f => LLMPrompt._formatFigureCitationHint(f)).join("\n");
 					addition = `\n\n<FIGURE_CONTEXT>\n${figureBlock}\n</FIGURE_CONTEXT>`;
+				}
+				// bestFigures non-empty but every render attempt still came up
+				// image-data-less (e.g. render_crops.py failed for all of them,
+				// or every candidate lacked a usable `position`) -- previously
+				// silent (figuresWithImages.length === 0 just skipped the block
+				// above with no trace anywhere in the chat's own Logs panel),
+				// which made a render regression indistinguishable from the LLM
+				// legitimately finding no relevant figure at all. Surfaced
+				// separately from the renderMissingImages catch above since a
+				// PARTIAL failure (some rendered, some didn't) throws no
+				// exception there at all -- rendered.length simply comes back
+				// short.
+				else if (bestFigures.length) {
+					appendMessage("System", `Selected ${bestFigures.length} relevant figure${bestFigures.length === 1 ? "" : "s"} but couldn't render ${bestFigures.length === 1 ? "its" : "their"} image(s) -- continuing without image context.`);
 				}
 			}
 		}
@@ -862,7 +897,7 @@ LLMRequest = {
 			if (isCancelled()) return;
 			modelPrompt += noteResult.addition;
 
-			let imageResult = await this._buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, ctx);
+			let imageResult = await this._buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, pdfItem, ctx);
 			if (isCancelled()) return;
 			let images = imageResult.images;
 			modelPrompt += imageResult.addition;

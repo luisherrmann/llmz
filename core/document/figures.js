@@ -20,24 +20,20 @@ LLMFigures = {
 	// pattern-match against, so this asks PyMuPDF what images genuinely
 	// exist instead of guessing from block size/text-density).
 	_imageListScriptName: "list_page_images.py",
-	// Renders every figure's own cropped JPEG (see scripts/render_crops.py)
-	// -- split out of the old extract_figures.py, which used to render each
-	// figure's image unconditionally as part of caption-anchored detection
-	// itself. Detection is SDT-only now (image_data always starts null, see
-	// _extractRaw), so this runs as its own step -- but UNLIKE
-	// document/tables.js's own use of this same script (invoked lazily,
-	// only on-demand for a table export), this runs EAGERLY, right after
-	// every getFigureIndex extraction, because a figure's image_data is a
-	// hard dependency of llm/request.js's "attach this figure as image
-	// context for a vision-capable model" feature (the image itself, not
-	// just a caption, is what gets sent) -- there's no realistic "figure
-	// resolved but its image never needed" case for figures the way there
-	// is for tables (whose image is only needed for the comparatively rare
-	// image-grounded CSV export), so deferring it here would just mean
-	// paying the same render cost anyway, on every relevant chat request
-	// rather than once at extraction time.
+	// Renders a figure's own cropped JPEG on demand (see renderMissingImages
+	// below) -- split out of the old extract_figures.py, which used to
+	// render each figure's image unconditionally as part of caption-anchored
+	// detection itself. Detection is SDT-only now (image_data always starts
+	// null, see _extractRaw), so this is invoked lazily only when something
+	// actually needs an image (currently: llm/request.js's "attach this
+	// figure as image context for a vision-capable model" feature, only for
+	// whichever figures selectFiguresWithLLM actually picked for THIS chat
+	// turn), against the bounding box SDT already found -- same on-demand
+	// pattern document/tables.js already uses for its own renderMissingImages,
+	// avoiding paying render cost (and cache-file size) for every figure in
+	// a paper up front when most chat turns only ever need one or two.
 	_renderScriptName: "render_crops.py",
-	_cacheVersion: 5, // bump when the cached index schema changes (JS-side, not just Python scripts)
+	_cacheVersion: 6, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_venvMissing: false,
 	_indexCache: new Map(),
 
@@ -146,10 +142,14 @@ LLMFigures = {
 			let parts = [`v${this._cacheVersion}`];
 			let sdtStat = await IOUtils.stat(this._nodeScriptPath(this._sdtScriptName));
 			parts.push(`${sdtStat.size}:${sdtStat.lastModified}`);
-			for (let name of [this._imageListScriptName, this._renderScriptName]) {
-				let stat = await IOUtils.stat(this._scriptPath(name));
-				parts.push(`${stat.size}:${stat.lastModified}`);
-			}
+			// render_crops.py deliberately excluded here -- it only ever fills
+			// in image_data lazily, on demand, AFTER the index is already built
+			// (see renderMissingImages), and image_data is never persisted to
+			// this cache anyway (see _saveDiskCache), so its own mtime has no
+			// bearing on whether this cache is still valid -- same reasoning
+			// as document/tables.js's own _scriptFingerprint.
+			let stat = await IOUtils.stat(this._scriptPath(this._imageListScriptName));
+			parts.push(`${stat.size}:${stat.lastModified}`);
 			return parts.join("|");
 		}
 		catch (e) {
@@ -196,13 +196,18 @@ LLMFigures = {
 			// captionEmbedding is stripped before writing -- embeddings.sqlite
 			// (see getFigureIndex's own sync right before this call) is the
 			// sole store for the actual vectors now, same reasoning as
-			// citation.js's sentence/paragraph caches. A shallow per-figure
-			// copy, not a mutation of `index.figures` itself -- the caller
-			// keeps holding (and memory-caching) that same object, unrelated
-			// to what actually lands on disk.
+			// citation.js's sentence/paragraph caches. image_data is stripped
+			// too -- it's a real rendered JPEG (base64), regenerable on demand
+			// from `position` (the bounding box) via renderMissingImages
+			// whenever actually needed, so persisting it here would just be
+			// dead weight bloating this cache file for figures that never end
+			// up attached to a chat turn. Both are a shallow per-figure copy,
+			// not a mutation of `index.figures` itself -- the caller keeps
+			// holding (and memory-caching) that same object, image_data and
+			// all, unrelated to what actually lands on disk.
 			let diskIndex = {
 				...index,
-				figures: index.figures.map(({ captionEmbedding, ...rest }) => rest),
+				figures: index.figures.map(({ captionEmbedding, image_data, ...rest }) => rest),
 			};
 			await IOUtils.writeUTF8(path, JSON.stringify(diskIndex, null, 2));
 			this.log(`_saveDiskCache: saved ${index.figures.length} figures for item ${item.id}`);
@@ -216,8 +221,9 @@ LLMFigures = {
 	// (via _sdtScriptName), with PyMuPDF-sourced ground-truth image regions
 	// (via _imageListScriptName, see its own comment) fed in as an extra
 	// body-candidate source. Returns raw entries with image_data always
-	// null (see _sdtScriptName's own comment) -- _renderImages below fills
-	// it in right after this runs.
+	// null (see _sdtScriptName's own comment) -- renderMissingImages below
+	// fills it in later, lazily, only for whichever figures actually end up
+	// needing a render.
 	async _extractRaw(item, onMessage) {
 		let pdfPath = item.getFilePath();
 		if (!pdfPath) throw new Error("Item has no attached file path");
@@ -245,24 +251,29 @@ LLMFigures = {
 		return figures;
 	},
 
-	// Renders image_data for every figure via scripts/render_crops.py,
-	// against each figure's own cached `position` (the bounding box the SDT
-	// detection already found, no re-detection needed) -- EAGER, unlike
-	// document/tables.js's renderMissingImages, which only renders on
-	// demand for whichever tables a caller actually asks for an image of
-	// (see _renderScriptName's own comment for why figures can't defer this
-	// the same way). Mutates the given figure objects in place (image_data
-	// set directly on each) and also returns them, matching
-	// renderMissingImages's own shape.
-	async _renderImages(item, figures) {
-		let targets = figures.filter(f => f.position?.rects?.[0]);
-		if (!targets.length) return figures;
+	// Lazily renders image_data for whichever of `figures` don't already have
+	// it (see scripts/render_crops.py and _renderScriptName's own comment)
+	// -- against each figure's own cached `position` (the bounding box the
+	// SDT detection already found, no re-detection needed), so a caller like
+	// llm/request.js's image-context step can get a real render for just the
+	// handful of figures an LLM selection actually picked, without every
+	// figure in the paper paying that cost up front. Mutates the given
+	// figure objects in place (image_data set directly on each) and also
+	// returns them. Unlike document/tables.js's own renderMissingImages, this
+	// does NOT persist the render back to the disk cache -- image_data is
+	// deliberately stripped before every _saveDiskCache write (see its own
+	// comment), so a figure gets re-rendered fresh each time it's actually
+	// needed rather than accumulating rendered bytes in the cache file.
+	// No-ops (no subprocess call at all) if every figure already has an image.
+	async renderMissingImages(item, figures) {
+		let missing = figures.filter(f => !f.image_data && f.position?.rects?.[0]);
+		if (!missing.length) return figures;
 
 		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
 		let stamp = `${item.id}_${Date.now()}`;
 		let regionsPath = PathUtils.join(scriptsDir, `render_in_${stamp}.json`);
 		let outputPath = PathUtils.join(scriptsDir, `render_out_${stamp}.json`);
-		let regions = targets.map((f, i) => ({
+		let regions = missing.map((f, i) => ({
 			index: i,
 			page_num: f.position.pageIndex + 1,
 			bbox: f.position.rects[0],
@@ -277,14 +288,17 @@ LLMFigures = {
 		let rendered = JSON.parse(await IOUtils.readUTF8(outputPath));
 		IOUtils.remove(outputPath).catch(() => {});
 		for (let r of rendered) {
-			targets[r.index].image_data = r.image_data;
+			missing[r.index].image_data = r.image_data;
 		}
-		this.log(`_renderImages: rendered ${rendered.length}/${targets.length} figure image(s)`);
+		this.log(`renderMissingImages: rendered ${rendered.length}/${missing.length} figure image(s)`);
 		return figures;
 	},
 
 	// Returns the figure index for an item, using memory/disk cache where possible.
 	// Index shape: { figures: [{ page_num, figure_num, figure_extra_num, figure_id, label, caption, captionEmbedding, image_data, position }] }
+	// -- image_data starts null here (and stays absent from the disk cache,
+	// see _saveDiskCache's own comment); it's only ever filled in on demand,
+	// per-figure, by renderMissingImages above.
 	// `onEmbeddingStart(provider, model)`, if given, is called ONLY when a
 	// cache miss/staleness actually forces the caption embeddings to be
 	// recomputed (see citation.js's _getIndex, same pattern) -- its
@@ -321,7 +335,6 @@ LLMFigures = {
 		}
 
 		let figures = await this._extractRaw(item, onMessage);
-		if (figures.length) await this._renderImages(item, figures);
 		let progress = figures.length ? onEmbeddingStart?.(embeddingProvider, embeddingModel) : null;
 		let embedded = await this._addCaptionEmbeddings(figures, embeddingModel, progress, embeddingProvider);
 		if (progress) progress.textContent = `Recomputed ${embedded.length} figure caption embedding${embedded.length === 1 ? "" : "s"} using ${embeddingProvider} ${embeddingModel}.`;

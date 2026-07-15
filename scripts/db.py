@@ -36,8 +36,8 @@ Schema:
     doesn't need to re-derive the table name or guess the dimension.
 
 Usage: python3 db.py <db_path> <command> <input_json_path> <output_json_path>
-  <command> is one of: insert, query, delete, has. See _cmd_* below for each
-  command's exact input/output JSON shape.
+  <command> is one of: insert, query, query_batch, delete, has. See _cmd_*
+  below for each command's exact input/output JSON shape.
 """
 
 import sys
@@ -196,27 +196,22 @@ CANDIDATE_MULTIPLIER = 20
 CANDIDATE_LIMIT_FLOOR = 200
 
 
-def _cmd_query(db, data):
-    model = data['model']
-    top_k = data['top_k']
-    paper_id = data.get('paper_id')
-    exclude_paper_id = data.get('exclude_paper_id')
-    source = data.get('source')
-
-    table_name, _dims = _get_or_create_model_table(db, model)
-    if table_name is None:
-        return {'results': []}  # nothing has ever been embedded under this model
-
+# One nearest-neighbor lookup against an already-resolved vec0 `table_name`
+# -- factored out of _cmd_query so _cmd_query_batch below can run several of
+# these against the SAME open connection/table resolution, one per query
+# vector, without each needing its own db.py subprocess invocation. Returns
+# a plain list (not the {'results': ...} wrapper), already trimmed to top_k.
+def _query_one(db, table_name, top_k, embedding, paper_id, exclude_paper_id, source):
     filtered = paper_id is not None or exclude_paper_id is not None or source is not None
     candidate_limit = max(top_k * CANDIDATE_MULTIPLIER, CANDIDATE_LIMIT_FLOOR) if filtered else top_k
-    query_vec = sqlite_vec.serialize_float32(data['embedding'])
+    query_vec = sqlite_vec.serialize_float32(embedding)
 
     candidates = db.execute(
         f'SELECT rowid, distance FROM {table_name} WHERE embedding MATCH ? ORDER BY distance LIMIT ?',
         [query_vec, candidate_limit]
     ).fetchall()
     if not candidates:
-        return {'results': []}
+        return []
 
     distance_by_id = {row_id: distance for row_id, distance in candidates}
     placeholders = ','.join('?' * len(distance_by_id))
@@ -241,7 +236,54 @@ def _cmd_query(db, data):
         for row_id, p_id, m, s, s_id in rows
     ]
     results.sort(key=lambda r: r['distance'])
-    return {'results': results[:top_k]}
+    return results[:top_k]
+
+
+def _cmd_query(db, data):
+    model = data['model']
+    table_name, _dims = _get_or_create_model_table(db, model)
+    if table_name is None:
+        return {'results': []}  # nothing has ever been embedded under this model
+    results = _query_one(
+        db, table_name,
+        data['top_k'], data['embedding'],
+        data.get('paper_id'), data.get('exclude_paper_id'), data.get('source')
+    )
+    return {'results': results}
+
+
+# Input: { model, queries: [{ embedding, top_k, paper_id?, exclude_paper_id?,
+#   source? }, ...] }
+# Output: { results: [[{ id, paper_id, model, source, source_id, distance },
+#   ...], ...] } -- one results array per entry in `queries`, same order.
+#
+# Batches at the PROCESS level, not the sqlite-vec level -- vec0's MATCH
+# operator takes exactly one query vector per SQL statement (there is no
+# native way to pass several query vectors into one MATCH lookup), so this
+# still issues one MATCH per query internally, via the same _query_one as
+# _cmd_query. What it actually saves is the FIXED per-subprocess cost --
+# python startup, sqlite3/sqlite_vec imports, connect+load extension,
+# measured at ~20-40ms combined, dwarfing a single MATCH query's own ~2-5ms
+# -- by resolving the model's vec0 table ONCE and running every query
+# against the SAME open connection, instead of one db.py subprocess
+# invocation per query vector. Used by core/document/citations.js's
+# resolvePositions embedding fallback to look up the nearest sentence for
+# potentially several unresolved citations in one call instead of N.
+def _cmd_query_batch(db, data):
+    model = data['model']
+    queries = data['queries']
+    table_name, _dims = _get_or_create_model_table(db, model)
+    if table_name is None:
+        return {'results': [[] for _ in queries]}
+    results = [
+        _query_one(
+            db, table_name,
+            q['top_k'], q['embedding'],
+            q.get('paper_id'), q.get('exclude_paper_id'), q.get('source')
+        )
+        for q in queries
+    ]
+    return {'results': results}
 
 
 # Input: { paper_id, model?, source? }
@@ -296,6 +338,7 @@ def _cmd_has(db, data):
 COMMANDS = {
     'insert': _cmd_insert,
     'query': _cmd_query,
+    'query_batch': _cmd_query_batch,
     'delete': _cmd_delete,
     'has': _cmd_has,
 }

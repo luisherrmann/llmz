@@ -169,6 +169,40 @@ LLMEmbeddingsDB = {
 		}));
 	},
 
+	// Batched counterpart to query() above -- one subprocess call for
+	// several query vectors instead of one call per vector. sqlite-vec's
+	// MATCH operator only ever takes a single query vector per SQL
+	// statement (there's no native multi-vector MATCH), so this doesn't
+	// change the underlying search itself -- what it saves is db.py's own
+	// fixed per-invocation cost (python startup + imports + connect, see
+	// db.py's own _cmd_query_batch comment), paid once for the whole batch
+	// instead of once per query. `queries` is [{ embedding, topK, paperId?,
+	// excludePaperId?, source? }, ...]; returns one
+	// [{ id, paperId, model, source, sourceId, distance }, ...] array per
+	// entry, same order -- e.g. citation.js's getNearestSentences, looking
+	// up the nearest sentence for each of several unresolved citations in
+	// one round trip.
+	async queryBatch(model, queries) {
+		let result = await this._run("query_batch", {
+			model,
+			queries: queries.map(q => ({
+				embedding: q.embedding,
+				top_k: q.topK,
+				...(q.paperId !== undefined ? { paper_id: q.paperId } : {}),
+				...(q.excludePaperId !== undefined ? { exclude_paper_id: q.excludePaperId } : {}),
+				...(q.source !== undefined ? { source: q.source } : {}),
+			})),
+		});
+		return result.results.map(rows => rows.map(r => ({
+			id: r.id,
+			paperId: r.paper_id,
+			model: r.model,
+			source: r.source,
+			sourceId: r.source_id,
+			distance: r.distance,
+		})));
+	},
+
 	// Drops every embedding for `paperId`, optionally narrowed to one
 	// model and/or source -- e.g. the Cache section's own per-type Clear
 	// Cache, or Clear All's whole-library reset (see ui/advanced.js),

@@ -568,12 +568,12 @@ LLMUIAdvanced = {
 		};
 
 		// "Fully indexed" = every one of the five extraction caches this
-		// paper's PDF can have is present (citation embeddings, equations,
+		// paper's PDF can have is present (text embeddings, equations,
 		// figures, references, tables -- the same five LLMUIIndexAll's own
 		// _indexItem builds, and the same five listed as checkboxes further
 		// down under Clear Cache). "Partial" = some but not all -- a very
 		// real state in practice (e.g. an embedding-provider quota error
-		// leaves citations missing while tables/figures/etc. still built
+		// leaves text missing while tables/figures/etc. still built
 		// fine, or vice versa; see the ENOENT/429 cases already observed).
 		// "None" = zero. Each module's own hasCache(item) is a cheap disk
 		// existence check, no content read.
@@ -871,7 +871,7 @@ LLMUIAdvanced = {
 			}
 		});
 
-		// Drops all five extraction caches (citation sentence+paragraph,
+		// Drops all five extraction caches (text sentence+paragraph,
 		// equations, figures, references, tables -- the same five
 		// getIndexStatus checks) for EVERY paper with a PDF in the library
 		// -- the exact counterpart to Index All/the bar's own definition of
@@ -919,7 +919,13 @@ LLMUIAdvanced = {
 
 		let cacheTypes = [
 			{
-				label: "Citations",
+				// Covers LLMz/cache/text/ -- sentence AND paragraph chunks/
+				// embeddings together (see citation.js's getTextIndex), plus
+				// the citation-position cache (query -> resolved page
+				// position), which depends on this same text cache for its
+				// own embedding-based fallback match (see
+				// document/citations.js's resolvePositions).
+				label: "Text",
 				hasCache: item => LLMCitation.hasCache(item),
 				clear: async (item) => {
 					await LLMCitation.clearCache(item);
@@ -987,8 +993,8 @@ LLMUIAdvanced = {
 		activeTitleActions.className = "llm-cache-status-actions";
 
 		// Runs the exact same per-paper extraction pipeline as "Index All"
-		// (LLMUIIndexAll._indexItem -- citations/paragraphs, tables, figures,
-		// references, equations), just for the single currently-active PDF,
+		// (LLMUIIndexAll._indexItem -- text (sentences/paragraphs), tables,
+		// figures, references, equations), just for the single currently-active PDF,
 		// so a specific paper (e.g. one a cross-library question needs, see
 		// LLMCitation.getCrossLibraryChunks) can be pre-warmed on demand
 		// without waiting for/running a full-library Index All pass. Doesn't
@@ -999,7 +1005,7 @@ LLMUIAdvanced = {
 		// then reflects whatever's actually on disk afterward either way.
 		let indexButton = doc.createElement("button");
 		indexButton.className = "llm-index-active";
-		indexButton.title = "Fully index (cache) the active PDF -- citations, paragraphs, tables, figures, references, and equations";
+		indexButton.title = "Fully index (cache) the active PDF -- text (sentences/paragraphs), tables, figures, references, and equations";
 		indexButton.append(LLMUIIcon.create(doc, indexIconURL), doc.createTextNode("Index"));
 		indexButton.addEventListener("click", async () => {
 			let item = getActiveItem?.();

@@ -1,6 +1,6 @@
 LLMCitation = {
 	maxCitationChunks: 1000,
-	_citationIndexCache: new Map(),
+	_indexCache: new Map(), // item.id -> { sentences, paragraphs, model, provider }
 
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Citation]: " + msg);
@@ -38,7 +38,7 @@ LLMCitation = {
 	// Thin delegating wrappers over LLMEmbeddings (llm/embeddings.js), which owns
 	// the actual embedding-provider dispatch, batching/concurrency, and
 	// batch-size persistence -- kept here under their original names so
-	// _getIndex/getRelevantChunks/groundCitations below, and every external
+	// getTextIndex/getRelevantChunks/groundCitations below, and every external
 	// caller (document/tables.js, document/figures.js, llm/request.js,
 	// semantic-history.js, ui/index-all.js), don't need to change a single
 	// call site.
@@ -67,80 +67,80 @@ LLMCitation = {
 	},
 
 	async _cacheDir() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "citation");
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "text");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},
 
-	// `provider` is checked alongside `model` -- a stale cache built under a
-	// DIFFERENT embedding provider (but coincidentally the same model name)
-	// must still be invalidated, since embeddings from two different
-	// providers/backends aren't comparable via cosine similarity even if
-	// the model name happens to match (see _getIndex's own comment). The
-	// cache file itself carries no `embeddings` field at all anymore (see
-	// _saveDiskCache below) -- embeddings.sqlite is the sole store for the
-	// actual vectors now that retrieval (getRelevantChunks/
-	// getNearestSentences) only ever queries the DB, never reads them back
-	// off a loaded disk cache.
-	async _loadDiskCache(item, fingerprint, model, provider, kind) {
+	// Fingerprint is the ONLY staleness check needed here -- unlike the old
+	// per-kind cache files, this joint file carries no `model`/`provider`
+	// fields at all (see _saveDiskCache below): the chunk TEXT itself
+	// doesn't depend on which embedding model/provider is active, only the
+	// EMBEDDINGS do, and those live solely in embeddings.sqlite (keyed by
+	// model) -- see getTextIndex's own hasEmbeddings check for that half.
+	// The cache file also carries no `embeddings` field -- embeddings.sqlite
+	// is the sole store for the actual vectors now that retrieval
+	// (getRelevantChunks/getNearestSentences) only ever queries the DB,
+	// never reads them back off a loaded disk cache.
+	async _loadDiskCache(item, fingerprint) {
 		try {
-			let path = PathUtils.join(await this._cacheDir(), `${item.id}-${kind}.json`);
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
 			if (!await IOUtils.exists(path)) return null;
-			let raw = await IOUtils.readUTF8(path);
-			let cached = JSON.parse(raw);
-			if (cached.fingerprint !== fingerprint || cached.model !== model || cached.provider !== provider) return null;
-			this.log(`_loadDiskCache(${kind}): loaded ${cached.sentences.length} chunks for item ${item.id}`);
-			return { sentences: cached.sentences, model: cached.model, provider: cached.provider };
+			let cached = JSON.parse(await IOUtils.readUTF8(path));
+			if (cached.fingerprint !== fingerprint) return null;
+			this.log(`_loadDiskCache: loaded ${cached.sentences.length} sentences, ${cached.paragraphs.length} paragraphs for item ${item.id}`);
+			return { sentences: cached.sentences, paragraphs: cached.paragraphs };
 		}
 		catch (e) {
-			this.log(`_loadDiskCache(${kind}): failed for item ${item.id}: ${e.message}`);
+			this.log(`_loadDiskCache: failed for item ${item.id}: ${e.message}`);
 			return null;
 		}
 	},
 
-	// `index` here only ever needs to supply {sentences, model, provider} --
-	// the caller's own local `embeddings` array is used directly for the
-	// embeddings.sqlite sync (see _getIndex) and never touches this file at
-	// all anymore; keeping it out of the JSON entirely avoids ballooning
-	// what would otherwise be a giant, unreadable array of raw floats (a
-	// real paper's sentence cache ran well into the tens of MB with
-	// embeddings included) for content pretty-printing wouldn't make any
-	// more human-readable anyway.
-	async _saveDiskCache(item, fingerprint, index, kind) {
+	async _saveDiskCache(item, fingerprint, sentences, paragraphs) {
 		try {
-			let path = PathUtils.join(await this._cacheDir(), `${item.id}-${kind}.json`);
-			await IOUtils.writeUTF8(path, JSON.stringify({
-				fingerprint,
-				model: index.model,
-				provider: index.provider,
-				sentences: index.sentences,
-			}, null, 2));
-			this.log(`_saveDiskCache(${kind}): saved ${index.sentences.length} chunks for item ${item.id}`);
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			await IOUtils.writeUTF8(path, JSON.stringify({ fingerprint, sentences, paragraphs }, null, 2));
+			this.log(`_saveDiskCache: saved ${sentences.length} sentences, ${paragraphs.length} paragraphs for item ${item.id}`);
 		}
 		catch (e) {
-			this.log(`_saveDiskCache(${kind}): failed for item ${item.id}: ${e.message}`);
+			this.log(`_saveDiskCache: failed for item ${item.id}: ${e.message}`);
 		}
 	},
 
-	// Shared by getCitationIndex/getParagraphIndex below -- builds (or
-	// returns an already-cached) index for `kind` ("sentence"/"paragraph").
-	// Carries NO embeddings array of its own: retrieval (getRelevantChunks/
-	// getNearestSentences below) ranks via a direct sqlite-vec MATCH query
-	// against embeddings.sqlite instead of an in-JS cosine-similarity scan,
-	// so all this needs to hand back is `sentences` (the chunk TEXT itself
-	// -- the DB stores no text, see db.py's own header comment) plus enough
-	// to run that query (`model`/`provider`/`paperId`/`source`). The disk
-	// cache is still consulted for `sentences` -- it carries no `embeddings`
-	// field of its own at all anymore (see _saveDiskCache's own comment).
-	// Whether the DB already has this paper's embeddings for `kind` is
+	// Builds (or returns an already-cached) combined sentence+paragraph text
+	// index for `item` -- both kinds are always built, disk-cached, and
+	// embedded TOGETHER in one pass, never independently. Previously,
+	// getCitationIndex/getParagraphIndex each drove their own separate
+	// per-kind build/cache/DB-sync, which meant a caller that only ever
+	// needed one kind (e.g. document/citations.js's resolvePositions
+	// fallback, sentence-only) would silently leave the OTHER kind unbuilt
+	// -- which mattered concretely for getCrossLibraryChunks below, since it
+	// only ever searches source:"paragraph" embeddings: a paper short enough
+	// to never need its OWN paragraph-chunked context (see llm/prompt.js's
+	// buildPromptWithActivePDFContext) still needs one for cross-library
+	// search to ever find it, so ui/index-all.js's _indexItem ended up
+	// manually calling both anyway. Building both here unconditionally, in
+	// one call, removes the need for callers to remember that -- and halves
+	// the number of embedBatched round trips a paper needing both otherwise
+	// pays.
+	//
+	// getCitationIndex/getParagraphIndex below are thin views over this,
+	// each returning just their own half in the {sentences, model, provider,
+	// paperId, source} shape retrieval (getRelevantChunks/getNearestSentences)
+	// already expects -- unchanged from before, so neither of those, nor any
+	// other caller, needed to change.
+	//
+	// Whether the DB already has this paper's embeddings for EACH kind is
 	// checked via a cheap COUNT(*) (hasEmbeddings) against the plain
 	// `embeddings` table, NOT a fetch of the vectors themselves -- fetching
 	// every vector by rowid turned out to be very slow against
 	// embeddings.sqlite once it's accumulated enough delete/reinsert churn
 	// (see replaceForPaper's own comment) to fragment sqlite-vec's chunked
-	// storage, which a plain COUNT(*) never touches. A count mismatch (no
-	// rows yet, or a failed previous sync) is treated the same as a full
-	// cache miss: (re)embed and resync.
+	// storage, which a plain COUNT(*) never touches. A count mismatch on
+	// EITHER kind (no rows yet, or a failed previous sync) rebuilds BOTH --
+	// keeping this always-both invariant means there's never a partial
+	// "sentences embedded, paragraphs not" state to reason about.
 	//
 	// `onEmbeddingStart(provider, model)`, if given, is called ONLY when a
 	// cache miss/staleness actually forces a real recompute -- not on every
@@ -148,80 +148,92 @@ LLMCitation = {
 	// that gets passed to onEmbeddingDone below so the caller can update the
 	// SAME message in place with a completion line, rather than the two
 	// ever appearing as separate messages.
-	async _getIndex(item, text, kind, chunkFn, onEmbeddingStart, onMessage) {
-		let cacheKey = `${item.id}:${kind}`;
-
-		// Captured alongside the model, not just the model name alone --
-		// see _loadDiskCache's own comment. Resolved BEFORE the memory-cache
-		// check below (not just passed to _loadDiskCache further down) --
-		// switching provider/model mid-session must invalidate an
-		// already-loaded memory-cached index too, since that check would
-		// otherwise never even run (the disk cache is only consulted on a
-		// memory-cache MISS).
+	async getTextIndex(item, text, onEmbeddingStart, onMessage) {
+		// Resolved BEFORE the memory-cache check below (not just passed to
+		// _loadDiskCache further down) -- switching provider/model
+		// mid-session must invalidate an already-loaded memory-cached index
+		// too, since disk/DB checks further down are only ever consulted on
+		// a memory-cache MISS.
 		let provider = LLMInterfaces._embeddingProvider;
 		let model = await this.getEmbeddingModel();
 
-		let cached = this._citationIndexCache.get(cacheKey);
+		let cached = this._indexCache.get(item.id);
 		if (cached && cached.provider === provider && cached.model === model) return cached;
 
 		let fingerprint = this._textFingerprint(text);
 
-		let diskCached = await this._loadDiskCache(item, fingerprint, model, provider, kind);
-		let sentences = diskCached ? diskCached.sentences : chunkFn(text);
+		let diskCached = await this._loadDiskCache(item, fingerprint);
+		let sentences = diskCached ? diskCached.sentences : this.splitIntoSentences(text);
+		let paragraphs = diskCached ? diskCached.paragraphs : this.splitIntoParagraphs(text);
 		if (!sentences.length) return null;
 
-		let dbCount = 0;
-		try {
-			({ count: dbCount } = await LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: kind }));
-		}
-		catch (e) {
-			this.log(`_getIndex(${kind}): DB lookup failed for item ${item.id}: ${e.message}`);
-		}
-		if (dbCount === sentences.length) {
-			let index = { sentences, model, provider, paperId: item.id, source: kind };
-			this._citationIndexCache.set(cacheKey, index);
+		let [sentenceDbCount, paragraphDbCount] = await Promise.all([
+			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "sentence" }).then(r => r.count).catch((e) => {
+				this.log(`getTextIndex: DB lookup failed (sentence) for item ${item.id}: ${e.message}`);
+				return 0;
+			}),
+			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "paragraph" }).then(r => r.count).catch((e) => {
+				this.log(`getTextIndex: DB lookup failed (paragraph) for item ${item.id}: ${e.message}`);
+				return 0;
+			}),
+		]);
+
+		if (sentenceDbCount === sentences.length && paragraphDbCount === paragraphs.length) {
+			let index = { sentences, paragraphs, model, provider };
+			this._indexCache.set(item.id, index);
 			// The DB already has everything needed for retrieval, but if the
 			// disk cache is what's actually MISSING here (e.g. after Clear
 			// Cache, which only deletes this JSON file and never touches
 			// embeddings.sqlite -- see clearCache below), this is the only
 			// remaining place that would ever rewrite it. Without this,
-			// hasCache() (Library Index Status) and _loadParagraphSentences
+			// hasCache() (Library Index Status) and _loadParagraphs
 			// (cross-library retrieval's text lookup) silently keep treating
 			// this paper as unindexed forever, even though embeddings.sqlite
 			// has full embeddings for it -- confirmed concretely: a paper
-			// whose citation/ disk cache was gone still had matching sentence/
+			// whose text/ disk cache was gone still had matching sentence/
 			// paragraph rows in embeddings.sqlite from an earlier run, and
 			// every subsequent "Index" click took this shortcut without ever
 			// restoring the JSON file.
 			if (!diskCached) {
-				await this._saveDiskCache(item, fingerprint, { sentences, model, provider }, kind);
+				await this._saveDiskCache(item, fingerprint, sentences, paragraphs);
 			}
-			this.log(`_getIndex(${kind}): found ${dbCount} embeddings in embeddings.sqlite for item ${item.id}`);
+			this.log(`getTextIndex: found ${sentenceDbCount} sentence / ${paragraphDbCount} paragraph embeddings in embeddings.sqlite for item ${item.id}`);
 			return index;
 		}
 
 		let progress = onEmbeddingStart?.(provider, model);
-		this.log(`_getIndex(${kind}): embedding ${sentences.length} chunks with ${provider}/${model}`);
-		let embeddings = await this.embedBatched(sentences, model, provider, {
-			onProgress: (completed, total) => progress?.setProgress?.(completed, total),
+		let total = sentences.length + paragraphs.length;
+		this.log(`getTextIndex: embedding ${sentences.length} sentences + ${paragraphs.length} paragraphs with ${provider}/${model}`);
+		// Two sequential embedBatched calls (not one merged array) -- keeps
+		// each kind's own chunk-to-embedding correspondence trivial to zip
+		// back together below, and `total`/the running offset here give a
+		// single combined 0..total progress readout across both phases
+		// rather than two separate bars.
+		let sentenceEmbeddings = await this.embedBatched(sentences, model, provider, {
+			onProgress: completed => progress?.setProgress?.(completed, total),
 		});
-		if (progress) progress.textContent = `Recomputed ${embeddings.length} ${kind} embedding${embeddings.length === 1 ? "" : "s"} using ${provider} ${model}.`;
+		let paragraphEmbeddings = await this.embedBatched(paragraphs, model, provider, {
+			onProgress: completed => progress?.setProgress?.(sentences.length + completed, total),
+		});
+		let embeddedCount = sentenceEmbeddings.length + paragraphEmbeddings.length;
+		if (progress) progress.textContent = `Recomputed ${sentenceEmbeddings.length} sentence and ${paragraphEmbeddings.length} paragraph embedding${embeddedCount === 1 ? "" : "s"} using ${provider} ${model}.`;
 
-		let index = { sentences, model, provider, paperId: item.id, source: kind };
-		this._citationIndexCache.set(cacheKey, index);
-		await this._saveDiskCache(item, fingerprint, { sentences, model, provider }, kind);
+		let index = { sentences, paragraphs, model, provider };
+		this._indexCache.set(item.id, index);
+		await this._saveDiskCache(item, fingerprint, sentences, paragraphs);
 		try {
-			await LLMEmbeddingsDB.replaceForPaper(item.id, model, kind, sentences.map((s, i) => ({ sourceId: i, embedding: embeddings[i] })));
-			onMessage?.(`Synced ${embeddings.length} ${kind} embedding${embeddings.length === 1 ? "" : "s"} to embeddings.sqlite for item ${item.id}.`);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "sentence", sentences.map((s, i) => ({ sourceId: i, embedding: sentenceEmbeddings[i] })));
+			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "paragraph", paragraphs.map((p, i) => ({ sourceId: i, embedding: paragraphEmbeddings[i] })));
+			onMessage?.(`Synced ${sentenceEmbeddings.length} sentence and ${paragraphEmbeddings.length} paragraph embedding${embeddedCount === 1 ? "" : "s"} to embeddings.sqlite for item ${item.id}.`);
 		}
 		catch (e) {
-			this.log(`_getIndex(${kind}): failed to sync to embeddings DB: ${e.message}`);
-			onMessage?.(`Failed to sync ${kind} embeddings to embeddings.sqlite for item ${item.id}: ${e.message}`);
+			this.log(`getTextIndex: failed to sync to embeddings DB: ${e.message}`);
+			onMessage?.(`Failed to sync sentence/paragraph embeddings to embeddings.sqlite for item ${item.id}: ${e.message}`);
 		}
 		return index;
 	},
 
-	// Sentence-level index, used ONLY as document/citations.js's
+	// Sentence-level view over getTextIndex, used ONLY as document/citations.js's
 	// LLMCitationPosition.resolvePositions' embedding-based FALLBACK for a
 	// citation phrase that its primary, fast, exact SDT-text match failed
 	// to find -- a real paraphrase (not hallucinated, just not verbatim)
@@ -232,39 +244,39 @@ LLMCitation = {
 	// fallback still ends up with a real position, not just a plausible
 	// sentence with nowhere to navigate to.
 	async getCitationIndex(item, text, onEmbeddingStart, onMessage) {
-		return this._getIndex(item, text, "sentence", t => this.splitIntoSentences(t), onEmbeddingStart, onMessage);
+		let index = await this.getTextIndex(item, text, onEmbeddingStart, onMessage);
+		if (!index) return null;
+		return { sentences: index.sentences, model: index.model, provider: index.provider, paperId: item.id, source: "sentence" };
 	},
 
-	// Paragraph-level index, used by llm/prompt.js's
+	// Paragraph-level view over getTextIndex, used by llm/prompt.js's
 	// buildPromptWithActivePDFContext for a PDF too long to fit whole.
 	async getParagraphIndex(item, text, onEmbeddingStart, onMessage) {
-		return this._getIndex(item, text, "paragraph", t => this.splitIntoParagraphs(t), onEmbeddingStart, onMessage);
+		let index = await this.getTextIndex(item, text, onEmbeddingStart, onMessage);
+		if (!index) return null;
+		return { sentences: index.paragraphs, model: index.model, provider: index.provider, paperId: item.id, source: "paragraph" };
 	},
 
-	// Debug affordance ("Clear Cache" in Advanced) -- drops the memory cache,
-	// disk cache (sentence AND paragraph indices -- see _getIndex's `kind`),
-	// AND embeddings.sqlite rows for this item, so the next
-	// getCitationIndex/getParagraphIndex call actually re-embeds from
-	// scratch rather than reusing a possibly-stale result. Same pattern as
-	// document/tables.js's clearCache etc., except this module caches two
-	// files per item (one per `kind`), not one. The DB delete is NOT scoped
-	// to a model (no `model` passed to deleteForPaper) -- Clear Cache is
-	// meant to nuke everything for this item regardless of which
-	// provider/model produced it, matching the disk-cache delete above,
-	// which is likewise model-agnostic. Without this, _getIndex's own
-	// DB-count shortcut (see its comment) would find embeddings.sqlite
-	// still fully populated on the very next Index click and skip
-	// re-embedding entirely -- Clear Cache would only ever delete the JSON,
-	// never force an actual recompute (confirmed concretely: this is what
-	// left a paper's citation/ disk cache permanently missing despite
-	// embeddings.sqlite already having full sentence/paragraph rows for it).
+	// Debug affordance ("Clear Cache" in Advanced, under the "Text"
+	// checkbox) -- drops the memory cache, the joint disk cache file, AND
+	// both embeddings.sqlite sources for this item, so the next
+	// getTextIndex call actually re-embeds from scratch rather than reusing
+	// a possibly-stale result. The DB delete is NOT scoped to a model (no
+	// `model` passed to deleteForPaper) -- Clear Cache is meant to nuke
+	// everything for this item regardless of which provider/model produced
+	// it, matching the disk-cache delete above, which is likewise
+	// model-agnostic. Without this, getTextIndex's own DB-count shortcut
+	// (see its comment) would find embeddings.sqlite still fully populated
+	// on the very next Index click and skip re-embedding entirely -- Clear
+	// Cache would only ever delete the JSON, never force an actual recompute
+	// (confirmed concretely: this is what left a paper's text/ disk cache
+	// permanently missing despite embeddings.sqlite already having full
+	// sentence/paragraph rows for it).
 	async clearCache(item) {
-		this._citationIndexCache.delete(`${item.id}:sentence`);
-		this._citationIndexCache.delete(`${item.id}:paragraph`);
+		this._indexCache.delete(item.id);
 		try {
 			let dir = await this._cacheDir();
-			await IOUtils.remove(PathUtils.join(dir, `${item.id}-sentence.json`), { ignoreAbsent: true });
-			await IOUtils.remove(PathUtils.join(dir, `${item.id}-paragraph.json`), { ignoreAbsent: true });
+			await IOUtils.remove(PathUtils.join(dir, `${item.id}.json`), { ignoreAbsent: true });
 			await LLMEmbeddingsDB.deleteForPaper(item.id, { source: "sentence" });
 			await LLMEmbeddingsDB.deleteForPaper(item.id, { source: "paragraph" });
 			this.log(`clearCache: cleared for item ${item.id}`);
@@ -276,19 +288,19 @@ LLMCitation = {
 
 	// Cheap existence check (file presence only, no content read or
 	// fingerprint/model/provider validation -- unlike _loadDiskCache's own
-	// check) for ui/advanced.js's "library index status" bar under Cache.
-	// Deliberately checks the SENTENCE index only, not paragraph (paragraph
-	// is only ever built conditionally, for a PDF long enough to need
-	// chunked context -- see ui/index-all.js's own _indexItem comment -- so
-	// a short PDF with only a sentence index is still fully indexed for
-	// RAG purposes). Also deliberately doesn't validate the cache is still
-	// fresh for the CURRENTLY selected embedding provider/model: "has this
-	// PDF ever been indexed" is a more useful/stable signal for a
-	// library-wide readout than "is it valid right now," which would flip
-	// for the whole library every time the user switches models.
+	// check) for ui/advanced.js's "library index status" bar under Cache
+	// ("Text" checkbox/section). One joint file now covers both sentence and
+	// paragraph chunks together (see getTextIndex/_saveDiskCache), so its
+	// mere presence is enough to tell whether this paper has ever been
+	// indexed for RAG purposes at all. Also deliberately doesn't validate
+	// the cache is still fresh for the CURRENTLY selected embedding
+	// provider/model: "has this PDF ever been indexed" is a more useful/
+	// stable signal for a library-wide readout than "is it valid right
+	// now," which would flip for the whole library every time the user
+	// switches models.
 	async hasCache(item) {
 		let dir = await this._cacheDir();
-		return IOUtils.exists(PathUtils.join(dir, `${item.id}-sentence.json`));
+		return IOUtils.exists(PathUtils.join(dir, `${item.id}.json`));
 	},
 
 	// Ranks via a direct sqlite-vec MATCH query against embeddings.sqlite
@@ -345,24 +357,24 @@ LLMCitation = {
 		return sentences;
 	},
 
-	// Reads just the `sentences` field of ANOTHER paper's paragraph disk
-	// cache -- none of getParagraphIndex's fingerprint/staleness machinery,
-	// since that requires the paper's freshly-extracted full text, which
+	// Reads just the `paragraphs` field of ANOTHER paper's joint text disk
+	// cache -- none of getTextIndex's fingerprint/staleness machinery, since
+	// that requires the paper's freshly-extracted full text, which
 	// getCrossLibraryChunks below has no reason to re-extract for every
 	// candidate paper it might cite. A cross-library chunk is supplementary
 	// context, not the primary paper, so a missing/unreadable cache entry
 	// (e.g. a paper indexed before this cache existed, or one whose text
 	// changed since) is just skipped by the caller rather than triggering a
 	// recompute.
-	async _loadParagraphSentences(paperId) {
+	async _loadParagraphs(paperId) {
 		try {
-			let path = PathUtils.join(await this._cacheDir(), `${paperId}-paragraph.json`);
+			let path = PathUtils.join(await this._cacheDir(), `${paperId}.json`);
 			if (!await IOUtils.exists(path)) return null;
 			let raw = await IOUtils.readUTF8(path);
-			return JSON.parse(raw).sentences || null;
+			return JSON.parse(raw).paragraphs || null;
 		}
 		catch (e) {
-			this.log(`_loadParagraphSentences: failed for paper ${paperId}: ${e.message}`);
+			this.log(`_loadParagraphs: failed for paper ${paperId}: ${e.message}`);
 			return null;
 		}
 	},
@@ -380,7 +392,7 @@ LLMCitation = {
 	// is always the currently active PDF) against `query`, via the same
 	// sqlite-vec MATCH path getRelevantChunks uses above, then resolves each
 	// hit's paper_id back to that paper's own paragraph text (its disk
-	// cache -- see _loadParagraphSentences) and Zotero metadata. `paperId`
+	// cache -- see _loadParagraphs) and Zotero metadata. `paperId`
 	// here is always a PDF ATTACHMENT's item.id, same as everywhere else in
 	// this file -- its own title/creator fields are usually just generic
 	// translator-assigned values, not the real paper's, so metadata is read
@@ -408,7 +420,7 @@ LLMCitation = {
 		for (let result of results) {
 			let sentences = sentencesByPaperId.get(result.paperId);
 			if (sentences === undefined) {
-				sentences = await this._loadParagraphSentences(result.paperId);
+				sentences = await this._loadParagraphs(result.paperId);
 				sentencesByPaperId.set(result.paperId, sentences);
 			}
 			let text = sentences?.[result.sourceId];

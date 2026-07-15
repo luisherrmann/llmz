@@ -4,10 +4,10 @@
 // used methods (getEmbedding/getEmbeddings/embedBatched/cosineSimilarity/
 // getEmbeddingModel stay as thin wrappers there, so document/tables.js,
 // document/figures.js, semantic-history.js, llm/request.js etc. don't need to
-// change a single call site) while keeping citation-index building/caching
-// (getCitationIndex/getParagraphIndex/getRelevantChunks/groundCitations),
-// which is a genuinely different, citation-specific concern, in
-// citation.js itself.
+// change a single call site) while keeping text-index building/caching
+// (getTextIndex/getCitationIndex/getParagraphIndex/getRelevantChunks/
+// groundCitations), which is a genuinely different, citation-specific
+// concern, in citation.js itself.
 LLMEmbeddings = {
 	// Default batch size for embedBatched below -- exposed as an Advanced
 	// setting (ui/advanced.js's Embeddings section). Persisted per

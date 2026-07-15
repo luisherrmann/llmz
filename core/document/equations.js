@@ -76,7 +76,7 @@ LLMEquations = {
 	async _saveDiskCache(item, index) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
-			await IOUtils.writeUTF8(path, JSON.stringify(index));
+			await IOUtils.writeUTF8(path, JSON.stringify(index, null, 2));
 			this.log(`_saveDiskCache: saved ${index.equations.length} equations for item ${item.id}`);
 		}
 		catch (e) {

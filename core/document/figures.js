@@ -193,7 +193,18 @@ LLMFigures = {
 	async _saveDiskCache(item, index) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
-			await IOUtils.writeUTF8(path, JSON.stringify(index));
+			// captionEmbedding is stripped before writing -- embeddings.sqlite
+			// (see getFigureIndex's own sync right before this call) is the
+			// sole store for the actual vectors now, same reasoning as
+			// citation.js's sentence/paragraph caches. A shallow per-figure
+			// copy, not a mutation of `index.figures` itself -- the caller
+			// keeps holding (and memory-caching) that same object, unrelated
+			// to what actually lands on disk.
+			let diskIndex = {
+				...index,
+				figures: index.figures.map(({ captionEmbedding, ...rest }) => rest),
+			};
+			await IOUtils.writeUTF8(path, JSON.stringify(diskIndex, null, 2));
 			this.log(`_saveDiskCache: saved ${index.figures.length} figures for item ${item.id}`);
 		}
 		catch (e) {

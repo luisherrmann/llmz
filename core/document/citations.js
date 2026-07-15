@@ -134,7 +134,7 @@ LLMCitationPosition = {
 			await IOUtils.writeUTF8(path, JSON.stringify({
 				cacheVersion: this._cacheVersion,
 				positions: Object.fromEntries(map),
-			}));
+			}, null, 2));
 		}
 		catch (e) {
 			this.log(`_savePositionCache: failed for item ${item.id}: ${e.message}`);
@@ -629,19 +629,17 @@ LLMCitationPosition = {
 							citationIndex.model,
 							citationIndex.provider
 						);
+						// One DB round trip for every unresolved citation's
+						// nearest-sentence lookup (see getNearestSentences'
+						// own comment) -- ranking runs via sqlite-vec MATCH,
+						// same as getRelevantChunks, rather than the JS-side
+						// cosineSimilarity scan over every sentence this
+						// replaced.
+						let bestSentences = await LLMCitation.getNearestSentences(citationIndex, queryEmbeddings);
 						for (let i = 0; i < unresolved.length; i++) {
 							let { query, key } = unresolved[i];
-							let queryEmbedding = queryEmbeddings[i];
-							if (!queryEmbedding) continue;
-							let bestScore = -Infinity, bestIdx = -1;
-							for (let j = 0; j < citationIndex.embeddings.length; j++) {
-								let score = LLMCitation.cosineSimilarity(queryEmbedding, citationIndex.embeddings[j]);
-								if (score > bestScore) {
-									bestScore = score;
-									bestIdx = j;
-								}
-							}
-							if (bestIdx < 0) continue;
+							let bestSentence = bestSentences[i];
+							if (!bestSentence) continue;
 							// The matched sentence is real text extracted
 							// from this same document, so re-anchoring IT
 							// (rather than the model's own possibly-
@@ -652,7 +650,7 @@ LLMCitationPosition = {
 							// nowhere to navigate to.
 							let position = null;
 							try {
-								position = this._resolveQueryAgainstTextIndex(textIndex, citationIndex.sentences[bestIdx]);
+								position = this._resolveQueryAgainstTextIndex(textIndex, bestSentence);
 							}
 							catch (e) {
 								this.log(`resolvePositions: failed to re-anchor embedding match for "${query}": ${e.message}`);

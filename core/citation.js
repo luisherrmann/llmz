@@ -76,9 +76,10 @@ LLMCitation = {
 	// per-kind cache files, this joint file carries no `model`/`provider`
 	// fields at all (see _saveDiskCache below): the chunk TEXT itself
 	// doesn't depend on which embedding model/provider is active, only the
-	// EMBEDDINGS do, and those live solely in embeddings.sqlite (keyed by
-	// model) -- see getTextIndex's own hasEmbeddings check for that half.
-	// The cache file also carries no `embeddings` field -- embeddings.sqlite
+	// EMBEDDINGS do, and those live solely in the embeddings DB (one .sqlite
+	// file per model under LLMz/cache/embeddings/, see embeddings-db.js) --
+	// see getTextIndex's own hasEmbeddings check for that half. The cache
+	// file also carries no `embeddings` field -- the embeddings DB
 	// is the sole store for the actual vectors now that retrieval
 	// (getRelevantChunks/getNearestSentences) only ever queries the DB,
 	// never reads them back off a loaded disk cache.
@@ -134,8 +135,8 @@ LLMCitation = {
 	// Whether the DB already has this paper's embeddings for EACH kind is
 	// checked via a cheap COUNT(*) (hasEmbeddings) against the plain
 	// `embeddings` table, NOT a fetch of the vectors themselves -- fetching
-	// every vector by rowid turned out to be very slow against
-	// embeddings.sqlite once it's accumulated enough delete/reinsert churn
+	// every vector by rowid turned out to be very slow against a model's
+	// own embeddings file once it's accumulated enough delete/reinsert churn
 	// (see replaceForPaper's own comment) to fragment sqlite-vec's chunked
 	// storage, which a plain COUNT(*) never touches. A count mismatch on
 	// EITHER kind (no rows yet, or a failed previous sync) rebuilds BOTH --
@@ -182,22 +183,21 @@ LLMCitation = {
 			let index = { sentences, paragraphs, model, provider };
 			this._indexCache.set(item.id, index);
 			// The DB already has everything needed for retrieval, but if the
-			// disk cache is what's actually MISSING here (e.g. after Clear
-			// Cache, which only deletes this JSON file and never touches
-			// embeddings.sqlite -- see clearCache below), this is the only
-			// remaining place that would ever rewrite it. Without this,
-			// hasCache() (Library Index Status) and _loadParagraphs
+			// disk cache is what's actually MISSING here (e.g. a failed prior
+			// write, or a JSON file deleted/moved outside this plugin), this
+			// is the only remaining place that would ever rewrite it. Without
+			// this, hasCache() (Library Index Status) and _loadParagraphs
 			// (cross-library retrieval's text lookup) silently keep treating
-			// this paper as unindexed forever, even though embeddings.sqlite
-			// has full embeddings for it -- confirmed concretely: a paper
-			// whose text/ disk cache was gone still had matching sentence/
-			// paragraph rows in embeddings.sqlite from an earlier run, and
-			// every subsequent "Index" click took this shortcut without ever
-			// restoring the JSON file.
+			// this paper as unindexed forever, even though the embeddings DB
+			// has full embeddings for it -- confirmed concretely once (see
+			// git history): a paper whose text/ disk cache was gone still had
+			// matching sentence/paragraph rows in the DB from an earlier run,
+			// and every subsequent "Index" click took this shortcut without
+			// ever restoring the JSON file.
 			if (!diskCached) {
 				await this._saveDiskCache(item, fingerprint, sentences, paragraphs);
 			}
-			this.log(`getTextIndex: found ${sentenceDbCount} sentence / ${paragraphDbCount} paragraph embeddings in embeddings.sqlite for item ${item.id}`);
+			this.log(`getTextIndex: found ${sentenceDbCount} sentence / ${paragraphDbCount} paragraph embeddings in the embeddings DB for item ${item.id}`);
 			return index;
 		}
 
@@ -224,11 +224,11 @@ LLMCitation = {
 		try {
 			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "sentence", sentences.map((s, i) => ({ sourceId: i, embedding: sentenceEmbeddings[i] })));
 			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "paragraph", paragraphs.map((p, i) => ({ sourceId: i, embedding: paragraphEmbeddings[i] })));
-			onMessage?.(`Synced ${sentenceEmbeddings.length} sentence and ${paragraphEmbeddings.length} paragraph embedding${embeddedCount === 1 ? "" : "s"} to embeddings.sqlite for item ${item.id}.`);
+			onMessage?.(`Synced ${sentenceEmbeddings.length} sentence and ${paragraphEmbeddings.length} paragraph embedding${embeddedCount === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
 		}
 		catch (e) {
 			this.log(`getTextIndex: failed to sync to embeddings DB: ${e.message}`);
-			onMessage?.(`Failed to sync sentence/paragraph embeddings to embeddings.sqlite for item ${item.id}: ${e.message}`);
+			onMessage?.(`Failed to sync sentence/paragraph embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
 		}
 		return index;
 	},
@@ -259,26 +259,29 @@ LLMCitation = {
 
 	// Debug affordance ("Clear Cache" in Advanced, under the "Text"
 	// checkbox) -- drops the memory cache, the joint disk cache file, AND
-	// both embeddings.sqlite sources for this item, so the next
-	// getTextIndex call actually re-embeds from scratch rather than reusing
-	// a possibly-stale result. The DB delete is NOT scoped to a model (no
-	// `model` passed to deleteForPaper) -- Clear Cache is meant to nuke
-	// everything for this item regardless of which provider/model produced
-	// it, matching the disk-cache delete above, which is likewise
-	// model-agnostic. Without this, getTextIndex's own DB-count shortcut
-	// (see its comment) would find embeddings.sqlite still fully populated
-	// on the very next Index click and skip re-embedding entirely -- Clear
-	// Cache would only ever delete the JSON, never force an actual recompute
-	// (confirmed concretely: this is what left a paper's text/ disk cache
-	// permanently missing despite embeddings.sqlite already having full
-	// sentence/paragraph rows for it).
+	// both embeddings sources for this item UNDER THE CURRENTLY SELECTED
+	// embedding model, so the next getTextIndex call actually re-embeds
+	// from scratch rather than reusing a possibly-stale result. Scoped to
+	// the current model only (one .sqlite file per model now, see
+	// embeddings-db.js's own header comment) -- a paper's embeddings under
+	// some PREVIOUSLY used model, if any, are simply left in that model's
+	// own file untouched; Clear Cache is about resetting what you're
+	// CURRENTLY working with, not hunting down every model ever used.
+	// Without the DB half of this, getTextIndex's own DB-count shortcut
+	// (see its comment) would find the current model's file still fully
+	// populated on the very next Index click and skip re-embedding
+	// entirely -- Clear Cache would only ever delete the JSON, never force
+	// an actual recompute (confirmed concretely: this is what left a
+	// paper's text/ disk cache permanently missing despite the DB already
+	// having full sentence/paragraph rows for it).
 	async clearCache(item) {
 		this._indexCache.delete(item.id);
 		try {
 			let dir = await this._cacheDir();
 			await IOUtils.remove(PathUtils.join(dir, `${item.id}.json`), { ignoreAbsent: true });
-			await LLMEmbeddingsDB.deleteForPaper(item.id, { source: "sentence" });
-			await LLMEmbeddingsDB.deleteForPaper(item.id, { source: "paragraph" });
+			let model = await this.getEmbeddingModel();
+			await LLMEmbeddingsDB.deleteForPaper(item.id, model, { source: "sentence" });
+			await LLMEmbeddingsDB.deleteForPaper(item.id, model, { source: "paragraph" });
 			this.log(`clearCache: cleared for item ${item.id}`);
 		}
 		catch (e) {
@@ -303,7 +306,7 @@ LLMCitation = {
 		return IOUtils.exists(PathUtils.join(dir, `${item.id}.json`));
 	},
 
-	// Ranks via a direct sqlite-vec MATCH query against embeddings.sqlite
+	// Ranks via a direct sqlite-vec MATCH query against the embeddings DB
 	// (LLMEmbeddingsDB.query) rather than pulling every paragraph's
 	// embedding into JS and scanning cosineSimilarity over all of them --
 	// `index` (from getParagraphIndex) carries no embeddings array of its

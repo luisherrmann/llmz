@@ -84,7 +84,7 @@ LLMUIIndexAll = {
 	// Never throws -- returns { ok: true } or { ok: false, error }, so the
 	// caller's batch loop doesn't need its own try/catch per item.
 	// `onMessage`, if given, is forwarded to getTextIndex/getFigureIndex
-	// purely so their own embeddings.sqlite sync (see citation.js's/
+	// purely so their own embeddings DB sync (see citation.js's/
 	// figures.js's own comments) has somewhere to report a visible
 	// confirmation line -- everything else here stays on the Debug-Output-
 	// only this.log() it already used.

@@ -21,8 +21,8 @@ LLMUIIndexAll = {
 	// Papers indexed at once -- same worker-pool concurrency pattern as
 	// LLMCitation.embedBatched's own concurrent batch submission (see its
 	// own comment), applied here one level up: each paper's own embedding
-	// calls (getCitationIndex/getParagraphIndex, latency-bound network
-	// round-trips) benefit from overlapping several papers' pipelines
+	// calls (getTextIndex, latency-bound network round-trips) benefit from
+	// overlapping several papers' pipelines
 	// rather than sitting fully idle between one paper's own sequential
 	// steps. Lowered from 8 to 4 -- fewer PDFs open at once through
 	// whatever native path LLMPrompt.getAttachmentFullText's PDFWorker
@@ -77,44 +77,41 @@ LLMUIIndexAll = {
 	// existing Zotero annotations, nothing to pre-warm) and minus actually
 	// building a prompt: buildPromptWithActivePDFContext is tied to
 	// LLMChatPane.getActiveReaderAttachment() (the CURRENTLY open reader
-	// tab), not usable for an arbitrary background item, so the citation/
-	// paragraph index is built directly here instead via
-	// LLMPrompt.getAttachmentFullText + LLMCitation.getCitationIndex/
-	// getParagraphIndex, which both take `item` as an explicit parameter
+	// tab), not usable for an arbitrary background item, so the text index
+	// is built directly here instead via LLMPrompt.getAttachmentFullText +
+	// LLMCitation.getTextIndex, which takes `item` as an explicit parameter
 	// rather than reading the active reader themselves.
 	// Never throws -- returns { ok: true } or { ok: false, error }, so the
 	// caller's batch loop doesn't need its own try/catch per item.
-	// `onMessage`, if given, is forwarded to getCitationIndex/getParagraphIndex/
-	// getFigureIndex purely so their own embeddings.sqlite sync (see
-	// citation.js's/figures.js's own comments) has somewhere to report a
-	// visible confirmation line -- everything else here stays on the
-	// Debug-Output-only this.log() it already used.
+	// `onMessage`, if given, is forwarded to getTextIndex/getFigureIndex
+	// purely so their own embeddings.sqlite sync (see citation.js's/
+	// figures.js's own comments) has somewhere to report a visible
+	// confirmation line -- everything else here stays on the Debug-Output-
+	// only this.log() it already used.
 	async _indexItem(item, onMessage) {
 		try {
 			let text = await LLMPrompt.getAttachmentFullText(item);
 			if (text.trim()) {
-				await LLMCitation.getCitationIndex(item, text, undefined, onMessage).catch((e) => {
-					this.log(`getCitationIndex failed for ${item.libraryKey}: ${e.message}`);
-				});
-				// Unlike buildPromptWithActivePDFContext's own chunking
+				// getTextIndex always builds BOTH sentence and paragraph
+				// chunks/embeddings together (see citation.js's own comment) --
+				// unlike buildPromptWithActivePDFContext's own chunking
 				// condition (which only retrieves paragraph-level chunks for
 				// THIS paper's own single-paper context when its full text
 				// exceeds maxPDFContextChars -- a short paper just gets shown
-				// in full there, no retrieval needed), the paragraph index is
-				// built here UNCONDITIONALLY, regardless of paper length.
+				// in full there, no retrieval needed), the paragraph half is
+				// still built here regardless of paper length, since
 				// LLMCitation.getCrossLibraryChunks (cross-library retrieval,
 				// see llm/prompt.js's shouldIncludeCrossLibraryWithLLM) only
 				// ever searches source:"paragraph" embeddings -- confirmed
 				// concretely that gating this the same way as the single-
 				// paper path left every paper short enough to fit under
 				// maxPDFContextChars permanently unfindable via cross-library
-				// search, even after a full (re-)index, since it would never
-				// get a paragraph index at all. Indexing (this function, via
-				// either "Index" or "Index All") is exactly the place that
-				// should pre-warm for BOTH use cases, not just the single-
-				// paper one.
-				await LLMCitation.getParagraphIndex(item, text, undefined, onMessage).catch((e) => {
-					this.log(`getParagraphIndex failed for ${item.libraryKey}: ${e.message}`);
+				// search, even after a full (re-)index. Indexing (this
+				// function, via either "Index" or "Index All") is exactly the
+				// place that should pre-warm for BOTH use cases, not just the
+				// single-paper one.
+				await LLMCitation.getTextIndex(item, text, undefined, onMessage).catch((e) => {
+					this.log(`getTextIndex failed for ${item.libraryKey}: ${e.message}`);
 				});
 			}
 			await Promise.all([
@@ -331,7 +328,7 @@ LLMUIIndexAll = {
 			// clicking Cancel, rather than always `await`ing the pool
 			// directly -- there's no cheap way to forcibly abort an
 			// in-flight extraction (LLMPrompt.getAttachmentFullText/
-			// LLMCitation.getCitationIndex/etc. would all need
+			// LLMCitation.getTextIndex/etc. would all need
 			// AbortController plumbing threaded through every network call
 			// and subprocess spawn they make, a much bigger change), so
 			// cancelling here means DISCARDING whichever items are already

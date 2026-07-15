@@ -60,7 +60,7 @@ LLMCitationPosition = {
 	},
 
 	async _structureCacheDir() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "citation-structure");
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "structure");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 		return dir;
 	},

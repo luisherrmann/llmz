@@ -1,6 +1,6 @@
 // JS-side wrapper for scripts/db.py -- the consolidated sqlite-vec store
 // for every paper's own embeddings, replacing the old one-JSON-file-per-
-// item-per-kind cache under LLMz/cache/citation/ with a single database at
+// item-per-kind cache under LLMz/cache/text/ with a single database at
 // LLMz/cache/embeddings.sqlite, shared across the whole library. See
 // db.py's own header comment for the actual schema and rationale.
 //

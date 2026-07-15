@@ -301,7 +301,7 @@ LLMFigures = {
 	// per-figure, by renderMissingImages above.
 	// `onEmbeddingStart(provider, model)`, if given, is called ONLY when a
 	// cache miss/staleness actually forces the caption embeddings to be
-	// recomputed (see citation.js's _getIndex, same pattern) -- its
+	// recomputed (see citation.js's getTextIndex, same pattern) -- its
 	// return value (e.g. a Logs entry's content element) is updated in
 	// place with a completion line once recomputation finishes, rather
 	// than logging start/done as two separate messages.
@@ -401,7 +401,7 @@ LLMFigures = {
 	// itself starts with "Figure N:".
 	// `progress`, if given, has its setProgress(current, total) called as
 	// batches complete -- same in-place progress reporting citation.js's
-	// _getIndex does for its own embedding loop (see llm/request.js's
+	// getTextIndex does for its own embedding loop (see llm/request.js's
 	// onEmbeddingStart for what setProgress actually does to the Logs/reply
 	// bubble). Batched+concurrency-limited via LLMCitation.embedBatched
 	// rather than one request per figure -- see its own comment.

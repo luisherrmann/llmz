@@ -787,7 +787,7 @@ LLMRequest = {
 			// conversation, not just the Logs panel) -- only when a cache
 			// miss/staleness actually forces embeddings to be recomputed
 			// (e.g. after switching providers in Advanced settings), not on
-			// every request -- see citation.js's _getIndex/
+			// every request -- see citation.js's getTextIndex/
 			// document/figures.js's getFigureIndex, which both only call
 			// this on that path. `setProgress(current, total)` is called
 			// once per item as recomputation runs -- the Logs line gets the

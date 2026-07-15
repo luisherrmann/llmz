@@ -173,19 +173,19 @@ LLMUIAdvanced = {
 	// caller's LLMChatPane.getActiveReaderAttachment()). `onMessage(text)` is
 	// called for user-facing status text -- routing this (e.g. to the Logs
 	// panel) is the caller's concern, not this module's. `clearCacheIconURL`/
-	// `refreshIconURL`/`indexAllIconURL`/`clearAllIconURL`/`cancelIconURL`
-	// are plain file:/jar: URLs (see chat-pane.js's onRender, rootURI +
-	// "res/icons/...svg"), rendered via LLMUIIcon.create. `cancelIconURL` is
-	// what Index All swaps to (becoming an Abort button) once running -- see
-	// runIndexAll's own comment. `getTranscript()` (chat.exportTranscript,
-	// same as ui/button-row.js's own Export button uses) backfills
-	// LLMSemanticHistory when the "Use message history" mode switches TO
-	// "semantic" -- see the mode row below.
+	// `refreshIconURL`/`indexAllIconURL`/`indexIconURL`/`clearAllIconURL`/
+	// `cancelIconURL` are plain file:/jar: URLs (see chat-pane.js's onRender,
+	// rootURI + "res/icons/...svg"), rendered via LLMUIIcon.create.
+	// `cancelIconURL` is what Index All swaps to (becoming an Abort button)
+	// once running -- see runIndexAll's own comment. `getTranscript()`
+	// (chat.exportTranscript, same as ui/button-row.js's own Export button
+	// uses) backfills LLMSemanticHistory when the "Use message history" mode
+	// switches TO "semantic" -- see the mode row below.
 	// Returns { contextElement, messageHistoryElement, embeddingsElement,
 	// cacheElement, clearCacheButton, refreshPairSettings } -- four
 	// independent <details> panels for the caller to place wherever it
 	// wants in the pane's controls (see chat-pane.js's onRender).
-	create(doc, { getActiveItem, onMessage, clearCacheIconURL, refreshIconURL, indexAllIconURL, clearAllIconURL, cancelIconURL, getTranscript } = {}) {
+	create(doc, { getActiveItem, onMessage, clearCacheIconURL, refreshIconURL, indexAllIconURL, indexIconURL, clearAllIconURL, cancelIconURL, getTranscript } = {}) {
 		// Rows built from LLMPrompt's per-(provider,model) advanced settings
 		// (see its own comment) -- collected here so create()'s returned
 		// refreshPairSettings() can re-sync every one of these inputs after
@@ -979,6 +979,52 @@ LLMUIAdvanced = {
 		};
 		refreshCacheCheckboxes();
 
+		// Row for the two per-active-paper actions -- Index (build) and Clear
+		// Cache (destroy) -- same side-by-side flex-row treatment as the
+		// Library Index Status bar's own Refresh/Index All/Clear All row
+		// above (.llm-cache-status-actions).
+		let activeTitleActions = doc.createElement("div");
+		activeTitleActions.className = "llm-cache-status-actions";
+
+		// Runs the exact same per-paper extraction pipeline as "Index All"
+		// (LLMUIIndexAll._indexItem -- citations/paragraphs, tables, figures,
+		// references, equations), just for the single currently-active PDF,
+		// so a specific paper (e.g. one a cross-library question needs, see
+		// LLMCitation.getCrossLibraryChunks) can be pre-warmed on demand
+		// without waiting for/running a full-library Index All pass. Doesn't
+		// check getIndexStatus first (unlike Index All, which skips already-
+		// FULLY-indexed papers) -- this button is also the way to force a
+		// clean re-index of a paper whose cache is only PARTIAL, so it always
+		// runs regardless of current status; refreshCacheCheckboxes() below
+		// then reflects whatever's actually on disk afterward either way.
+		let indexButton = doc.createElement("button");
+		indexButton.className = "llm-index-active";
+		indexButton.title = "Fully index (cache) the active PDF -- citations, paragraphs, tables, figures, references, and equations";
+		indexButton.append(LLMUIIcon.create(doc, indexIconURL), doc.createTextNode("Index"));
+		indexButton.addEventListener("click", async () => {
+			let item = getActiveItem?.();
+			if (!item) {
+				onMessage?.("Index: no active PDF.");
+				return;
+			}
+			let label = LLMUIIndexAll._labelFor(item);
+			indexButton.disabled = true;
+			let logEl = onMessage?.(`Indexing "${label}"…`);
+			try {
+				let result = await LLMUIIndexAll._indexItem(item, onMessage);
+				let text = result.ok
+					? `Indexed "${label}".`
+					: `Indexing "${label}" failed: ${result.error}`;
+				if (logEl) logEl.textContent = text;
+				else onMessage?.(text);
+			}
+			finally {
+				indexButton.disabled = false;
+				await refreshCacheCheckboxes();
+			}
+		});
+		activeTitleActions.appendChild(indexButton);
+
 		let clearCacheButton = doc.createElement("button");
 		clearCacheButton.className = "llm-clear-cache";
 		clearCacheButton.title = "Clear the checked caches, for this PDF only";
@@ -1007,7 +1053,8 @@ LLMUIAdvanced = {
 			onMessage?.(`Cleared ${selected.map(c => c.label).join(", ")} cache for the active PDF. The next prompt will re-run extraction from scratch.`);
 			await refreshCacheCheckboxes();
 		});
-		cacheBody.appendChild(clearCacheButton);
+		activeTitleActions.appendChild(clearCacheButton);
+		cacheBody.appendChild(activeTitleActions);
 
 		// Re-syncs every Context/Message History input to LLMPrompt's
 		// current values -- call after LLMPrompt.applyAdvancedSettingsFor

@@ -376,13 +376,13 @@
 	opacity: 1;
 }
 
-.llm-submit, .llm-stop, .llm-discard-images, .llm-clear-cache, .llm-export, .llm-import {
+.llm-submit, .llm-stop, .llm-discard-images, .llm-clear-cache, .llm-index-active, .llm-export, .llm-import {
 	align-self: flex-start;
 }
 
 /* Same inline-flex + align-items: center technique as .llm-model-refresh --
    these all now carry an icon + text label. */
-.llm-submit, .llm-stop, .llm-discard-images, .llm-export, .llm-import, .llm-clear-conversation, .llm-clear-cache {
+.llm-submit, .llm-stop, .llm-discard-images, .llm-export, .llm-import, .llm-clear-conversation, .llm-clear-cache, .llm-index-active {
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;

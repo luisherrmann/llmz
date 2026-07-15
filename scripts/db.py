@@ -1,49 +1,58 @@
 #!/usr/bin/env python3
 """
-Consolidated sqlite-vec-backed store for every paper's own embeddings
-(citation sentences/paragraphs, and any other embedded source -- figures,
-notes, etc.) -- replaces the old one-JSON-file-per-item-per-kind cache under
-LLMz/cache/citation/ with a single database at LLMz/cache/embeddings.sqlite,
-shared across the whole library. Called from core/llm/embeddings-db.js
-(LLMEmbeddingsDB), which owns deployment/venv resolution the same way
-document/figures.js does for its own Python scripts.
+Consolidated sqlite-vec-backed store for a paper's own embeddings -- ONE
+.sqlite file PER EMBEDDING MODEL (LLMz/cache/embeddings/<model>.sqlite, see
+core/llm/embeddings-db.js's _sanitizeModelName/_dbPath), not one shared file
+across every model. Called from core/llm/embeddings-db.js (LLMEmbeddingsDB),
+which owns deployment/venv resolution, model-name-to-filename sanitization,
+and picking which file a given call routes to.
 
-Schema:
-  embeddings(id, paper_id, model, source, source_id, created_at, updated_at)
-    -- one row per embedded chunk, regardless of model. `paper_id` is
-    item.id -- the same numeric Zotero itemID every OTHER cache in this
-    plugin already keys its own per-item file on (see e.g.
-    LLMCitation._cacheDir's own `${item.id}-sentence.json`) -- kept
-    consistent here rather than introducing a second identifier scheme
-    (e.g. libraryKey) that the rest of the codebase doesn't use. `source`
-    names what kind of thing this is ("sentence", "paragraph", "figure",
-    "note", ...) and `source_id` is that source's OWN index into whatever
+Splitting by file (rather than a single shared file with a `model` column
+plus one vec0 table per model, hashed to a safe table name) means: (1)
+dropping/resetting one model's embeddings entirely is a plain file delete,
+no DROP TABLE/DELETE dance, and immediately reclaims disk space with no
+VACUUM needed; (2) no cross-model WAL/busy_timeout contention between
+concurrent Index All workers embedding under different models; (3) this
+schema no longer needs a `models` registry table OR a hashed vec0 table name
+at all -- a file is scoped to exactly one model, so there's exactly one vec0
+table in it, always named `vec_embeddings`.
+
+Schema (per file):
+  embeddings(id, paper_id, source, source_id, created_at, updated_at)
+    -- one row per embedded chunk. `paper_id` is item.id -- the same numeric
+    Zotero itemID every other cache in this plugin keys its own per-item
+    file on (see e.g. LLMCitation._cacheDir's own `${item.id}.json`).
+    `source` names what kind of thing this is ("sentence", "paragraph",
+    "figure", ...) and `source_id` is that source's OWN index into whatever
     cache file actually holds the text/content itself (e.g. a citation
-    sentence's position in LLMCitation's own chunk list) -- this table
-    only ever stores the embedding + enough to look the real content back
-    up, never the content itself. `created_at`/`updated_at` are ISO 8601
-    UTC strings, set automatically (see _connect's own comment) -- nothing
-    in this script sets them explicitly.
-  vec_<model hash>(rowid, embedding) -- one vec0 virtual table PER MODEL,
-    not one shared table, since sqlite-vec's vec0 requires a FIXED vector
-    dimension per table and different embedding models produce different-
-    sized vectors. `rowid` here is always the SAME value as the matching
-    row's `id` in `embeddings` (set explicitly on insert, never left to
-    autoincrement on its own), so the two tables join 1:1 on
-    embeddings.id = vec_<hash>.rowid.
-  models(model, table_name, dims) -- tracks which vec0 table (and vector
-    dimension) backs each model, so a later insert/query for that model
-    doesn't need to re-derive the table name or guess the dimension.
+    sentence's position in LLMCitation's own chunk list) -- this table only
+    ever stores the embedding + enough to look the real content back up,
+    never the content itself. `created_at`/`updated_at` are ISO 8601 UTC
+    strings, set automatically (see _connect's own comment) -- nothing in
+    this script sets them explicitly.
+  vec_embeddings(rowid, embedding) -- the one vec0 virtual table this file
+    has. `rowid` is always the SAME value as the matching row's `id` in
+    `embeddings` (set explicitly on insert, never left to autoincrement on
+    its own), so the two tables join 1:1 on embeddings.id = vec_embeddings.rowid.
+  meta(dims INTEGER) -- single-row table recording the vector dimension
+    vec_embeddings was created with, so a later insert with a mismatched
+    dimension (e.g. a model's own output shape changed, or embeddings-db.js
+    somehow resolved the wrong file for a model) is rejected rather than
+    silently corrupting the table -- without needing a separate
+    model-name-to-dims registry the way the old shared-file schema did
+    (that registry only ever existed because one file held SEVERAL models/
+    dims at once, which can't happen here by construction).
 
 Usage: python3 db.py <db_path> <command> <input_json_path> <output_json_path>
   <command> is one of: insert, query, query_batch, delete, has. See _cmd_*
-  below for each command's exact input/output JSON shape.
+  below for each command's exact input/output JSON shape. `db_path` should
+  already point at the model-specific file -- this script has no notion of
+  "model" as a concept at all, purely by construction.
 """
 
 import sys
 import json
 import sqlite3
-import hashlib
 
 try:
     import sqlite_vec
@@ -61,7 +70,10 @@ def _connect(db_path):
     # its own connection. WAL lets concurrent readers proceed alongside a
     # writer instead of blocking outright, and busy_timeout makes a writer
     # that DOES collide with another writer wait/retry for up to 5s rather
-    # than failing immediately with "database is locked".
+    # than failing immediately with "database is locked". Splitting by
+    # model (see module docstring) already keeps papers embedding under
+    # DIFFERENT models from ever contending on the same file at all -- this
+    # still matters for concurrent papers under the SAME model.
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA busy_timeout=5000')
     db.enable_load_extension(True)
@@ -81,7 +93,6 @@ def _connect(db_path):
         CREATE TABLE IF NOT EXISTS embeddings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             paper_id INTEGER NOT NULL,
-            model TEXT NOT NULL,
             source TEXT NOT NULL,
             source_id INTEGER NOT NULL,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -89,7 +100,7 @@ def _connect(db_path):
         )
     ''')
     db.execute('CREATE INDEX IF NOT EXISTS idx_embeddings_paper ON embeddings(paper_id)')
-    db.execute('CREATE INDEX IF NOT EXISTS idx_embeddings_paper_model_source ON embeddings(paper_id, model, source)')
+    db.execute('CREATE INDEX IF NOT EXISTS idx_embeddings_paper_source ON embeddings(paper_id, source)')
     # AFTER UPDATE (not BEFORE) so it fires once the triggering update has
     # already landed, then re-updates just the touched row -- safe against
     # an infinite loop even though the trigger body itself issues another
@@ -104,76 +115,65 @@ def _connect(db_path):
             UPDATE embeddings SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = NEW.id;
         END
     ''')
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS models (
-            model TEXT PRIMARY KEY,
-            table_name TEXT NOT NULL,
-            dims INTEGER NOT NULL
-        )
-    ''')
+    db.execute('CREATE TABLE IF NOT EXISTS meta (dims INTEGER NOT NULL)')
     return db
 
 
-# vec0 table names can't safely be built from the model string directly
-# (provider/model names routinely contain "/", ".", "-", which aren't valid
-# in an unquoted SQL identifier) -- a short hash sidesteps quoting/escaping
-# entirely, at the cost of the table name itself not being human-readable
-# (not a problem, nothing ever needs to read it directly; the `models`
-# table is the only thing that looks it up).
-def _table_name_for_model(model):
-    return 'vec_' + hashlib.sha256(model.encode('utf-8')).hexdigest()[:16]
+VEC_TABLE = 'vec_embeddings'
 
 
-# Returns (table_name, dims) for `model`, creating its vec0 table (and
-# registering it in `models`) on first use. `dims`, when given, is the
-# dimension of the vector about to be inserted -- checked against whatever
-# was already registered for this model, since two DIFFERENT dimensions
-# under the same model name would mean the model's own output shape
-# changed (or the caller passed the wrong model string) and silently
-# inserting into a table sized for the OLD dimension would corrupt that
-# table's vectors, not just this one row.
-def _get_or_create_model_table(db, model, dims=None):
-    row = db.execute('SELECT table_name, dims FROM models WHERE model = ?', [model]).fetchone()
+# Returns this file's own vector dimension (creating vec_embeddings, and
+# recording `dims` in `meta`, on first use) -- or None if nothing has ever
+# been embedded into this file yet. `dims`, when given, is the dimension of
+# the vector about to be inserted -- checked against whatever this file was
+# already created with, since a mismatch would mean the model's own output
+# shape changed (or embeddings-db.js resolved the wrong file for this
+# model) and silently inserting would corrupt the table, not just this one
+# row.
+def _get_or_create_table(db, dims=None):
+    row = db.execute('SELECT dims FROM meta').fetchone()
     if row:
-        table_name, existing_dims = row
+        existing_dims = row[0]
         if dims is not None and dims != existing_dims:
-            raise ValueError(f'model {model!r} is already registered with dims={existing_dims}, got dims={dims}')
-        return table_name, existing_dims
+            raise ValueError(f'this embeddings file is already using dims={existing_dims}, got dims={dims}')
+        return existing_dims
     if dims is None:
-        return None, None
-    table_name = _table_name_for_model(model)
-    db.execute(f'CREATE VIRTUAL TABLE IF NOT EXISTS {table_name} USING vec0(embedding float[{dims}] distance_metric=cosine)')
-    db.execute('INSERT INTO models(model, table_name, dims) VALUES (?, ?, ?)', [model, table_name, dims])
-    return table_name, dims
+        return None
+    db.execute(f'CREATE VIRTUAL TABLE IF NOT EXISTS {VEC_TABLE} USING vec0(embedding float[{dims}] distance_metric=cosine)')
+    db.execute('INSERT INTO meta(dims) VALUES (?)', [dims])
+    return dims
 
 
-# Input: { model, items: [{ paper_id, source, source_id, embedding: [float, ...] }, ...] }
+# Input: { items: [{ paper_id, source, source_id, embedding: [float, ...] }, ...] }
 # Output: { ids: [int, ...] } -- one id per input item, same order.
 def _cmd_insert(db, data):
-    model = data['model']
     items = data['items']
     ids = []
-    table_name = None
+    # Dimension checked/table created ONCE, off the first item, not
+    # per-item -- every item in one batch is always the same model's own
+    # output (see embeddings-db.js's insert(), one model per call), so
+    # they all share the same dimension; a later item with a mismatched
+    # dimension would just fail at its own INSERT via sqlite-vec's own
+    # enforcement, same as before this was split out.
+    if items:
+        _get_or_create_table(db, len(items[0]['embedding']))
     for item in items:
-        embedding = item['embedding']
-        if table_name is None:
-            table_name, _dims = _get_or_create_model_table(db, model, len(embedding))
         cursor = db.execute(
-            'INSERT INTO embeddings(paper_id, model, source, source_id) VALUES (?, ?, ?, ?)',
-            [item['paper_id'], model, item['source'], item['source_id']]
+            'INSERT INTO embeddings(paper_id, source, source_id) VALUES (?, ?, ?)',
+            [item['paper_id'], item['source'], item['source_id']]
         )
         row_id = cursor.lastrowid
         db.execute(
-            f'INSERT INTO {table_name}(rowid, embedding) VALUES (?, ?)',
-            [row_id, sqlite_vec.serialize_float32(embedding)]
+            f'INSERT INTO {VEC_TABLE}(rowid, embedding) VALUES (?, ?)',
+            [row_id, sqlite_vec.serialize_float32(item['embedding'])]
         )
         ids.append(row_id)
     db.commit()
     return {'ids': ids}
 
 
-# Input: { model, embedding: [float, ...], top_k, paper_id?, exclude_paper_id?, source? }
-# Output: { results: [{ id, paper_id, model, source, source_id, distance }, ...] },
+# Input: { embedding: [float, ...], top_k, paper_id?, exclude_paper_id?, source? }
+# Output: { results: [{ id, paper_id, source, source_id, distance }, ...] },
 #   sorted by distance ascending (cosine distance, i.e. 1 - cosine similarity
 #   -- 0 is identical, 2 is opposite), length <= top_k.
 #
@@ -196,18 +196,18 @@ CANDIDATE_MULTIPLIER = 20
 CANDIDATE_LIMIT_FLOOR = 200
 
 
-# One nearest-neighbor lookup against an already-resolved vec0 `table_name`
-# -- factored out of _cmd_query so _cmd_query_batch below can run several of
-# these against the SAME open connection/table resolution, one per query
-# vector, without each needing its own db.py subprocess invocation. Returns
-# a plain list (not the {'results': ...} wrapper), already trimmed to top_k.
-def _query_one(db, table_name, top_k, embedding, paper_id, exclude_paper_id, source):
+# One nearest-neighbor lookup -- factored out of _cmd_query so
+# _cmd_query_batch below can run several of these against the SAME open
+# connection, one per query vector, without each needing its own db.py
+# subprocess invocation. Returns a plain list (not the {'results': ...}
+# wrapper), already trimmed to top_k.
+def _query_one(db, top_k, embedding, paper_id, exclude_paper_id, source):
     filtered = paper_id is not None or exclude_paper_id is not None or source is not None
     candidate_limit = max(top_k * CANDIDATE_MULTIPLIER, CANDIDATE_LIMIT_FLOOR) if filtered else top_k
     query_vec = sqlite_vec.serialize_float32(embedding)
 
     candidates = db.execute(
-        f'SELECT rowid, distance FROM {table_name} WHERE embedding MATCH ? ORDER BY distance LIMIT ?',
+        f'SELECT rowid, distance FROM {VEC_TABLE} WHERE embedding MATCH ? ORDER BY distance LIMIT ?',
         [query_vec, candidate_limit]
     ).fetchall()
     if not candidates:
@@ -227,34 +227,31 @@ def _query_one(db, table_name, top_k, embedding, paper_id, exclude_paper_id, sou
         where.append('source = ?')
         params.append(source)
     rows = db.execute(
-        f'SELECT id, paper_id, model, source, source_id FROM embeddings WHERE {" AND ".join(where)}',
+        f'SELECT id, paper_id, source, source_id FROM embeddings WHERE {" AND ".join(where)}',
         params
     ).fetchall()
 
     results = [
-        {'id': row_id, 'paper_id': p_id, 'model': m, 'source': s, 'source_id': s_id, 'distance': distance_by_id[row_id]}
-        for row_id, p_id, m, s, s_id in rows
+        {'id': row_id, 'paper_id': p_id, 'source': s, 'source_id': s_id, 'distance': distance_by_id[row_id]}
+        for row_id, p_id, s, s_id in rows
     ]
     results.sort(key=lambda r: r['distance'])
     return results[:top_k]
 
 
 def _cmd_query(db, data):
-    model = data['model']
-    table_name, _dims = _get_or_create_model_table(db, model)
-    if table_name is None:
-        return {'results': []}  # nothing has ever been embedded under this model
+    if _get_or_create_table(db) is None:
+        return {'results': []}  # nothing has ever been embedded into this file
     results = _query_one(
-        db, table_name,
-        data['top_k'], data['embedding'],
+        db, data['top_k'], data['embedding'],
         data.get('paper_id'), data.get('exclude_paper_id'), data.get('source')
     )
     return {'results': results}
 
 
-# Input: { model, queries: [{ embedding, top_k, paper_id?, exclude_paper_id?,
+# Input: { queries: [{ embedding, top_k, paper_id?, exclude_paper_id?,
 #   source? }, ...] }
-# Output: { results: [[{ id, paper_id, model, source, source_id, distance },
+# Output: { results: [[{ id, paper_id, source, source_id, distance },
 #   ...], ...] } -- one results array per entry in `queries`, same order.
 #
 # Batches at the PROCESS level, not the sqlite-vec level -- vec0's MATCH
@@ -264,21 +261,18 @@ def _cmd_query(db, data):
 # _cmd_query. What it actually saves is the FIXED per-subprocess cost --
 # python startup, sqlite3/sqlite_vec imports, connect+load extension,
 # measured at ~20-40ms combined, dwarfing a single MATCH query's own ~2-5ms
-# -- by resolving the model's vec0 table ONCE and running every query
-# against the SAME open connection, instead of one db.py subprocess
-# invocation per query vector. Used by core/document/citations.js's
-# resolvePositions embedding fallback to look up the nearest sentence for
-# potentially several unresolved citations in one call instead of N.
+# -- by running every query against the SAME open connection, instead of
+# one db.py subprocess invocation per query vector. Used by
+# core/document/citations.js's resolvePositions embedding fallback to look
+# up the nearest sentence for potentially several unresolved citations in
+# one call instead of N.
 def _cmd_query_batch(db, data):
-    model = data['model']
     queries = data['queries']
-    table_name, _dims = _get_or_create_model_table(db, model)
-    if table_name is None:
+    if _get_or_create_table(db) is None:
         return {'results': [[] for _ in queries]}
     results = [
         _query_one(
-            db, table_name,
-            q['top_k'], q['embedding'],
+            db, q['top_k'], q['embedding'],
             q.get('paper_id'), q.get('exclude_paper_id'), q.get('source')
         )
         for q in queries
@@ -286,47 +280,36 @@ def _cmd_query_batch(db, data):
     return {'results': results}
 
 
-# Input: { paper_id, model?, source? }
+# Input: { paper_id, source? }
 # Output: { deleted: int }
 def _cmd_delete(db, data):
     paper_id = data['paper_id']
-    model = data.get('model')
     source = data.get('source')
 
     where = ['paper_id = ?']
     params = [paper_id]
-    if model is not None:
-        where.append('model = ?')
-        params.append(model)
     if source is not None:
         where.append('source = ?')
         params.append(source)
     where_clause = ' AND '.join(where)
 
-    rows = db.execute(f'SELECT id, model FROM embeddings WHERE {where_clause}', params).fetchall()
+    rows = db.execute(f'SELECT id FROM embeddings WHERE {where_clause}', params).fetchall()
     if not rows:
         return {'deleted': 0}
 
-    # Grouped by model -- each model's rows live in a DIFFERENT vec0 table,
-    # so the rowid deletes have to be issued per-table, not in one query.
-    ids_by_model = {}
-    for row_id, row_model in rows:
-        ids_by_model.setdefault(row_model, []).append(row_id)
-    for row_model, ids in ids_by_model.items():
-        table_name, _dims = _get_or_create_model_table(db, row_model)
-        placeholders = ','.join('?' * len(ids))
-        db.execute(f'DELETE FROM {table_name} WHERE rowid IN ({placeholders})', ids)
-
+    ids = [row_id for (row_id,) in rows]
+    placeholders = ','.join('?' * len(ids))
+    db.execute(f'DELETE FROM {VEC_TABLE} WHERE rowid IN ({placeholders})', ids)
     db.execute(f'DELETE FROM embeddings WHERE {where_clause}', params)
     db.commit()
     return {'deleted': len(rows)}
 
 
-# Input: { paper_id, model, source? }
+# Input: { paper_id, source? }
 # Output: { has: bool, count: int }
 def _cmd_has(db, data):
-    where = ['paper_id = ?', 'model = ?']
-    params = [data['paper_id'], data['model']]
+    where = ['paper_id = ?']
+    params = [data['paper_id']]
     source = data.get('source')
     if source is not None:
         where.append('source = ?')

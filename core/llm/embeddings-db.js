@@ -1,8 +1,9 @@
 // JS-side wrapper for scripts/db.py -- the consolidated sqlite-vec store
-// for every paper's own embeddings, replacing the old one-JSON-file-per-
-// item-per-kind cache under LLMz/cache/text/ with a single database at
-// LLMz/cache/embeddings.sqlite, shared across the whole library. See
-// db.py's own header comment for the actual schema and rationale.
+// for every paper's own embeddings, one .sqlite file PER EMBEDDING MODEL
+// under LLMz/cache/embeddings/ (e.g. embeddings/text-embedding-3-small.sqlite),
+// replacing the old one-JSON-file-per-item-per-kind cache under
+// LLMz/cache/text/. See db.py's own header comment for the actual schema
+// and rationale for splitting by model rather than sharing one file.
 //
 // This module only owns running db.py and shaping its JSON in/out -- it
 // does NOT (yet) replace LLMCitation's own existing per-item disk cache;
@@ -27,10 +28,27 @@ LLMEmbeddingsDB = {
 		return PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", this._scriptName);
 	},
 
-	async _dbPath() {
-		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache");
+	async _dbDir() {
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "embeddings");
 		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
-		return PathUtils.join(dir, "embeddings.sqlite");
+		return dir;
+	},
+
+	// Model names routinely contain characters unsafe (or at least
+	// unwise) in a bare filename -- "/" (e.g. an LM Studio HF-style
+	// "org/repo" path) or ":" (an Ollama tag like "mxbai-embed-large:latest").
+	// Sanitized rather than hashed (unlike the old shared-file schema's
+	// vec0 TABLE name, which had no reason to stay human-readable) -- the
+	// whole point of splitting into per-model files is that
+	// `ls cache/embeddings/` should be self-documenting, and at this
+	// plugin's actual scale (one person's own handful of embedding models
+	// over time) a sanitized-name collision is not a realistic concern.
+	_sanitizeModelName(model) {
+		return model.replace(/[^A-Za-z0-9._-]+/g, "_");
+	},
+
+	async _dbPath(model) {
+		return PathUtils.join(await this._dbDir(), `${this._sanitizeModelName(model)}.sqlite`);
 	},
 
 	// Deploys db.py the same way document/figures.js deploys its own
@@ -80,12 +98,14 @@ LLMEmbeddingsDB = {
 	},
 
 	// Writes `data` to a fresh, uniquely-named temp JSON file, runs db.py
-	// against it, reads back the output JSON, and cleans up both temp
-	// files -- unique names (not a fixed path) since several `command`
-	// calls can be in flight at once (e.g. Index All's own worker pool,
-	// see ui/advanced.js's runIndexAll), each needing its own input/output
-	// pair rather than clobbering a shared one.
-	async _run(command, data) {
+	// (against `model`'s own .sqlite file -- db.py itself has no notion of
+	// "model" as a concept at all, see its own header comment) and reads
+	// back the output JSON, then cleans up both temp files -- unique names
+	// (not a fixed path) since several `command` calls can be in flight at
+	// once (e.g. Index All's own worker pool, see ui/advanced.js's
+	// runIndexAll), each needing its own input/output pair rather than
+	// clobbering a shared one.
+	async _run(command, model, data) {
 		let scriptsDir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
 		await IOUtils.makeDirectory(scriptsDir, { ignoreExisting: true, createAncestors: true });
 		let stamp = `${command}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -95,13 +115,13 @@ LLMEmbeddingsDB = {
 
 		await IOUtils.writeUTF8(inputPath, JSON.stringify(data));
 		try {
-			let dbPath = await this._dbPath();
+			let dbPath = await this._dbPath(model);
 			let pythonPath = this._pythonPath();
 			let scriptPath = this._scriptPath();
 			let args = [dbPath, command, inputPath, outputPath].map(a => JSON.stringify(a)).join(" ");
 			let cmd = `${JSON.stringify(pythonPath)} ${JSON.stringify(scriptPath)} ${args} 2>${JSON.stringify(stderrPath)}`;
 
-			this.log(`_run: ${command}`);
+			this.log(`_run: ${command} (${model})`);
 			let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
 			let proc = await Subprocess.call({ command: "/bin/sh", arguments: ["-c", cmd] });
 			let { exitCode } = await proc.wait();
@@ -123,13 +143,14 @@ LLMEmbeddingsDB = {
 	},
 
 	// `items` is [{ source, sourceId, embedding: [float, ...] }, ...] --
-	// paper_id/model are shared across the whole batch (matching how a
-	// paper's own chunks are always embedded together, one model at a
-	// time), so they're pulled out as their own params rather than
-	// repeated per item. Returns the assigned ids, same order as `items`.
+	// paper_id is shared across the whole batch (matching how a paper's own
+	// chunks are always embedded together), so it's pulled out as its own
+	// param rather than repeated per item. `model` routes to that model's
+	// own .sqlite file (see _dbPath) -- no longer stored per-row, since a
+	// file only ever holds one model's embeddings. Returns the assigned
+	// ids, same order as `items`.
 	async insert(paperId, model, items) {
-		let result = await this._run("insert", {
-			model,
+		let result = await this._run("insert", model, {
 			items: items.map(item => ({
 				paper_id: paperId,
 				source: item.source,
@@ -140,19 +161,18 @@ LLMEmbeddingsDB = {
 		return result.ids;
 	},
 
-	// Returns [{ id, paperId, model, source, sourceId, distance }, ...],
-	// nearest first, length <= topK. `paperId`/`excludePaperId`/`source`
-	// (all optional) restrict the search -- see db.py's own _cmd_query
-	// comment for how filtering actually works under the hood (an
-	// over-fetch-then-filter approach, not a native filtered vec0 query).
-	// `excludePaperId` is citation.js's getCrossLibraryChunks' own use --
-	// searching every OTHER paper in the library for the currently open
-	// one's question -- and is mutually exclusive with `paperId` in
-	// practice (one includes a single paper, the other excludes one), though
-	// nothing here enforces that.
+	// Returns [{ id, paperId, source, sourceId, distance }, ...], nearest
+	// first, length <= topK. `paperId`/`excludePaperId`/`source` (all
+	// optional) restrict the search -- see db.py's own _cmd_query comment
+	// for how filtering actually works under the hood (an over-fetch-then-
+	// filter approach, not a native filtered vec0 query). `excludePaperId`
+	// is citation.js's getCrossLibraryChunks' own use -- searching every
+	// OTHER paper in the library for the currently open one's question --
+	// and is mutually exclusive with `paperId` in practice (one includes a
+	// single paper, the other excludes one), though nothing here enforces
+	// that.
 	async query(model, embedding, topK, { paperId, excludePaperId, source } = {}) {
-		let result = await this._run("query", {
-			model,
+		let result = await this._run("query", model, {
 			embedding,
 			top_k: topK,
 			...(paperId !== undefined ? { paper_id: paperId } : {}),
@@ -162,7 +182,6 @@ LLMEmbeddingsDB = {
 		return result.results.map(r => ({
 			id: r.id,
 			paperId: r.paper_id,
-			model: r.model,
 			source: r.source,
 			sourceId: r.source_id,
 			distance: r.distance,
@@ -177,14 +196,14 @@ LLMEmbeddingsDB = {
 	// fixed per-invocation cost (python startup + imports + connect, see
 	// db.py's own _cmd_query_batch comment), paid once for the whole batch
 	// instead of once per query. `queries` is [{ embedding, topK, paperId?,
-	// excludePaperId?, source? }, ...]; returns one
-	// [{ id, paperId, model, source, sourceId, distance }, ...] array per
-	// entry, same order -- e.g. citation.js's getNearestSentences, looking
-	// up the nearest sentence for each of several unresolved citations in
-	// one round trip.
+	// excludePaperId?, source? }, ...], all against the SAME `model` (and
+	// therefore the same underlying file) -- returns one
+	// [{ id, paperId, source, sourceId, distance }, ...] array per entry,
+	// same order -- e.g. citation.js's getNearestSentences, looking up the
+	// nearest sentence for each of several unresolved citations in one
+	// round trip.
 	async queryBatch(model, queries) {
-		let result = await this._run("query_batch", {
-			model,
+		let result = await this._run("query_batch", model, {
 			queries: queries.map(q => ({
 				embedding: q.embedding,
 				top_k: q.topK,
@@ -196,22 +215,25 @@ LLMEmbeddingsDB = {
 		return result.results.map(rows => rows.map(r => ({
 			id: r.id,
 			paperId: r.paper_id,
-			model: r.model,
 			source: r.source,
 			sourceId: r.source_id,
 			distance: r.distance,
 		})));
 	},
 
-	// Drops every embedding for `paperId`, optionally narrowed to one
-	// model and/or source -- e.g. the Cache section's own per-type Clear
-	// Cache, or Clear All's whole-library reset (see ui/advanced.js),
-	// would call this once per paper rather than needing their own SQL.
-	// Returns the number of rows actually removed.
-	async deleteForPaper(paperId, { model, source } = {}) {
-		let result = await this._run("delete", {
+	// Drops every embedding for `paperId` under `model`'s own file,
+	// optionally narrowed further to one source -- e.g. the Cache section's
+	// own per-type Clear Cache, or Clear All's whole-library reset (see
+	// ui/advanced.js), would call this once per paper rather than needing
+	// their own SQL. `model` is REQUIRED (unlike the old shared-file
+	// schema, where omitting it deleted across every model at once) --
+	// Clear Cache/Clear All now only ever clear the CURRENTLY SELECTED
+	// embedding model's own embeddings for a paper, not every model that
+	// paper was ever embedded under; a stale prior model's file, if any,
+	// is simply left alone. Returns the number of rows actually removed.
+	async deleteForPaper(paperId, model, { source } = {}) {
+		let result = await this._run("delete", model, {
 			paper_id: paperId,
-			...(model !== undefined ? { model } : {}),
 			...(source !== undefined ? { source } : {}),
 		});
 		return result.deleted;
@@ -227,23 +249,23 @@ LLMEmbeddingsDB = {
 	// `source` needed (unlike insert()'s own shape) since it's fixed for
 	// the whole call. Returns the newly assigned ids.
 	async replaceForPaper(paperId, model, source, items) {
-		await this.deleteForPaper(paperId, { model, source });
+		await this.deleteForPaper(paperId, model, { source });
 		if (!items.length) return [];
 		return this.insert(paperId, model, items.map(item => ({ ...item, source })));
 	},
 
-// Cheap existence check -- mirrors the hasCache(item) pattern already
+	// Cheap existence check -- mirrors the hasCache(item) pattern already
 	// used throughout this plugin (LLMCitation.hasCache and friends, see
 	// ui/advanced.js's getIndexStatus) for the library-index-status bar.
 	// Returns `count` alongside `has` -- a plain COUNT(*) on the `embeddings`
-	// table, not a vec0 fetch, so citation.js's getParagraphIndex can use it
-	// to check whether the DB's row count for a paper matches its current
-	// paragraph count WITHOUT fetching every vector (see that function's own
-	// comment on why the fetch itself is the expensive part).
+	// table, not a vec0 fetch, so citation.js's getTextIndex can use it to
+	// check whether the DB's row count for a paper matches its current
+	// sentence/paragraph count WITHOUT fetching every vector (see that
+	// function's own comment on why the fetch itself is the expensive
+	// part).
 	async hasEmbeddings(paperId, model, { source } = {}) {
-		let result = await this._run("has", {
+		let result = await this._run("has", model, {
 			paper_id: paperId,
-			model,
 			...(source !== undefined ? { source } : {}),
 		});
 		return { has: result.has, count: result.count };

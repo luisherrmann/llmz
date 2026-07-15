@@ -193,7 +193,7 @@ LLMFigures = {
 	async _saveDiskCache(item, index) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
-			// captionEmbedding is stripped before writing -- embeddings.sqlite
+			// captionEmbedding is stripped before writing -- the embeddings DB
 			// (see getFigureIndex's own sync right before this call) is the
 			// sole store for the actual vectors now, same reasoning as
 			// citation.js's sentence/paragraph caches. image_data is stripped
@@ -341,8 +341,8 @@ LLMFigures = {
 		let index = { figures: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
-		// Mirrors the disk-cache write into the consolidated embeddings.sqlite
-		// too (see core/llm/embeddings-db.js) -- source_id is figure_id
+		// Mirrors the disk-cache write into the embeddings DB (one .sqlite
+		// file per model, see core/llm/embeddings-db.js) -- source_id is figure_id
 		// (already a stable, always-present per-figure identifier, see
 		// extract_figures_sdt.js's own header comment), not array position,
 		// since that's the same handle callers already use to look a figure
@@ -358,11 +358,11 @@ LLMFigures = {
 			let withEmbeddings = embedded.filter(f => f.captionEmbedding);
 			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "figure",
 				withEmbeddings.map(f => ({ sourceId: f.figure_id, embedding: f.captionEmbedding })));
-			onMessage?.(`Synced ${withEmbeddings.length} figure embedding${withEmbeddings.length === 1 ? "" : "s"} to embeddings.sqlite for item ${item.id}.`);
+			onMessage?.(`Synced ${withEmbeddings.length} figure embedding${withEmbeddings.length === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
 		}
 		catch (e) {
 			this.log(`getFigureIndex: failed to sync to embeddings DB: ${e.message}`);
-			onMessage?.(`Failed to sync figure embeddings to embeddings.sqlite for item ${item.id}: ${e.message}`);
+			onMessage?.(`Failed to sync figure embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
 		}
 		return index;
 	},

@@ -614,7 +614,7 @@ LLMRequest = {
 	// Unlike the five _buildXContext methods above (each selecting AMONG
 	// candidates already extracted from THIS paper), there's no index to
 	// await here -- LLMCitation.getCrossLibraryChunks searches the whole
-	// library's own embeddings.sqlite directly, so this only runs at all
+	// library's own embeddings DB directly, so this only runs at all
 	// once shouldIncludeCrossLibraryWithLLM says the OTHER papers in the
 	// library are actually worth searching for this question. Skipped
 	// entirely with no active PDF (pdfItem null) -- "the current paper" and

@@ -43,16 +43,23 @@ LLMReferenceLinker = {
 					type: "string",
 					enum: ["single", "describe", "list", "range", "all", "select"],
 					description: [
-						"single: one reference by explicit number (set index). describe: one",
-						"reference identified by title/author/description, no number given",
-						"(set description). list: an enumerated set of specific numbers (set",
+						"single: one reference, but ONLY when the user states the reference's",
+						"own EXPLICIT number themselves (e.g. \"reference 5\", \"citation [12]\")",
+						"-- set index to that exact number. NEVER use 'single' with a number",
+						"you invented or guessed from a title/author/topic -- if the user",
+						"didn't give a number, use 'describe' or 'select' instead, even if",
+						"you're confident which entry they mean. describe: one reference",
+						"identified by title/author/description, no number given (set",
+						"description). list: an enumerated set of specific numbers (set",
 						"indices). range: a numeric range (set from/to). all: every reference",
 						"in the bibliography (no other fields needed). select: a criterion",
-						"other than an explicit number/range/list, e.g. author/year/topic (set",
+						"other than an explicit number/range/list, e.g. author/year/topic --",
+						"including a request for MULTIPLE items by the same author/venue/topic",
+						"(e.g. \"the papers by Kohler et al.\", \"anything from Nature\") (set",
 						"description).",
 					].join(" "),
 				},
-				index: { type: "integer", description: "Required when type is 'single' -- the reference number." },
+				index: { type: "integer", description: "Required when type is 'single' -- the reference number the user themselves stated. Never invent or guess this number." },
 				description: { type: "string", description: "Required when type is 'describe' or 'select' -- the identifying text or selection criterion, in the user's own words." },
 				indices: { type: "array", items: { type: "integer" }, description: "Required when type is 'list' -- the explicit reference numbers." },
 				from: { type: "integer", description: "Required when type is 'range' -- the start of the range." },
@@ -99,7 +106,7 @@ LLMReferenceLinker = {
 
 		onProgress?.(`Looking up reference ${index} in the bibliography...`);
 		let referenceIndex = await LLMReferences.getReferenceIndex(pdfItem);
-		let ref = referenceIndex?.references?.find(r => r.index === index);
+		let ref = referenceIndex?.references?.find(r => LLMReferences.displayNumber(r) === index);
 		if (!ref) {
 			return { success: false, message: `Reference ${index} was not found in this paper's bibliography.` };
 		}

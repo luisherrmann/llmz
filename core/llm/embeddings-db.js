@@ -141,16 +141,22 @@ LLMEmbeddingsDB = {
 	},
 
 	// Returns [{ id, paperId, model, source, sourceId, distance }, ...],
-	// nearest first, length <= topK. `paperId`/`source` (both optional)
-	// restrict the search -- see db.py's own _cmd_query comment for how
-	// filtering actually works under the hood (an over-fetch-then-filter
-	// approach, not a native filtered vec0 query).
-	async query(model, embedding, topK, { paperId, source } = {}) {
+	// nearest first, length <= topK. `paperId`/`excludePaperId`/`source`
+	// (all optional) restrict the search -- see db.py's own _cmd_query
+	// comment for how filtering actually works under the hood (an
+	// over-fetch-then-filter approach, not a native filtered vec0 query).
+	// `excludePaperId` is citation.js's getCrossLibraryChunks' own use --
+	// searching every OTHER paper in the library for the currently open
+	// one's question -- and is mutually exclusive with `paperId` in
+	// practice (one includes a single paper, the other excludes one), though
+	// nothing here enforces that.
+	async query(model, embedding, topK, { paperId, excludePaperId, source } = {}) {
 		let result = await this._run("query", {
 			model,
 			embedding,
 			top_k: topK,
 			...(paperId !== undefined ? { paper_id: paperId } : {}),
+			...(excludePaperId !== undefined ? { exclude_paper_id: excludePaperId } : {}),
 			...(source !== undefined ? { source } : {}),
 		});
 		return result.results.map(r => ({

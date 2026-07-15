@@ -172,21 +172,26 @@ def _cmd_insert(db, data):
     return {'ids': ids}
 
 
-# Input: { model, embedding: [float, ...], top_k, paper_id?, source? }
+# Input: { model, embedding: [float, ...], top_k, paper_id?, exclude_paper_id?, source? }
 # Output: { results: [{ id, paper_id, model, source, source_id, distance }, ...] },
 #   sorted by distance ascending (cosine distance, i.e. 1 - cosine similarity
 #   -- 0 is identical, 2 is opposite), length <= top_k.
 #
-# paper_id/source, if given, are NOT pushed into the vec0 MATCH query itself
-# (they live in the separate `embeddings` table, not the vec0 one) -- instead
-# this over-fetches CANDIDATE_MULTIPLIER * top_k nearest neighbors first (or
-# top_k itself if unfiltered) and filters/trims in SQL after joining back to
-# `embeddings`. At this plugin's actual scale (one person's library, not a
-# web-scale index) that's simpler and plenty fast; it CAN in principle miss
-# a true top-k match if more than CANDIDATE_LIMIT non-matching vectors rank
-# closer to the query than every matching one does, which is only a
-# realistic risk for a query that matches a tiny fraction of a very large
-# library.
+# paper_id/exclude_paper_id/source, if given, are NOT pushed into the vec0
+# MATCH query itself (they live in the separate `embeddings` table, not the
+# vec0 one) -- instead this over-fetches CANDIDATE_MULTIPLIER * top_k nearest
+# neighbors first (or top_k itself if unfiltered) and filters/trims in SQL
+# after joining back to `embeddings`. At this plugin's actual scale (one
+# person's library, not a web-scale index) that's simpler and plenty fast;
+# it CAN in principle miss a true top-k match if more than CANDIDATE_LIMIT
+# non-matching vectors rank closer to the query than every matching one
+# does, which is only a realistic risk for a query that matches a tiny
+# fraction of a very large library. `exclude_paper_id` (core/citation.js's
+# getCrossLibraryChunks, searching every OTHER paper for the currently open
+# one's own question) is exactly as selective as `paper_id` in the OPPOSITE
+# direction -- both narrow the candidate pool by one paper's worth of rows
+# -- so it's treated as "filtered" the same way, widening candidate_limit
+# the same way.
 CANDIDATE_MULTIPLIER = 20
 CANDIDATE_LIMIT_FLOOR = 200
 
@@ -195,13 +200,14 @@ def _cmd_query(db, data):
     model = data['model']
     top_k = data['top_k']
     paper_id = data.get('paper_id')
+    exclude_paper_id = data.get('exclude_paper_id')
     source = data.get('source')
 
     table_name, _dims = _get_or_create_model_table(db, model)
     if table_name is None:
         return {'results': []}  # nothing has ever been embedded under this model
 
-    filtered = paper_id is not None or source is not None
+    filtered = paper_id is not None or exclude_paper_id is not None or source is not None
     candidate_limit = max(top_k * CANDIDATE_MULTIPLIER, CANDIDATE_LIMIT_FLOOR) if filtered else top_k
     query_vec = sqlite_vec.serialize_float32(data['embedding'])
 
@@ -219,6 +225,9 @@ def _cmd_query(db, data):
     if paper_id is not None:
         where.append('paper_id = ?')
         params.append(paper_id)
+    if exclude_paper_id is not None:
+        where.append('paper_id != ?')
+        params.append(exclude_paper_id)
     if source is not None:
         where.append('source = ?')
         params.append(source)

@@ -32,6 +32,11 @@ LLMPrompt = {
 	maxPDFContextChars: 60000,
 	maxPageContextChars: 5000,
 	chunkContextTopK: 10,
+	// How many cross-library paragraphs (see shouldIncludeCrossLibraryWithLLM/
+	// LLMCitation.getCrossLibraryChunks) get attached when the model decides
+	// a question needs OTHER papers, not just the current one. Same
+	// not-exposed-in-Advanced-yet status as maxPageContextChars above.
+	crossLibraryTopK: 5,
 	// Caps on how many figures/tables/equations selectFiguresWithLLM/
 	// selectTablesWithLLM/selectEquationsWithLLM will attach as context for a
 	// single request, even if the model's own selection response names more
@@ -224,6 +229,8 @@ LLMPrompt = {
 		"You may cite one of these entries if it genuinely helps answer the question (e.g. it's the direct source of a claim, or clearly relevant further reading) — do not force one in otherwise, and do not list entries just because they exist.",
 		"Format any such citation as [N](<ref:reference:N>), where N is the bibliography number, e.g. '[3]' — matching how the paper itself cites its own references.",
 		"Example: 'This approach was first proposed by [12](<ref:reference:12>).'",
+		"A <CROSS_LIBRARY_CONTEXT> block, if present, contains paragraphs retrieved from OTHER papers in the user's Zotero library -- not the current PDF, and not necessarily cited by it -- that may help answer the question. Each entry states its source paper's title, authors, and paper_id before its paragraph text.",
+		"If you use information from a <CROSS_LIBRARY_CONTEXT> entry to answer the question, explicitly mention which paper it came from BY ITS TITLE (not its paper_id, which is only there for internal reference) so the user knows it did not come from the paper they're currently reading.",
 		"A <NOTE_CONTEXT> block, if present, contains one or more of the user's own annotations on this PDF -- each either a sticky note they wrote, or a passage they highlighted/underlined (quoted verbatim from the PDF) together with any comment they added on it. Any 'Note:' text in it is the user's own authoritative commentary, distinct from the paper's own claims -- don't confuse the two.",
 		"Each entry in <NOTE_CONTEXT> starts with 'Note N (...) [key: XXXXXXXX]:' -- when you mention it, wrap it in a link so the reader can jump to it: [Note N](<ref:note:XXXXXXXX>). Use 'Note N' (that entry's display number) as the visible label, but the link target itself must be the exact key shown in brackets, not N -- copy the key exactly, character for character; never use N or invent a key.",
 		"Example: for an entry 'Note 1 (Highlight, p. 4) [key: AB12CD34]: ...', write 'Your highlight on this point [Note 1](<ref:note:AB12CD34>) is directly relevant here.' -- 'Note 1' is the label, 'AB12CD34' (that note's own key) is the link target.",
@@ -361,8 +368,13 @@ LLMPrompt = {
 		return `**[p.${t.page_num}] ${t.label}${refHint}:** ${t.caption}\n${mdHeader}\n${sep}\n${mdRows}`;
 	},
 
+	// Numbered via LLMReferences.displayNumber, not `r.index` directly -- a
+	// paper whose bibliography has no printed numbers at all (author-year/
+	// alphabetical style, e.g. natbib -- `index` null for every entry, see
+	// that function's own comment) would otherwise show every single entry
+	// as literally "[null]" here, indistinguishable from one another.
 	_formatReferenceContext(references) {
-		return references.map(r => `[${r.index}] ${r.text}`).join("\n");
+		return references.map(r => `[${LLMReferences.displayNumber(r)}] ${r.text}`).join("\n");
 	},
 
 	// Asks the LLM whether the paper's bibliography, as a whole, would help
@@ -394,6 +406,66 @@ LLMPrompt = {
 		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
 		let text = (result.text || "").trim();
 		return /^yes/i.test(text);
+	},
+
+	// Asks the LLM whether answering the user's question would benefit from
+	// searching OTHER papers in the user's Zotero library -- related work,
+	// alternative methods, background the current paper doesn't cover,
+	// comparisons, replication of a result -- rather than the current paper
+	// alone. Same single yes/no shape as shouldIncludeReferencesWithLLM
+	// above, and for the same reason: there's nothing to enumerate and
+	// choose among here (unlike the multi-select selectXWithLLM helpers
+	// picking among candidates already extracted from THIS paper) -- the
+	// only question worth asking is whether it's worth searching the rest
+	// of the library AT ALL for this particular question. Deliberately
+	// asked BEFORE running any retrieval (LLMCitation.getCrossLibraryChunks
+	// is comparatively cheap -- one embedding call plus a sqlite-vec MATCH
+	// query -- but every OTHER paper's paragraphs are, by definition, not
+	// about the paper actually open right now, so pulling them in
+	// unconditionally would just as often inject noise as help).
+	//
+	// `title` (the CURRENT paper's own title, may be null) is given so the
+	// model can tell "the user named a DIFFERENT paper" (needs cross-library
+	// search) apart from "the user named THIS paper" (doesn't) -- without it,
+	// a question like "explain the approach for over 1000 layers in He et
+	// al. (2016)" has no way to be checked against what's actually open:
+	// confirmed concretely that a bare yes/no prompt with no worked example
+	// and no title to compare against judged this exact question "no" even
+	// though He et al. 2016 is almost never the paper someone has open while
+	// asking about it by name -- it's a citation INSIDE whatever paper IS
+	// open. The explicit named-citation rule and worked example below exist
+	// because of that failure, not as a hypothetical.
+	async shouldIncludeCrossLibraryWithLLM(query, title, readerContext = {}) {
+		let selectionPrompt = [
+			"You are deciding whether answering a user's question would benefit from ALSO searching the OTHER papers in the user's Zotero library, not just the paper they currently have open.",
+			title ? `The paper currently open is titled: "${title}".` : "",
+			'Answer "yes" if EITHER of these applies:',
+			"- The question names a SPECIFIC paper, author, or citation (e.g. \"in He et al. 2016\", \"the ResNet paper\", \"reference 12\", \"as Smith et al. showed\") that is a DIFFERENT paper from the one currently open (compare the named paper against the title above -- if they don't clearly match, treat it as different). The answer to a question phrased this way almost always needs that OTHER paper's own text, not just however it's cited in passing in the current one.",
+			"- The question asks for related work, alternative methods, background the current paper likely doesn't cover, comparisons across papers, or replication of a result.",
+			"Answer \"no\" only if the current paper alone is clearly sufficient -- e.g. the question is about the currently open paper's own content, figures, methodology, or results, or explicitly names the CURRENT paper itself (matching the title above) as the source.",
+			'Example: current paper titled "Attention Is All You Need", question "explain the approach for over 1000 layers in He et al. (2016)" -> "yes" (He et al. 2016 is a different, named paper, not this one).',
+			...this._buildReaderContextLines(readerContext),
+			`User's question: "${query}"`,
+			"",
+			'Respond with ONLY "yes" or "no". Do not include any other text.',
+		].filter(Boolean).join("\n");
+
+		let result = await LLMInterfaces.streamModel(selectionPrompt, () => {}, {});
+		let text = (result.text || "").trim();
+		return /^yes/i.test(text);
+	},
+
+	// One entry per retrieved cross-library paragraph -- title/authors/
+	// paper_id first (see LLMCitation.getCrossLibraryChunks), so the model
+	// can both judge which paper each paragraph is from and copy the exact
+	// title into its answer (see _systemPrompt's own <CROSS_LIBRARY_CONTEXT>
+	// instructions -- paper_id is included for traceability only, the model
+	// is told NOT to cite it in place of the title).
+	_formatCrossLibraryContext(chunks) {
+		return chunks.map((c) => {
+			let byline = c.authors ? ` by ${c.authors}` : "";
+			return `**"${c.title}"${byline} [paper_id: ${c.paperId}]:**\n${c.text}`;
+		}).join("\n\n");
 	},
 
 	_formatEquationText(eq) {
@@ -626,9 +698,24 @@ LLMPrompt = {
 			figureExtra: new Map((figureIndex?.figures || [])
 				.filter(f => f.figure_num === null && f.figure_extra_num != null)
 				.map(f => [f.figure_extra_num, { position: f.position, caption: f.caption }])),
-			reference: new Map((referenceIndex?.references || []).map(r => [r.index, {
-				label: `[${r.index}] ${r.text}`,
+			// Keyed by LLMReferences.displayNumber (not raw r.index), matching
+			// _formatReferenceContext's own numbering -- the model cites
+			// whatever number THAT block showed it, so this lookup has to key
+			// on the same number or every ref:reference:N link would resolve
+			// to nothing for a paper with no printed bibliography numbers
+			// (see displayNumber's own comment). `position` (see
+			// extract_references.js's own buildPosition) routes a click
+			// through _renderMarkdown's entry.position branch straight to
+			// navigateToPosition, the same precise rects-based highlight
+			// table/figure/equation/note links already get, instead of
+			// falling through to the caption-text-search fallback
+			// (navigateToText) below -- null for an entry whose extraction
+			// had no anchor at all, which still falls through to that same
+			// fallback exactly as before.
+			reference: new Map((referenceIndex?.references || []).map(r => [LLMReferences.displayNumber(r), {
+				label: `[${LLMReferences.displayNumber(r)}] ${r.text}`,
 				caption: r.text.split(/\s+/).slice(0, 8).join(" "),
+				position: r.position,
 			}])),
 			// Real numbered equations key on equation_num (matching the
 			// paper's own printed number, cited via ref:equation:N); Formulas

@@ -192,15 +192,20 @@ LLMEmbeddingsDB = {
 		return this.insert(paperId, model, items.map(item => ({ ...item, source })));
 	},
 
-	// Cheap existence check -- mirrors the hasCache(item) pattern already
+// Cheap existence check -- mirrors the hasCache(item) pattern already
 	// used throughout this plugin (LLMCitation.hasCache and friends, see
 	// ui/advanced.js's getIndexStatus) for the library-index-status bar.
+	// Returns `count` alongside `has` -- a plain COUNT(*) on the `embeddings`
+	// table, not a vec0 fetch, so citation.js's getParagraphIndex can use it
+	// to check whether the DB's row count for a paper matches its current
+	// paragraph count WITHOUT fetching every vector (see that function's own
+	// comment on why the fetch itself is the expensive part).
 	async hasEmbeddings(paperId, model, { source } = {}) {
 		let result = await this._run("has", {
 			paper_id: paperId,
 			model,
 			...(source !== undefined ? { source } : {}),
 		});
-		return result.has;
+		return { has: result.has, count: result.count };
 	},
 };

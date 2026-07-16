@@ -429,10 +429,11 @@ LLMUIChat = {
 			// Same LLMCitation click-dispatch as a live streamed reply (see
 			// llm/request.js) -- annotationKey (notes only) beats position beats
 			// a page number beats opening a different library item entirely
-			// (or a specific table within one) beats a caption text-search.
-			// async (unlike before) -- resolveCrossLibraryTablePosition below
-			// needs to be awaited, same reason llm/request.js's own copy of
-			// this handler already is.
+			// (or a specific table/figure/equation within one) beats a
+			// caption text-search. async (unlike before) --
+			// resolveCrossLibraryElementPosition below needs to be awaited,
+			// same reason llm/request.js's own copy of this handler
+			// already is.
 			rendered.addEventListener("click", async (e) => {
 				let anchor = e.target.closest(".llm-find-link");
 				if (!anchor) return;
@@ -459,15 +460,16 @@ LLMUIChat = {
 					return;
 				}
 				if (anchor.dataset.crossPaperId) {
-					// See chat-pane.js's _renderMarkdown for how this pair of
-					// attributes gets set -- position isn't resolved until
-					// now (click time), since it needs reading the OTHER
-					// paper's own disk cache.
+					// See chat-pane.js's _renderMarkdown (and its
+					// _crossLibraryRefTypes) for how these attributes get
+					// set -- position isn't resolved until now (click
+					// time), since it needs reading the OTHER paper's own
+					// disk cache.
 					let crossPaperId = parseInt(anchor.dataset.crossPaperId, 10);
-					let opts = anchor.dataset.crossTableNum
-						? { tableNum: parseInt(anchor.dataset.crossTableNum, 10) }
-						: { tableExtraNum: parseInt(anchor.dataset.crossTableExtraNum, 10) };
-					let position = await LLMCitation.resolveCrossLibraryTablePosition(crossPaperId, opts);
+					let opts = anchor.dataset.crossNum
+						? { num: parseInt(anchor.dataset.crossNum, 10) }
+						: { extraNum: parseInt(anchor.dataset.crossExtraNum, 10) };
+					let position = await LLMCitation.resolveCrossLibraryElementPosition(crossPaperId, anchor.dataset.crossKind, opts);
 					await LLMCitation.openLibraryItem(crossPaperId, position);
 					return;
 				}

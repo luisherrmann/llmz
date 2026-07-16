@@ -1205,15 +1205,16 @@ LLMRequest = {
 							return;
 						}
 						if (anchor.dataset.crossPaperId) {
-							// See chat-pane.js's _renderMarkdown for how this
-							// pair of attributes gets set -- position isn't
-							// resolved until now (click time), since it needs
-							// reading the OTHER paper's own disk cache.
+							// See chat-pane.js's _renderMarkdown (and its
+							// _crossLibraryRefTypes) for how these attributes
+							// get set -- position isn't resolved until now
+							// (click time), since it needs reading the OTHER
+							// paper's own disk cache.
 							let crossPaperId = parseInt(anchor.dataset.crossPaperId, 10);
-							let opts = anchor.dataset.crossTableNum
-								? { tableNum: parseInt(anchor.dataset.crossTableNum, 10) }
-								: { tableExtraNum: parseInt(anchor.dataset.crossTableExtraNum, 10) };
-							let position = await LLMCitation.resolveCrossLibraryTablePosition(crossPaperId, opts);
+							let opts = anchor.dataset.crossNum
+								? { num: parseInt(anchor.dataset.crossNum, 10) }
+								: { extraNum: parseInt(anchor.dataset.crossExtraNum, 10) };
+							let position = await LLMCitation.resolveCrossLibraryElementPosition(crossPaperId, anchor.dataset.crossKind, opts);
 							await LLMCitation.openLibraryItem(crossPaperId, position);
 							return;
 						}

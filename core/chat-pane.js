@@ -375,6 +375,25 @@ LLMChatPane = {
 		return String(str).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
 	},
 
+	// Maps a cross-library ref: type word to {kind, isExtra} -- used by
+	// _renderMarkdown below to recognize a [label](<ref:PAPER_ID:table:N>)-
+	// style token (3-part payload) and route it correctly. Equation's
+	// "extra" series is its own distinct word ("formula", not
+	// "equationExtra" -- see LLMCitation._crossLibraryElementKinds' own
+	// comment for why), so this maps each word explicitly rather than
+	// assuming a `${kind}Extra` naming pattern throughout. A plain object
+	// literal (not computed per-match) since _renderMarkdown's own
+	// text.replace callback runs once per link token in a message --
+	// recreating this on every match would be wasteful.
+	_crossLibraryRefTypes: {
+		table: { kind: "table", isExtra: false },
+		tableExtra: { kind: "table", isExtra: true },
+		figure: { kind: "figure", isExtra: false },
+		figureExtra: { kind: "figure", isExtra: true },
+		equation: { kind: "equation", isExtra: false },
+		formula: { kind: "equation", isExtra: true },
+	},
+
 	_escapeAttr(str) {
 		return this._stripInvalidXmlChars(str)
 			.replace(/&/g, "&amp;")
@@ -423,28 +442,34 @@ LLMChatPane = {
 	//                                  real, stable Zotero item id, resolved
 	//                                  directly against the library.
 	//   [PAPER_ID Table N](<ref:PAPER_ID:table:N>) /
-	//   [PAPER_ID TableExtra N](<ref:PAPER_ID:tableExtra:N>) -- cross-library
-	//                                  TABLE mention (table-only for now, see
+	//   [PAPER_ID TableExtra N](<ref:PAPER_ID:tableExtra:N>) /
+	//   [PAPER_ID Figure N](<ref:PAPER_ID:figure:N>) /
+	//   [PAPER_ID FigureExtra N](<ref:PAPER_ID:figureExtra:N>) /
+	//   [PAPER_ID Equation N](<ref:PAPER_ID:equation:N>) /
+	//   [PAPER_ID Formula N](<ref:PAPER_ID:formula:N>) -- cross-library
+	//                                  table/figure/equation mention (see
 	//                                  llm/prompt.js's own <CROSS_LIBRARY_CONTEXT>
-	//                                  table citation hint): like ref:library:
-	//                                  above, opens that DIFFERENT paper, but
-	//                                  ALSO highlights the specific table's
-	//                                  own region within it. Distinct 3-part
-	//                                  payload shape (PAPER_ID:table:N, not
-	//                                  table:N) -- detected before the
-	//                                  regular 2-part split below. No
+	//                                  citation hint, and _crossLibraryRefTypes
+	//                                  for the refType -> {kind, isExtra}
+	//                                  mapping): like ref:library: above,
+	//                                  opens that DIFFERENT paper, but ALSO
+	//                                  highlights the specific element's own
+	//                                  region within it. Distinct 3-part
+	//                                  payload shape (PAPER_ID:<refType>:N,
+	//                                  not <refType>:N) -- detected before
+	//                                  the regular 2-part split below. No
 	//                                  linkIndex lookup either (same reason
 	//                                  as ref:library: -- PAPER_ID is real
 	//                                  and independently resolvable), and no
 	//                                  position resolved here -- that needs
 	//                                  reading the OTHER paper's own disk
-	//                                  cache (LLMCitation._loadTables), an
-	//                                  async file read this synchronous
-	//                                  render pass can't do, so it's
-	//                                  deferred to click time instead (see
-	//                                  llm/request.js's/ui/chat.js's click
+	//                                  cache (LLMCitation._crossLibraryElementKinds'
+	//                                  own `load`), an async file read this
+	//                                  synchronous render pass can't do, so
+	//                                  it's deferred to click time instead
+	//                                  (see llm/request.js's/ui/chat.js's click
 	//                                  handlers, LLMCitation.
-	//                                  resolveCrossLibraryTablePosition).
+	//                                  resolveCrossLibraryElementPosition).
 	// Done before marked parses, so spaces/special chars in the query don't
 	// break markdown link parsing.
 	// `citationPositions`, if given, is a Map of citation phrase -> resolved
@@ -567,15 +592,20 @@ LLMChatPane = {
 					// position map is available, leave the label as plain text.
 					return label;
 				}
-				// Cross-library TABLE citation -- [label](<ref:PAPER_ID:table:N>) /
-				// [label](<ref:PAPER_ID:tableExtra:N>), a 3-part payload
-				// (PAPER_ID:table:N), detected before the regular 2-part
-				// split below (whose refType is always a fixed word, never
-				// numeric, so a numeric first segment unambiguously means
-				// this shape instead). See this function's own doc comment.
+				// Cross-library TABLE/FIGURE/EQUATION citation --
+				// [label](<ref:PAPER_ID:table:N>) / [label](<ref:PAPER_ID:tableExtra:N>) /
+				// [label](<ref:PAPER_ID:figure:N>) / [label](<ref:PAPER_ID:figureExtra:N>) /
+				// [label](<ref:PAPER_ID:equation:N>) / [label](<ref:PAPER_ID:formula:N>),
+				// a 3-part payload (PAPER_ID:<refType>:N), detected before
+				// the regular 2-part split below (whose refType is always a
+				// fixed word, never numeric, so a numeric first segment
+				// unambiguously means this shape instead). See this
+				// function's own doc comment and _crossLibraryRefTypes'
+				// own comment.
 				let crossParts = payload.split(":");
-				if (crossParts.length === 3 && (crossParts[1] === "table" || crossParts[1] === "tableExtra")) {
-					let [crossPaperIdStr, crossRefType, crossNumStr] = crossParts;
+				let crossRefConfig = crossParts.length === 3 ? this._crossLibraryRefTypes[crossParts[1]] : null;
+				if (crossRefConfig) {
+					let [crossPaperIdStr, , crossNumStr] = crossParts;
 					let crossPaperId = parseInt(crossPaperIdStr, 10);
 					let crossNum = parseInt(crossNumStr, 10);
 					if (!crossPaperId || !crossNum) return label;
@@ -584,11 +614,11 @@ LLMChatPane = {
 					let paperItem = attachment.parentItem || attachment;
 					let title = paperItem.getField("title") || label;
 					// The model's own label is instructed to be "PAPER_ID
-					// Table N"/"PAPER_ID TableExtra N" (see llm/prompt.js's
-					// own cross-library table instructions) -- the leading
-					// PAPER_ID is a placeholder, stripped here and replaced
-					// with a real "(FirstAuthor et al., Year)" derived from
-					// Zotero's own metadata (see LLMCitation.
+					// Table N"/"PAPER_ID Figure N"/"PAPER_ID Formula N"/etc.
+					// (see llm/prompt.js's own cross-library instructions) --
+					// the leading PAPER_ID is a placeholder, stripped here
+					// and replaced with a real "(FirstAuthor et al., Year)"
+					// derived from Zotero's own metadata (see LLMCitation.
 					// _formatCrossLibraryAuthorYear) rather than trusted
 					// from whatever the model wrote, same "prefer real data
 					// over the model's own guess" reasoning the ref:library:
@@ -599,10 +629,10 @@ LLMChatPane = {
 					let authorYear = LLMCitation._formatCrossLibraryAuthorYear(paperItem);
 					let strippedLabel = label.replace(/^\d+\s*/, "");
 					let displayLabel = authorYear ? `${authorYear} ${strippedLabel}` : strippedLabel;
-					let numAttr = crossRefType === "table"
-						? `data-cross-table-num="${crossNum}"`
-						: `data-cross-table-extra-num="${crossNum}"`;
-					return `<a class="llm-find-link" data-cross-paper-id="${crossPaperId}" ${numAttr} title="${this._escapeAttr(title)}">${displayLabel}</a>`;
+					let numAttr = crossRefConfig.isExtra
+						? `data-cross-extra-num="${crossNum}"`
+						: `data-cross-num="${crossNum}"`;
+					return `<a class="llm-find-link" data-cross-paper-id="${crossPaperId}" data-cross-kind="${crossRefConfig.kind}" ${numAttr} title="${this._escapeAttr(title)}">${displayLabel}</a>`;
 				}
 				let [refType, refNum] = payload.split(":");
 				if (refType === "page") {

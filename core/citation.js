@@ -404,46 +404,78 @@ LLMCitation = {
 		}
 	},
 
-	// Extracts the citation-relevant fields for a cross-library TABLE hit --
-	// `table_num` (the paper's own real printed number, e.g. "Table 3") if
-	// it has one, else `table_extra_num` (an SDT-only-detected table with
-	// no real printed number -- an appendix-lettered caption, or a
-	// synthetic heading-derived label, see extract_tables_sdt.js), same
-	// table_num/table_extra_num split _formatTableMarkdown/buildLinkIndex
-	// already use for a SAME-paper table link. Used by
-	// _crossLibrarySourceResolvers' table_caption/table_content entries
-	// (getText resolves the TEXT shown to the model; getMeta resolves what
-	// the model needs to cite it with a ref:PAPER_ID:table:N/
-	// ref:PAPER_ID:tableExtra:N link -- see llm/prompt.js's own
-	// _formatCrossLibraryContext) -- figures/equations don't have this yet
-	// (cross-library linking is table-only for now).
-	_tableCrossLibraryMeta(records, sourceId) {
-		let t = records?.find(table => table.table_id === sourceId);
-		if (!t) return null;
-		return { tableNum: t.table_num, tableExtraNum: t.table_extra_num, label: t.label };
+	// Kind config shared by cross-library element meta-extraction
+	// (_elementCrossLibraryMeta below, used by _crossLibrarySourceResolvers'
+	// own getMeta entries) and click-time position resolution
+	// (resolveCrossLibraryElementPosition) -- maps a "kind" (table/figure/
+	// equation) to how to load that paper's own disk cache, the id field
+	// that finds a specific record within it (same .find()-not-index
+	// convention _crossLibrarySourceResolvers' own comment explains), and
+	// its own numbered/"extra" field pair. Table/figure share the same
+	// numbered/extraNum naming; equation's second series is called
+	// "formula" instead (see extract_equations.js's own header comment for
+	// why -- a genuinely different word, not "equationExtra", so its own
+	// ref: type reflects that too: ref:PAPER_ID:formula:N, not
+	// ref:PAPER_ID:equationExtra:N -- see chat-pane.js's _renderMarkdown).
+	_crossLibraryElementKinds: {
+		table: {
+			load: paperId => LLMCitation._loadTables(paperId),
+			idField: "table_id", numField: "table_num", extraField: "table_extra_num",
+		},
+		figure: {
+			load: paperId => LLMCitation._loadFigures(paperId),
+			idField: "figure_id", numField: "figure_num", extraField: "figure_extra_num",
+		},
+		equation: {
+			load: paperId => LLMCitation._loadEquations(paperId),
+			idField: "equation_id", numField: "equation_num", extraField: "formula_num",
+		},
 	},
 
-	// Resolves a cross-library table link's highlight region at CLICK time,
-	// not render time -- unlike a SAME-paper table link (resolved up front
+	// Extracts the citation-relevant fields for a cross-library hit of the
+	// given `kind` -- `num` (the paper's own real printed number, e.g.
+	// "Table 3") if it has one, else `extraNum` (an SDT-only-detected/
+	// unlabeled element -- an appendix-lettered caption, or a synthetic
+	// heading-derived label, see extract_tables_sdt.js/
+	// extract_figures_sdt.js/extract_equations.js), same num/extraNum
+	// split _formatTableMarkdown/buildLinkIndex already use for a
+	// SAME-paper link. Used by _crossLibrarySourceResolvers' own getMeta
+	// entries (getText resolves the TEXT shown to the model; this resolves
+	// what the model needs to cite it with a ref:PAPER_ID:<kind>:N/
+	// ref:PAPER_ID:<kind>Extra:N (or .../formula:N for equations) link --
+	// see llm/prompt.js's own _formatCrossLibraryContext). Returns null if
+	// no record matches `sourceId`.
+	_elementCrossLibraryMeta(kind, records, sourceId) {
+		let config = this._crossLibraryElementKinds[kind];
+		let record = records?.find(r => r[config.idField] === sourceId);
+		if (!record) return null;
+		return { kind, num: record[config.numField], extraNum: record[config.extraField], label: record.label };
+	},
+
+	// Resolves a cross-library element link's highlight region at CLICK
+	// time, not render time -- unlike a SAME-paper link (resolved up front
 	// via buildLinkIndex, from the index already in memory for the PDF
 	// that's actually open), this needs reading ANOTHER paper's own disk
-	// cache (_loadTables), an async file read render-time HTML generation
-	// (chat-pane.js's _renderMarkdown) can't do synchronously -- so the
-	// rendered link only carries paperId+table_num/table_extra_num (see
-	// its own data-cross-* attributes), and this is called from the click
-	// handler instead (llm/request.js's/ui/chat.js's rendered.addEventListener
-	// click, both already async). Exactly one of tableNum/tableExtraNum
-	// should be given, matching whichever ref: variant the link used.
-	// Returns null (silently, same "stale link" tolerance every other
-	// navigateTo*/openLibraryItem already has) if the paper's table cache
-	// is missing/unreadable or no table matches.
-	async resolveCrossLibraryTablePosition(paperId, { tableNum, tableExtraNum } = {}) {
-		let tables = await this._loadTables(paperId);
-		if (!tables) return null;
-		let table = tableNum != null
-			? tables.find(t => t.table_num === tableNum)
-			: tables.find(t => t.table_extra_num === tableExtraNum);
-		return table?.position || null;
+	// cache (see _crossLibraryElementKinds' own `load`), an async file read
+	// render-time HTML generation (chat-pane.js's _renderMarkdown) can't do
+	// synchronously -- so the rendered link only carries paperId+kind+num/
+	// extraNum (see its own data-cross-* attributes), and this is called
+	// from the click handler instead (llm/request.js's/ui/chat.js's
+	// rendered.addEventListener click, both already async). Exactly one of
+	// num/extraNum should be given, matching whichever ref: variant the
+	// link used. Returns null (silently, same "stale link" tolerance every
+	// other navigateTo*/openLibraryItem already has) if `kind` isn't
+	// recognized, the paper's own cache is missing/unreadable, or no
+	// record matches.
+	async resolveCrossLibraryElementPosition(paperId, kind, { num, extraNum } = {}) {
+		let config = this._crossLibraryElementKinds[kind];
+		if (!config) return null;
+		let records = await config.load(paperId);
+		if (!records) return null;
+		let record = num != null
+			? records.find(r => r[config.numField] === num)
+			: records.find(r => r[config.extraField] === extraNum);
+		return record?.position || null;
 	},
 
 	async _loadFigures(paperId) {
@@ -496,12 +528,12 @@ LLMCitation = {
 		table_caption: {
 			load: paperId => LLMCitation._loadTables(paperId),
 			getText: (records, sourceId) => records?.find(t => t.table_id === sourceId)?.caption || null,
-			getMeta: (records, sourceId) => LLMCitation._tableCrossLibraryMeta(records, sourceId),
+			getMeta: (records, sourceId) => LLMCitation._elementCrossLibraryMeta("table", records, sourceId),
 		},
 		table_content: {
 			load: paperId => LLMCitation._loadTables(paperId),
 			getText: (records, sourceId) => records?.find(t => t.table_id === sourceId)?.contentText || null,
-			getMeta: (records, sourceId) => LLMCitation._tableCrossLibraryMeta(records, sourceId),
+			getMeta: (records, sourceId) => LLMCitation._elementCrossLibraryMeta("table", records, sourceId),
 		},
 		figure_caption: {
 			load: paperId => LLMCitation._loadFigures(paperId),
@@ -509,6 +541,7 @@ LLMCitation = {
 				let f = records?.find(fig => fig.figure_id === sourceId);
 				return f ? `${f.label}: ${f.caption}` : null;
 			},
+			getMeta: (records, sourceId) => LLMCitation._elementCrossLibraryMeta("figure", records, sourceId),
 		},
 		equation_context: {
 			load: paperId => LLMCitation._loadEquations(paperId),
@@ -517,6 +550,7 @@ LLMCitation = {
 				if (!eq) return null;
 				return [eq.preceding_sentence, eq.text, eq.following_sentence].filter(Boolean).join(" ") || null;
 			},
+			getMeta: (records, sourceId) => LLMCitation._elementCrossLibraryMeta("equation", records, sourceId),
 		},
 	},
 
@@ -529,9 +563,10 @@ LLMCitation = {
 	},
 
 	// "(FirstAuthor et al., Year)" -- used by chat-pane.js's _renderMarkdown
-	// to build the visible label for a cross-library table link
-	// (ref:PAPER_ID:table:N), REPLACING the model's own numeric PAPER_ID
-	// placeholder in its label with this, rather than trusting the model to
+	// to build the visible label for a cross-library element link
+	// (ref:PAPER_ID:table:N/figure:N/equation:N/etc.), REPLACING the
+	// model's own numeric PAPER_ID placeholder in its label with this,
+	// rather than trusting the model to
 	// spell out the author/year itself (same "prefer real Zotero data over
 	// whatever the model wrote" reasoning _renderMarkdown's ref:library:
 	// branch already uses for a paper's title). LAST name only (not
@@ -643,11 +678,11 @@ LLMCitation = {
 			// _buildCrossLibraryContext Logs breakdown needs it to report
 			// what KIND of excerpt each chunk actually is (paragraph vs.
 			// table/figure/equation), now that a chunk isn't always a
-			// paragraph. `meta` (only table_caption/table_content define
-			// getMeta right now -- see _tableCrossLibraryMeta) carries
+			// paragraph. `meta` (every resolver except plain paragraph
+			// defines getMeta -- see _elementCrossLibraryMeta) carries
 			// whatever llm/prompt.js's _formatCrossLibraryContext needs to
-			// give the model a citable ref:PAPER_ID:table:N hint; null for
-			// every other kind, which just means no such hint is shown.
+			// give the model a citable ref:PAPER_ID:<kind>:N hint; null for
+			// paragraph, which just means no such hint is shown.
 			let meta = resolver.getMeta ? resolver.getMeta(records, result.sourceId) : null;
 			chunks.push({ paperId: result.paperId, title, authors, text, source: result.source, meta });
 		}
@@ -712,10 +747,10 @@ LLMCitation = {
 
 	// Opens a DIFFERENT paper (not the one in the current reader tab) --
 	// used for cross-library citation links (see chat-pane.js's
-	// _renderMarkdown, ref:library:PAPER_ID and ref:PAPER_ID:table:N) so a
+	// _renderMarkdown, ref:library:PAPER_ID and ref:PAPER_ID:<kind>:N) so a
 	// paper the model pulled into <CROSS_LIBRARY_CONTEXT> (see
 	// getCrossLibraryChunks above) can be opened directly by clicking its
-	// title (or a specific table mention) in the response, the same way
+	// title (or a specific table/figure/equation mention) in the response, the same way
 	// clicking a table/figure/reference link jumps straight to it instead
 	// of leaving the user to go find it themselves. `paperId` is always a
 	// PDF ATTACHMENT's item.id (same convention as getCrossLibraryChunks'
@@ -727,7 +762,7 @@ LLMCitation = {
 	// nothing to do" tolerance navigateToAnnotation/navigateToPosition
 	// already have for a deleted target.
 	//
-	// `position`, if given (see resolveCrossLibraryTablePosition), is
+	// `position`, if given (see resolveCrossLibraryElementPosition), is
 	// passed straight through as Zotero.Reader.open's own `location`
 	// param -- it threads through correctly whether this paper's reader
 	// tab already exists (reader.navigate(location) internally) or is

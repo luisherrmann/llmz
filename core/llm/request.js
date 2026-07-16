@@ -413,6 +413,17 @@ LLMRequest = {
 	// failed/found nothing, or nothing matched the question closely
 	// enough) -- returned rather than mutating modelPrompt directly, so
 	// this function doesn't need write access to the caller's own local.
+	//
+	// This and the other five _buildXContext methods below are genuinely
+	// independent of one another (none reads another's result) and now run
+	// concurrently via Promise.all (see _handleNormalChat further down),
+	// each against the same shared ctx -- their System messages can
+	// therefore land in whatever order their own underlying LLM/embedding
+	// calls actually finish, not the fixed table/equation/note/image/
+	// reference/cross-library order they used to print in when run one at
+	// a time. Accepted deliberately: nobody reads the Logs panel as a
+	// strict ledger, and buffering+replaying each call's messages just to
+	// preserve that order isn't worth the complexity.
 	async _buildTableContext(tableIndexPromise, prompt, recentHistory, readerContext, ctx) {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
 		let tableIndex = await tableIndexPromise;
@@ -502,6 +513,10 @@ LLMRequest = {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
 		let notes = await notesPromise;
 		if (isCancelled()) return { notes: [], addition: "" };
+		if (notes?.error) {
+			appendMessage("System", `Note extraction failed: ${notes.error}`);
+			return { notes: [], addition: "" };
+		}
 		if (!notes.length) {
 			appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
 			return { notes: [], addition: "" };
@@ -556,6 +571,17 @@ LLMRequest = {
 		let addition = "";
 		let figureIndex = await figureIndexPromise;
 		if (isCancelled()) return { index: figureIndex, images, addition };
+		// Reported but NOT a return-early -- unlike the other five
+		// _buildXContext methods, this one also handles the user's own
+		// pasted image(s) (pastedImageDataUris below), which are entirely
+		// independent of figureIndex, so a failed figure extraction
+		// shouldn't block those from still being sent. The `figureIndex?.
+		// figures?.length` check further down already naturally skips the
+		// "select a figure from the paper" branch on an error object (no
+		// `.figures` property), so no other control-flow change is needed.
+		if (figureIndex?.error) {
+			appendMessage("System", `Figure extraction failed: ${figureIndex.error}`);
+		}
 		try {
 			let currentModel = await LLMInterfaces.getCurrentModel();
 			let supportsImages = await LLMInterfaces.modelSupportsImages(currentModel);
@@ -641,6 +667,10 @@ LLMRequest = {
 		let { appendMessage, isCancelled } = ctx;
 		let referenceIndex = await referenceIndexPromise;
 		if (isCancelled()) return { index: referenceIndex, addition: "" };
+		if (referenceIndex?.error) {
+			appendMessage("System", `Reference extraction failed: ${referenceIndex.error}`);
+			return { index: referenceIndex, addition: "" };
+		}
 		if (!referenceIndex?.references?.length) {
 			return { index: referenceIndex, addition: "" };
 		}
@@ -888,13 +918,13 @@ LLMRequest = {
 			let figureIndexPromise = pdfItem
 				? LLMFigures.getFigureIndex(pdfItem, onEmbeddingStart, onStructureMessage).catch((e) => {
 					this.log(`getFigureIndex failed: ${e.message}`);
-					return null;
+					return { error: e.message };
 				})
 				: Promise.resolve(null);
 			let referenceIndexPromise = pdfItem
 				? LLMReferences.getReferenceIndex(pdfItem, onStructureMessage).catch((e) => {
 					this.log(`getReferenceIndex failed: ${e.message}`);
-					return null;
+					return { error: e.message };
 				})
 				: Promise.resolve(null);
 			let equationIndexPromise = pdfItem
@@ -906,7 +936,7 @@ LLMRequest = {
 			let notesPromise = pdfItem
 				? LLMNotes.getNotes(pdfItem).catch((e) => {
 					this.log(`getNotes failed: ${e.message}`);
-					return [];
+					return { error: e.message };
 				})
 				: Promise.resolve([]);
 			// Debug/status metadata about the request, not part of the actual
@@ -950,40 +980,31 @@ LLMRequest = {
 			// _RECENT_HISTORY_TURNS's own comment for why exactly 2.
 			let recentHistory = priorTranscript.slice(-this._RECENT_HISTORY_TURNS);
 
-			// Each of these six awaits its own index promise and reports
-			// its own status messages -- see each _buildXContext method
-			// above for what it does. Run sequentially (not
-			// Promise.all'd) since their onProgress-style System messages
-			// are meant to appear in the same fixed order every time
-			// (table, equation, note, image, reference, cross-library), for
-			// a predictable Logs panel read -- the underlying index
-			// promises themselves were already all kicked off in parallel
-			// above, so this doesn't serialize the actual extraction
-			// work, just the (cheap, already-settled-or-nearly-so)
-			// awaiting of it.
-			let tableResult = await this._buildTableContext(tableIndexPromise, prompt, recentHistory, readerContext, ctx);
+			// Each of these six independently awaits its own index promise,
+			// runs an LLM selection/gating call, and reports its own status
+			// messages -- see each _buildXContext method above for what it
+			// does. Genuinely independent of one another (none reads
+			// another's result), so run concurrently rather than one at a
+			// time; their System messages land in whatever order they
+			// actually resolve in as a result, not always the same
+			// table/equation/note/image/reference/cross-library order --
+			// accepted deliberately, see _buildTableContext's own comment.
+			let [tableResult, equationResult, noteResult, imageResult, referenceResult, crossLibraryResult] = await Promise.all([
+				this._buildTableContext(tableIndexPromise, prompt, recentHistory, readerContext, ctx),
+				this._buildEquationContext(equationIndexPromise, prompt, recentHistory, readerContext, ctx),
+				this._buildNoteContext(notesPromise, prompt, recentHistory, readerContext, ctx),
+				this._buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, recentHistory, readerContext, pdfItem, ctx),
+				this._buildReferenceContext(referenceIndexPromise, prompt, recentHistory, readerContext, ctx),
+				this._buildCrossLibraryContext(prompt, readerContext, pdfItem, contextInfo?.title, recentHistory, ctx),
+			]);
 			if (isCancelled()) return;
+
 			modelPrompt += tableResult.addition;
-
-			let equationResult = await this._buildEquationContext(equationIndexPromise, prompt, recentHistory, readerContext, ctx);
-			if (isCancelled()) return;
 			modelPrompt += equationResult.addition;
-
-			let noteResult = await this._buildNoteContext(notesPromise, prompt, recentHistory, readerContext, ctx);
-			if (isCancelled()) return;
 			modelPrompt += noteResult.addition;
-
-			let imageResult = await this._buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, recentHistory, readerContext, pdfItem, ctx);
-			if (isCancelled()) return;
 			let images = imageResult.images;
 			modelPrompt += imageResult.addition;
-
-			let referenceResult = await this._buildReferenceContext(referenceIndexPromise, prompt, recentHistory, readerContext, ctx);
-			if (isCancelled()) return;
 			modelPrompt += referenceResult.addition;
-
-			let crossLibraryResult = await this._buildCrossLibraryContext(prompt, readerContext, pdfItem, contextInfo?.title, recentHistory, ctx);
-			if (isCancelled()) return;
 			modelPrompt += crossLibraryResult.addition;
 
 			// Lets the model's own text mentions of any extracted table/figure/

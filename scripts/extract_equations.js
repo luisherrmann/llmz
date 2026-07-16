@@ -17,26 +17,66 @@
 //
 // Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_equations.js <pdf_path> <output_json_path> [structure_cache_path]
 // Output: JSON array of { equation_id, page_num, equation_num, formula_num,
-//   label, text, position }. page_num is the plain 1-indexed page number
-//   (null if this block had no anchor at all), same convention/field name
-//   extract_tables_sdt.js/extract_figures_sdt.js already use. equation_id is
-//   a THIRD, distinct numbering from equation_num/formula_num -- a plain
-//   1..N sequential id, in document (block) order, assigned to EVERY
-//   equation regardless of which of the two series it landed in (mirrors
-//   extract_figures_sdt.js's own figure_id/extract_tables_sdt.js's own
-//   table_id, see either one's header comment for the fuller rationale: an
-//   always-present, stable identifier neither number-or-null field can be
-//   used as directly).
+//   label, text, preceding_sentence, following_sentence, position }.
+//   page_num is the plain 1-indexed page number (null if this block had no
+//   anchor at all), same convention/field name extract_tables_sdt.js/
+//   extract_figures_sdt.js already use. equation_id is a THIRD, distinct
+//   numbering from equation_num/formula_num -- a plain 1..N sequential id,
+//   in document (block) order, assigned to EVERY equation regardless of
+//   which of the two series it landed in (mirrors extract_figures_sdt.js's
+//   own figure_id/extract_tables_sdt.js's own table_id, see either one's
+//   header comment for the fuller rationale: an always-present, stable
+//   identifier neither number-or-null field can be used as directly).
+//   preceding_sentence/following_sentence are the literal sentence
+//   immediately before/after the equation in the surrounding prose (null if
+//   none exists on that side, e.g. the equation opens/closes the document)
+//   -- see findNearestSentence's own comment for how these are found.
 
 import fs from 'fs';
+import { createRequire } from 'module';
 import { getMathBlocks } from '../sdt/document-worker/src/pdf/structure/math.js';
 import { loadOrComputeStructure } from './structure_sdt.js';
+
+// See shared-patterns.js's own header comment for why this is require()'d
+// (via Node's ESM-to-CommonJS bridge) rather than imported -- it's the same
+// plain file Zotero's own subscript loader executes directly as a global on
+// the plugin-runtime side, so it can't use import/export syntax itself.
+const require = createRequire(import.meta.url);
+const { splitSentences } = require('./shared-patterns.js');
 
 function flattenText(node) {
 	if (!node || !Array.isArray(node.content)) return '';
 	return node.content.map(child => (
 		typeof child.text === 'string' ? child.text : flattenText(child)
 	)).join('');
+}
+
+// Walks structure.content from `startIndex` in `direction` (-1 or +1),
+// skipping any block that isn't type 'paragraph' (an adjacent equation,
+// image, table, caption, heading, etc.), until the nearest real prose block
+// is found or the array bounds are exhausted -- unbounded, since we want
+// the TRUE nearest sentence regardless of how many non-prose blocks sit in
+// between, not a "close enough" match the way table/figure caption matching
+// needs a distance guard against (there's no ambiguity to resolve here,
+// just one nearest neighbor to find). Returns that paragraph's LAST
+// sentence (direction -1, "preceding") or FIRST sentence (direction +1,
+// "following") via the shared, unfiltered splitSentences (see
+// shared-patterns.js) -- deliberately NOT LLMCitation.splitIntoSentences'
+// own length-filtered version, since a short transitional sentence right
+// next to the equation ("Formally,", "Thus,") is exactly what we want here,
+// not something to discard. Returns null if no paragraph block exists on
+// this side at all, or if one is found but yields no sentences somehow.
+function findNearestSentence(structure, startIndex, direction) {
+	for (let i = startIndex; i >= 0 && i < structure.content.length; i += direction) {
+		let block = structure.content[i];
+		if (block.type !== 'paragraph') continue;
+		let text = flattenText(block).replace(/\s+/g, ' ').trim();
+		if (!text) continue;
+		let sentences = splitSentences(text);
+		if (!sentences.length) continue;
+		return direction < 0 ? sentences[sentences.length - 1] : sentences[0];
+	}
+	return null;
 }
 
 // getMathBlocks() indexes by equation number (parsed from a block's own
@@ -77,6 +117,9 @@ function getEquations(structure) {
 		// derivation itself rather than just reading a field.
 		let page_num = pageRect ? pageRect[0] + 1 : null;
 
+		let preceding_sentence = findNearestSentence(structure, i - 1, -1);
+		let following_sentence = findNearestSentence(structure, i + 1, 1);
+
 		if (numberByBlockRef.has(i)) {
 			let equationNum = numberByBlockRef.get(i);
 			equations.push({
@@ -85,6 +128,8 @@ function getEquations(structure) {
 				formula_num: null,
 				label: `Equation ${equationNum}`,
 				text,
+				preceding_sentence,
+				following_sentence,
 				position,
 			});
 		}
@@ -96,6 +141,8 @@ function getEquations(structure) {
 				formula_num: formulaCount,
 				label: `Formula ${formulaCount}`,
 				text,
+				preceding_sentence,
+				following_sentence,
 				position,
 			});
 		}

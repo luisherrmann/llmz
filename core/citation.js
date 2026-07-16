@@ -6,11 +6,15 @@ LLMCitation = {
 		Zotero.debug("LLM Chat Pane [Citation]: " + msg);
 	},
 
+	// Layers this module's OWN length filter (20-500 chars, tuned for
+	// standalone citation-chunk selection) and count cap on top of
+	// LLMPatterns.splitSentences' shared raw boundary-split (see
+	// scripts/shared-patterns.js) -- a caller that wants the literal
+	// sentence adjacent to something, unfiltered, should call
+	// LLMPatterns.splitSentences directly instead (see e.g.
+	// scripts/extract_equations.js's own equation-context extraction).
 	splitIntoSentences(text) {
-		return text
-			.replace(/\s+/g, " ")
-			.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/)
-			.map(s => s.trim())
+		return LLMPatterns.splitSentences(text)
 			.filter(s => s.length >= 20 && s.length <= 500)
 			.slice(0, this.maxCitationChunks);
 	},

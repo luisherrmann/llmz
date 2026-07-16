@@ -118,7 +118,7 @@ LLMUIIndexAll = {
 				LLMTables.getTableIndex(item, undefined, onMessage).catch((e) => this.log(`getTableIndex failed for ${item.libraryKey}: ${e.message}`)),
 				LLMFigures.getFigureIndex(item, undefined, onMessage).catch((e) => this.log(`getFigureIndex failed for ${item.libraryKey}: ${e.message}`)),
 				LLMReferences.getReferenceIndex(item).catch((e) => this.log(`getReferenceIndex failed for ${item.libraryKey}: ${e.message}`)),
-				LLMEquations.getEquationIndex(item).catch((e) => this.log(`getEquationIndex failed for ${item.libraryKey}: ${e.message}`)),
+				LLMEquations.getEquationIndex(item, undefined, onMessage).catch((e) => this.log(`getEquationIndex failed for ${item.libraryKey}: ${e.message}`)),
 			]);
 			return { ok: true };
 		}

@@ -21,7 +21,13 @@ LLMReferences = {
 	// _runNode with it) but IS a relative `import`ed dependency of both
 	// extract_tables_sdt.js and extract_figures_sdt.js, so it still has to
 	// be deployed alongside them -- see _deployFromPackedXPI below.
-	_siblingScriptNames: ["extract_equations.js", "extract_tables_sdt.js", "extract_figures_sdt.js", "match_captions.js", "compute_document_structure.js", "structure_sdt.js"],
+	// shared-patterns.js is the same story -- a createRequire'd dependency
+	// of extract_equations.js (see scripts/shared-patterns.js's own header
+	// comment for why it's loaded that way rather than a normal import),
+	// not something _runNode ever invokes directly, but it still has to
+	// land in the same deployed scripts/ directory for that require() to
+	// resolve.
+	_siblingScriptNames: ["extract_equations.js", "extract_tables_sdt.js", "extract_figures_sdt.js", "match_captions.js", "compute_document_structure.js", "structure_sdt.js", "shared-patterns.js"],
 	_cacheVersion: 1, // bump when the cached index schema changes (JS-side, not just the script/model)
 	_indexCache: new Map(),
 	_extensionRoot: null,

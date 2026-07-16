@@ -14,6 +14,7 @@ var LLMImport;
 var LLMConversationHistory;
 var LLMUIConversationHistory;
 var LLMEmbeddings;
+var LLMPatterns;
 var LLMCitation;
 var LLMSemanticHistory;
 var LLMFigures;
@@ -50,6 +51,11 @@ async function startup({ id, version, rootURI }) {
 	// Not depended on by anything yet (see its own header comment) -- just
 	// needs to be loaded before its own init() call below.
 	Services.scriptloader.loadSubScript(rootURI + "core/llm/embeddings-db.js");
+	// Shared regex patterns/helpers used by BOTH this runtime and Node
+	// subprocess scripts (see scripts/shared-patterns.js's own header
+	// comment for the dual-loading mechanism) -- must load before
+	// core/citation.js, which calls LLMPatterns.splitSentences.
+	Services.scriptloader.loadSubScript(rootURI + "scripts/shared-patterns.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/citation.js");
 	// Depends on LLMCitation's own embedding API (getEmbedding/embedBatched/
 	// cosineSimilarity) -- must load after it.

@@ -305,6 +305,28 @@ LLMPrompt = {
 		}).join("\n");
 	},
 
+	// Same purpose as _buildReaderContextLines above, for recent
+	// conversation history -- shared by every selectXWithLLM/
+	// shouldIncludeXWithLLM selection prompt below so a short reply like
+	// "yes please" or "show me that" can be resolved against whatever the
+	// model itself just proposed/offered, the same problem
+	// shouldIncludeCrossLibraryWithLLM's own recentHistory param exists to
+	// fix (see its comment) -- extended here to every OTHER selection
+	// call, since a short affirming reply after the model offers to show a
+	// specific table/figure/equation/note, or a follow-up naming something
+	// only mentioned in a PRIOR turn ("show me the one about X" where X was
+	// named earlier, not in this message), has exactly the same blind-spot
+	// otherwise. (shouldIncludeCrossLibraryWithLLM predates this helper and
+	// keeps its own inline wording, tuned for a yes/no prompt with a worked
+	// example, rather than switching to this shared, more generic phrasing.)
+	_historyContextLines(recentHistory) {
+		if (!recentHistory.length) return [];
+		return [
+			"Recent conversation history (oldest first) -- use this to resolve what the user's question refers to if it's a short reply like 'yes please' or 'show me that' to something you yourself proposed, offered, or mentioned:",
+			this._formatRecentHistory(recentHistory),
+		];
+	},
+
 	// Builds the actual text embedded for cross-library retrieval (see
 	// LLMCitation.getCrossLibraryChunks) -- deliberately not just the bare
 	// current prompt. shouldIncludeCrossLibraryWithLLM's own recentHistory-
@@ -353,7 +375,7 @@ LLMPrompt = {
 	// caption-anchored PyMuPDF pipeline's approach, back when every figure
 	// it could find at all necessarily had a real number) would silently
 	// drop them from the selection round-trip entirely.
-	async selectFiguresWithLLM(figureIndex, query, readerContext = {}) {
+	async selectFiguresWithLLM(figureIndex, query, recentHistory = [], readerContext = {}) {
 		let figures = figureIndex?.figures;
 		if (!figures?.length) return [];
 
@@ -364,6 +386,7 @@ LLMPrompt = {
 		let captionList = figures.map(f => `[${f.figure_id}] (p.${f.page_num}) ${f.label}: ${f.caption}`).join("\n");
 		let selectionPrompt = [
 			"You are choosing which figures (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant figures -- include all of them, not just the single best one.",
+			...this._historyContextLines(recentHistory),
 			...this._buildReaderContextLines(readerContext),
 			"Here are the figures in this paper, each preceded by its id and page number:",
 			captionList,
@@ -444,12 +467,13 @@ LLMPrompt = {
 	// the bibliography is relevant to this question AT ALL (e.g. "what prior
 	// work does this build on", "who else has studied this") versus clearly
 	// not (e.g. "what does figure 2 show").
-	async shouldIncludeReferencesWithLLM(referenceIndex, query, readerContext = {}) {
+	async shouldIncludeReferencesWithLLM(referenceIndex, query, recentHistory = [], readerContext = {}) {
 		let references = referenceIndex?.references;
 		if (!references?.length) return false;
 
 		let selectionPrompt = [
 			"You are deciding whether a scientific paper's full bibliography/reference list would help answer a user's question.",
+			...this._historyContextLines(recentHistory),
 			...this._buildReaderContextLines(readerContext),
 			"Here are the entries in this paper's bibliography, each preceded by its number:",
 			"",
@@ -557,7 +581,7 @@ LLMPrompt = {
 	// selectTablesWithLLM/selectFiguresWithLLM use. Multi-select (up to
 	// maxSelectedEquations) in a single round-trip, same rationale as
 	// selectNotesWithLLM below.
-	async selectEquationsWithLLM(equationIndex, query, readerContext = {}) {
+	async selectEquationsWithLLM(equationIndex, query, recentHistory = [], readerContext = {}) {
 		let equations = equationIndex?.equations;
 		if (!equations?.length) return [];
 
@@ -567,6 +591,7 @@ LLMPrompt = {
 		let equationContext = equations.map(eq => `(p.${eq.page_num}) ${eq.label}: ${eq.text}`).join("\n");
 		let selectionPrompt = [
 			"You are choosing which equations (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant equations -- include all of them, not just the single best one.",
+			...this._historyContextLines(recentHistory),
 			...this._buildReaderContextLines(readerContext),
 			"Here are the equations in this paper, each preceded by its page number and exact label:",
 			"",
@@ -621,7 +646,7 @@ LLMPrompt = {
 	// entirely -- it's always a small integer, so a plain comma-separated
 	// response is safe again, same as selectFiguresWithLLM/
 	// selectNotesWithLLM already do.
-	async selectTablesWithLLM(tableIndex, query, readerContext = {}) {
+	async selectTablesWithLLM(tableIndex, query, recentHistory = [], readerContext = {}) {
 		let tables = tableIndex?.tables;
 		if (!tables?.length) return [];
 
@@ -631,6 +656,7 @@ LLMPrompt = {
 		let tableContext = tables.map(t => `[${t.table_id}] (p.${t.page_num}) ${t.label}: ${t.caption}\n${LLMTables._flattenTableData(t.data)}`).join("\n\n");
 		let selectionPrompt = [
 			"You are choosing which tables (if any) from a scientific paper help answer a user's question. There may be zero, one, or several relevant tables -- include all of them, not just the single best one.",
+			...this._historyContextLines(recentHistory),
 			...this._buildReaderContextLines(readerContext),
 			"Here are the tables in this paper, each preceded by its id, page number, and label:",
 			"",
@@ -687,7 +713,7 @@ LLMPrompt = {
 	// specifically: each note's own title states ITS OWN page (e.g.
 	// "Highlight (p. 4)"), which is what lets a page-scoped question like
 	// "what notes do I have on this page?" be matched against pageNum below.
-	async selectNotesWithLLM(notes, query, readerContext = {}) {
+	async selectNotesWithLLM(notes, query, recentHistory = [], readerContext = {}) {
 		if (!notes?.length) return [];
 
 		const MAX_SELECTED_NOTES = 10;
@@ -695,6 +721,7 @@ LLMPrompt = {
 
 		let selectionPrompt = [
 			"You are choosing which of the user's own notes/highlights/underlines on this paper (if any) are relevant to a user's question. There may be zero, one, or several relevant notes -- include all of them, not just the single best one.",
+			...this._historyContextLines(recentHistory),
 			...this._buildReaderContextLines(readerContext),
 			"Each note's title states the page it's on, e.g. \"Highlight (p. 4)\" -- use that to match page-scoped questions like \"what notes do I have on this page?\" against the user's current page above.",
 			"Here are the notes:",

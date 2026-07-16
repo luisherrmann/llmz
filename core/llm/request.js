@@ -74,33 +74,30 @@ LLMRequest = {
 	// linking strictly needs, but shared for simplicity.
 	_REFERENCE_CONCURRENCY: 8,
 
-	// How many recent transcript entries _buildCrossLibraryContext peeks at
-	// (see its own comment) to resolve a short affirmation ("yes please")
-	// against something the model itself just proposed -- deliberately much
-	// smaller than LLMPrompt.maxHistoryMessages, since this only needs to
-	// cover "the model's last message, and enough around it to be sure",
-	// not the main reply's own recency/relevance budget. Exactly 2 (the
-	// single most recent exchange: the model's own last message plus the
-	// user turn that led to it), not more -- confirmed concretely that a
-	// wider window (4) reaches back far enough to also catch an OLDER
-	// exchange, which then dominates both the gating decision and (via
-	// LLMPrompt._buildCrossLibraryQuery) the retrieval embedding: a chained
-	// "please do that" -> [long answer, ends with a NEW offer] -> "okay,
-	// sure" ended up re-answering the OLDER offer instead of the one the
-	// model had just actually made, because the older exchange's own text
-	// was still in the window and pulled retrieval back toward it. Two
-	// keeps this anchored to only the offer immediately being affirmed.
-	_CROSS_LIBRARY_RECENT_HISTORY_TURNS: 2,
-
-	// Same window/rationale as _CROSS_LIBRARY_RECENT_HISTORY_TURNS above,
-	// for LLMIntent.detectIntent's own recentHistory param (see its own
-	// comment) -- kept as a separate constant rather than reusing the same
-	// one since the two calls are independent and may need retuning
-	// separately later, even though they start at the same value for the
-	// same reason: just the single most recent exchange, to avoid
-	// re-anchoring on an older offer instead of whatever's actually being
-	// affirmed/declined right now.
-	_INTENT_RECENT_HISTORY_TURNS: 2,
+	// How many recent transcript entries get passed as `recentHistory` to
+	// LLMIntent.detectIntent and every LLMPrompt selection/gating call this
+	// module makes (_buildTableContext/_buildEquationContext/
+	// _buildNoteContext/_buildImageContext/_buildReferenceContext/
+	// _buildCrossLibraryContext) so each can resolve a short reply ("yes
+	// please", "show me that") against something the model itself just
+	// proposed/offered/mentioned -- deliberately much smaller than
+	// LLMPrompt.maxHistoryMessages, since none of these need more than "the
+	// model's last message, and enough around it to be sure", not the main
+	// reply's own recency/relevance budget. Exactly 2 (the single most
+	// recent exchange: the model's own last message plus the user turn that
+	// led to it), not more -- confirmed concretely, for cross-library
+	// specifically, that a wider window (4) reaches back far enough to also
+	// catch an OLDER exchange, which then dominates both the gating
+	// decision and (via LLMPrompt._buildCrossLibraryQuery) the retrieval
+	// embedding: a chained "please do that" -> [long answer, ends with a
+	// NEW offer] -> "okay, sure" ended up re-answering the OLDER offer
+	// instead of the one the model had just actually made, because the
+	// older exchange's own text was still in the window and pulled
+	// retrieval back toward it. Two keeps every one of these calls anchored
+	// to only the offer immediately being affirmed/referenced -- applied
+	// uniformly rather than per-call-site since they all share the exact
+	// same failure mode, just against a different downstream selection.
+	_RECENT_HISTORY_TURNS: 2,
 
 	// Resolves `intent` (see llm/intent.js's detectIntent) down to a concrete
 	// list of numbers, against whichever index `tool`'s own resolver bundle
@@ -416,7 +413,7 @@ LLMRequest = {
 	// failed/found nothing, or nothing matched the question closely
 	// enough) -- returned rather than mutating modelPrompt directly, so
 	// this function doesn't need write access to the caller's own local.
-	async _buildTableContext(tableIndexPromise, prompt, readerContext, ctx) {
+	async _buildTableContext(tableIndexPromise, prompt, recentHistory, readerContext, ctx) {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
 		let tableIndex = await tableIndexPromise;
 		if (isCancelled()) return { index: tableIndex, addition: "" };
@@ -434,7 +431,7 @@ LLMRequest = {
 		}
 		let selectedTables = [];
 		try {
-			selectedTables = await LLMPrompt.selectTablesWithLLM(tableIndex, prompt, readerContext);
+			selectedTables = await LLMPrompt.selectTablesWithLLM(tableIndex, prompt, recentHistory, readerContext);
 		}
 		catch (e) {
 			this.log(`selectTablesWithLLM failed: ${e.message}`);
@@ -458,7 +455,7 @@ LLMRequest = {
 	// version, this stays silent for the "none found"/"none matched" cases
 	// rather than announcing an absence that's the overwhelmingly common
 	// case and not something the user asked about.
-	async _buildEquationContext(equationIndexPromise, prompt, readerContext, ctx) {
+	async _buildEquationContext(equationIndexPromise, prompt, recentHistory, readerContext, ctx) {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
 		let equationIndex = await equationIndexPromise;
 		if (isCancelled()) return { index: equationIndex, addition: "" };
@@ -471,7 +468,7 @@ LLMRequest = {
 		}
 		let selectedEquations = [];
 		try {
-			selectedEquations = await LLMPrompt.selectEquationsWithLLM(equationIndex, prompt, readerContext);
+			selectedEquations = await LLMPrompt.selectEquationsWithLLM(equationIndex, prompt, recentHistory, readerContext);
 		}
 		catch (e) {
 			this.log(`selectEquationsWithLLM failed: ${e.message}`);
@@ -501,7 +498,7 @@ LLMRequest = {
 	// possibly empty) alongside `addition` -- unlike the other four
 	// context builders, the caller needs this back too, for
 	// linkIndex's ref:note:KEY resolution.
-	async _buildNoteContext(notesPromise, prompt, readerContext, ctx) {
+	async _buildNoteContext(notesPromise, prompt, recentHistory, readerContext, ctx) {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
 		let notes = await notesPromise;
 		if (isCancelled()) return { notes: [], addition: "" };
@@ -511,7 +508,7 @@ LLMRequest = {
 		}
 		let selectedNotes = [];
 		try {
-			selectedNotes = await LLMPrompt.selectNotesWithLLM(notes, prompt, readerContext);
+			selectedNotes = await LLMPrompt.selectNotesWithLLM(notes, prompt, recentHistory, readerContext);
 		}
 		catch (e) {
 			this.log(`selectNotesWithLLM failed: ${e.message}`);
@@ -553,7 +550,7 @@ LLMRequest = {
 	// linkIndex's citation-link resolution on figures the model's text
 	// mentions, regardless of whether any of them ended up attached as
 	// images here.
-	async _buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, pdfItem, ctx) {
+	async _buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, recentHistory, readerContext, pdfItem, ctx) {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
 		let images = [];
 		let addition = "";
@@ -581,7 +578,7 @@ LLMRequest = {
 			// the caller for citation-link resolution on figures the
 			// model's text mentions).
 			if (figureIndex?.figures?.length && supportsImages && !pastedImageDataUris.length) {
-				let bestFigures = await LLMPrompt.selectFiguresWithLLM(figureIndex, prompt, readerContext);
+				let bestFigures = await LLMPrompt.selectFiguresWithLLM(figureIndex, prompt, recentHistory, readerContext);
 				if (isCancelled()) return { index: figureIndex, images, addition };
 				// image_data is no longer part of the figure index cache itself
 				// (see LLMFigures.renderMissingImages's own comment) -- rendered
@@ -640,7 +637,7 @@ LLMRequest = {
 	// (shouldIncludeReferencesWithLLM), not a top-K selection like the
 	// other four, since a whole bibliography is either worth including in
 	// full or not at all (there's no sensible "some of the references").
-	async _buildReferenceContext(referenceIndexPromise, prompt, readerContext, ctx) {
+	async _buildReferenceContext(referenceIndexPromise, prompt, recentHistory, readerContext, ctx) {
 		let { appendMessage, isCancelled } = ctx;
 		let referenceIndex = await referenceIndexPromise;
 		if (isCancelled()) return { index: referenceIndex, addition: "" };
@@ -649,7 +646,7 @@ LLMRequest = {
 		}
 		let includeReferences = false;
 		try {
-			includeReferences = await LLMPrompt.shouldIncludeReferencesWithLLM(referenceIndex, prompt, readerContext);
+			includeReferences = await LLMPrompt.shouldIncludeReferencesWithLLM(referenceIndex, prompt, recentHistory, readerContext);
 		}
 		catch (e) {
 			this.log(`shouldIncludeReferencesWithLLM failed: ${e.message}`);
@@ -940,48 +937,51 @@ LLMRequest = {
 				appendMessage("System", "No active PDF reader tab found. Asking without PDF context.");
 			}
 
-			// Each of these five awaits its own index promise and reports
+			// Last few turns only (not LLMPrompt.maxHistoryMessages' own,
+			// much larger window) -- every _buildXContext call below is a
+			// cheap one-off classification/selection call, not the main
+			// chat request, and only needs enough to resolve a short
+			// affirmation/follow-up against whatever the model itself most
+			// recently proposed or mentioned, not the conversation's full
+			// recency/relevance budget. Read regardless of
+			// LLMPrompt.useMessageHistory's own mode (including "none") --
+			// that setting governs how much history the MAIN reply resends,
+			// a separate, much costlier concern from this small peek. See
+			// _RECENT_HISTORY_TURNS's own comment for why exactly 2.
+			let recentHistory = priorTranscript.slice(-this._RECENT_HISTORY_TURNS);
+
+			// Each of these six awaits its own index promise and reports
 			// its own status messages -- see each _buildXContext method
 			// above for what it does. Run sequentially (not
 			// Promise.all'd) since their onProgress-style System messages
 			// are meant to appear in the same fixed order every time
-			// (table, equation, note, image, reference), for a
-			// predictable Logs panel read -- the underlying index
+			// (table, equation, note, image, reference, cross-library), for
+			// a predictable Logs panel read -- the underlying index
 			// promises themselves were already all kicked off in parallel
 			// above, so this doesn't serialize the actual extraction
 			// work, just the (cheap, already-settled-or-nearly-so)
 			// awaiting of it.
-			let tableResult = await this._buildTableContext(tableIndexPromise, prompt, readerContext, ctx);
+			let tableResult = await this._buildTableContext(tableIndexPromise, prompt, recentHistory, readerContext, ctx);
 			if (isCancelled()) return;
 			modelPrompt += tableResult.addition;
 
-			let equationResult = await this._buildEquationContext(equationIndexPromise, prompt, readerContext, ctx);
+			let equationResult = await this._buildEquationContext(equationIndexPromise, prompt, recentHistory, readerContext, ctx);
 			if (isCancelled()) return;
 			modelPrompt += equationResult.addition;
 
-			let noteResult = await this._buildNoteContext(notesPromise, prompt, readerContext, ctx);
+			let noteResult = await this._buildNoteContext(notesPromise, prompt, recentHistory, readerContext, ctx);
 			if (isCancelled()) return;
 			modelPrompt += noteResult.addition;
 
-			let imageResult = await this._buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, readerContext, pdfItem, ctx);
+			let imageResult = await this._buildImageContext(figureIndexPromise, pastedImageDataUris, prompt, recentHistory, readerContext, pdfItem, ctx);
 			if (isCancelled()) return;
 			let images = imageResult.images;
 			modelPrompt += imageResult.addition;
 
-			let referenceResult = await this._buildReferenceContext(referenceIndexPromise, prompt, readerContext, ctx);
+			let referenceResult = await this._buildReferenceContext(referenceIndexPromise, prompt, recentHistory, readerContext, ctx);
 			if (isCancelled()) return;
 			modelPrompt += referenceResult.addition;
 
-			// Last few turns only (not LLMPrompt.maxHistoryMessages' own,
-			// much larger window) -- shouldIncludeCrossLibraryWithLLM is a
-			// cheap one-off classification call, not the main chat request,
-			// and only needs enough to resolve a short affirmation against
-			// whatever the model itself most recently proposed, not the
-			// conversation's full recency/relevance budget. Read regardless
-			// of LLMPrompt.useMessageHistory's own mode (including "none")
-			// -- that setting governs how much history the MAIN reply resends,
-			// a separate, much costlier concern from this small peek.
-			let recentHistory = priorTranscript.slice(-this._CROSS_LIBRARY_RECENT_HISTORY_TURNS);
 			let crossLibraryResult = await this._buildCrossLibraryContext(prompt, readerContext, pdfItem, contextInfo?.title, recentHistory, ctx);
 			if (isCancelled()) return;
 			modelPrompt += crossLibraryResult.addition;
@@ -1308,13 +1308,13 @@ LLMRequest = {
 			// practice, since the two paths are mutually exclusive per
 			// request (a tool-intent match returns before _handleNormalChat
 			// would ever run), same rationale as the pageNum fetch below.
-			// Sliced to just _INTENT_RECENT_HISTORY_TURNS (see its own
-			// comment) and passed to detectIntent so a bare "yes please"
-			// affirming a tool the model itself just offered still resolves
-			// -- see LLMIntent.detectIntent's own comment.
+			// Sliced to just _RECENT_HISTORY_TURNS (see its own comment) and
+			// passed to detectIntent so a bare "yes please" affirming a tool
+			// the model itself just offered still resolves -- see
+			// LLMIntent.detectIntent's own comment.
 			let priorTranscript = chat.exportTranscript();
 			try {
-				let recentHistory = priorTranscript.slice(-this._INTENT_RECENT_HISTORY_TURNS);
+				let recentHistory = priorTranscript.slice(-this._RECENT_HISTORY_TURNS);
 				let detected = await LLMIntent.detectIntent(prompt, (msg) => {
 					if (cancelled) return;
 					appendMessage("System", msg);

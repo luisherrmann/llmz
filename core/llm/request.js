@@ -1133,10 +1133,76 @@ LLMRequest = {
 					// the SAME payload string _renderMarkdown will (below),
 					// or citationPositions' lookup-by-payload silently
 					// misses.
-					let queries = [...groundedText.matchAll(/\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]*_`]|\[|$)/g)].map(m => m[1]);
-					if (queries.length) {
+					let payloads = [...groundedText.matchAll(/\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]*_`]|\[|$)/g)].map(m => m[1]);
+					if (payloads.length) {
+						// Each payload is either a plain phrase (grounds
+						// against the CURRENT pdfItem, as before) or
+						// "PAPER_ID:phrase" (a cross-library citation, see
+						// llm/prompt.js's own instructions) -- LLMCitationPosition.
+						// resolvePositions ALREADY takes an arbitrary item
+						// (its own caches are keyed by item.id throughout,
+						// see its module comment), so no new resolution
+						// pipeline is needed here, just grouping payloads by
+						// which item they resolve against and calling the
+						// SAME function once per distinct item. Grouped by
+						// paperId (not resolved one citation at a time) so a
+						// reply citing several sentences from the SAME
+						// cross-library paper still only pays that paper's
+						// own structure-computation cost once, exactly like
+						// the current paper already does.
+						let samePaperPhrases = [];
+						let crossPhrasesByPaperId = new Map();
+						for (let payload of payloads) {
+							let { paperId, phrase } = LLMCitation.parseFindPayload(payload);
+							if (paperId == null) {
+								samePaperPhrases.push(phrase);
+								continue;
+							}
+							let list = crossPhrasesByPaperId.get(paperId);
+							if (!list) crossPhrasesByPaperId.set(paperId, list = []);
+							list.push(phrase);
+						}
+
+						citationPositions = new Map();
+						// Re-keyed by the ORIGINAL payload string (not just
+						// the bare phrase resolvePositions itself returns),
+						// so _renderMarkdown's own citationPositions.get(payload)
+						// lookup below needs no special-casing -- a same-paper
+						// payload IS its own bare phrase already; a
+						// cross-library payload is reconstructed here as
+						// `${paperId}:${phrase}`, exactly what the regex
+						// above actually captured for it.
+						let tasks = [];
+						if (samePaperPhrases.length) {
+							tasks.push(
+								LLMCitationPosition.resolvePositions(pdfItem, samePaperPhrases, onEmbeddingStart, onStructureMessage)
+									.then((resolved) => {
+										for (let [phrase, position] of resolved) citationPositions.set(phrase, position);
+									})
+							);
+						}
+						for (let [paperId, phrases] of crossPhrasesByPaperId) {
+							let attachment = Zotero.Items.get(paperId);
+							// Not a real/still-existing PDF attachment (stale
+							// paper_id, or the item was removed since this
+							// reply was generated) -- marked unresolved
+							// (null, not left absent) so _renderMarkdown's
+							// own citationPositions.has(payload) check still
+							// renders the "could not verify" state rather
+							// than silently leaving the raw token behind.
+							if (!attachment?.isPDFAttachment?.()) {
+								for (let phrase of phrases) citationPositions.set(`${paperId}:${phrase}`, null);
+								continue;
+							}
+							tasks.push(
+								LLMCitationPosition.resolvePositions(attachment, phrases, onEmbeddingStart, onStructureMessage)
+									.then((resolved) => {
+										for (let [phrase, position] of resolved) citationPositions.set(`${paperId}:${phrase}`, position);
+									})
+							);
+						}
 						try {
-							citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries, onEmbeddingStart, onStructureMessage);
+							await Promise.all(tasks);
 						}
 						catch (e) {
 							this.log(`Citation position resolution failed: ${e.message}`);
@@ -1193,7 +1259,18 @@ LLMRequest = {
 						}
 						if (anchor.dataset.position) {
 							try {
-								await LLMCitation.navigateToPosition(JSON.parse(anchor.dataset.position));
+								let position = JSON.parse(anchor.dataset.position);
+								// A cross-library citation (see chat-pane.js's
+								// _renderMarkdown) -- the position is a region
+								// in that OTHER paper, not the current reader
+								// tab, so open it there instead of navigating
+								// in place.
+								if (anchor.dataset.crossPaperId) {
+									await LLMCitation.openLibraryItem(parseInt(anchor.dataset.crossPaperId, 10), position);
+								}
+								else {
+									await LLMCitation.navigateToPosition(position);
+								}
 							}
 							catch (err) {
 								this.log(`Failed to parse position for link: ${err.message}`);

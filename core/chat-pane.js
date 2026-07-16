@@ -267,6 +267,24 @@ LLMChatPane = {
 			// text -- this matches the exact "I see $$ ... $$ not rendered"
 			// symptom directly.
 			marked.use({
+				// Disables Setext-style headings ("Text\n===" / "Text\n---").
+				// A model-written multi-line equation that puts "=" alone on
+				// its own line (e.g. "\dot{x}_i\n=\ns \cdot ...") is valid
+				// LaTeX formatting but ALSO matches marked's Setext-heading
+				// underline syntax -- confirmed concretely that this makes
+				// marked's built-in lheading tokenizer convert everything
+				// from the start of the paragraph up through the line before
+				// the "=" into an <h1>, consuming the opening "$$" in the
+				// process. That leaves the blockMath extension below with no
+				// opening delimiter to match, so the rest of the equation
+				// falls through to plain inline parsing, where its
+				// underscores get misread as emphasis markers. We only ever
+				// instruct the model to use ATX ("#"/"##") headings, so
+				// disabling Setext recognition costs nothing (a bare "---"
+				// line still works as a thematic break/<hr>).
+				tokenizer: {
+					lheading(src) { return undefined; },
+				},
 				extensions: [
 					// Block-level: runs against the whole remaining source
 					// BEFORE marked's own blank-line paragraph-splitting, so
@@ -405,9 +423,23 @@ LLMChatPane = {
 	// Renders markdown, converting three kinds of link tokens to HTML anchors
 	// (all sharing the `llm-find-link` class, so figure/table links look
 	// identical to citation links -- blue, underlined):
-	//   [label](<find:query>)      -- citation: geometry-backed navigation
-	//                                  only (requires pre-resolved
-	//                                  citationPositions)
+	//   [label](<find:query>) /
+	//   [label](<find:PAPER_ID:query>) -- citation: geometry-backed
+	//                                  navigation only (requires
+	//                                  pre-resolved citationPositions). The
+	//                                  PAPER_ID-prefixed form (see
+	//                                  llm/prompt.js's own cross-library
+	//                                  citation instructions, and
+	//                                  LLMCitation.parseFindPayload) grounds
+	//                                  a claim sourced from a
+	//                                  <CROSS_LIBRARY_CONTEXT> excerpt --
+	//                                  same lookup as the plain form (by the
+	//                                  exact payload string, prefix and
+	//                                  all), but opens that OTHER paper on
+	//                                  click instead of navigating in the
+	//                                  current reader tab (see
+	//                                  data-cross-paper-id below and the
+	//                                  click handlers' own handling of it).
 	//   [label](<ref:table:N>) /
 	//   [label](<ref:tableExtra:N>) /
 	//   [label](<ref:figure:N>) /
@@ -574,18 +606,32 @@ LLMChatPane = {
 				if (kind === "find") {
 					// citationPositions.has(payload) but its value is null ==
 					// resolution was ATTEMPTED and found nothing verbatim in
-					// the PDF's own text -- distinct from key absent
+					// the source text -- distinct from key absent
 					// entirely (no PDF context / prefetch didn't run), which
 					// isn't a verification failure, just means we never
-					// checked.
+					// checked. `payload` itself is looked up as-is (not just
+					// the bare phrase) -- llm/request.js's own citationPositions
+					// build keys a cross-library entry by this EXACT
+					// "PAPER_ID:phrase" string (see parseFindPayload below),
+					// matching what the regex above actually captured for it.
 					if (citationPositions?.has(payload)) {
 						let position = citationPositions.get(payload);
+						// A cross-library citation (see llm/prompt.js's own
+						// instructions) -- paperId non-null means `position`,
+						// if any, is a region in that OTHER paper, not the
+						// current reader tab, so the click needs to open
+						// that paper (see the click handlers' own
+						// data-cross-paper-id handling) rather than just
+						// navigate in place.
+						let { paperId: crossPaperId, phrase } = LLMCitation.parseFindPayload(payload);
 						if (position) {
 							let posAttr = this._escapeAttr(JSON.stringify(position));
-							let title = this._escapeAttr(payload);
-							return `<a class="llm-find-link" data-position="${posAttr}" title="${title}">${label}</a>`;
+							let title = this._escapeAttr(phrase);
+							let crossAttr = crossPaperId != null ? ` data-cross-paper-id="${crossPaperId}"` : "";
+							return `<a class="llm-find-link" data-position="${posAttr}"${crossAttr} title="${title}">${label}</a>`;
 						}
-						let title = this._escapeAttr(`Could not verify this citation against the PDF text: "${payload}"`);
+						let sourceLabel = crossPaperId != null ? "the cited paper's text" : "the PDF text";
+						let title = this._escapeAttr(`Could not verify this citation against ${sourceLabel}: "${phrase}"`);
 						return `<span class="llm-find-link llm-find-link-unverified" title="${title}">${label}</span>`;
 					}
 					// Citation links are geometry-backed only. If no pre-resolved

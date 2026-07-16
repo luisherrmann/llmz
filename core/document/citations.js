@@ -638,8 +638,8 @@ LLMCitationPosition = {
 						let bestSentences = await LLMCitation.getNearestSentences(citationIndex, queryEmbeddings);
 						for (let i = 0; i < unresolved.length; i++) {
 							let { query, key } = unresolved[i];
-							let bestSentence = bestSentences[i];
-							if (!bestSentence) continue;
+							let best = bestSentences[i];
+							if (!best) continue;
 							// The matched sentence is real text extracted
 							// from this same document, so re-anchoring IT
 							// (rather than the model's own possibly-
@@ -650,7 +650,7 @@ LLMCitationPosition = {
 							// nowhere to navigate to.
 							let position = null;
 							try {
-								position = this._resolveQueryAgainstTextIndex(textIndex, bestSentence);
+								position = this._resolveQueryAgainstTextIndex(textIndex, best.text);
 							}
 							catch (e) {
 								this.log(`resolvePositions: failed to re-anchor embedding match for "${query}": ${e.message}`);

@@ -448,7 +448,17 @@ LLMUIChat = {
 				}
 				if (anchor.dataset.position) {
 					try {
-						LLMCitation.navigateToPosition(JSON.parse(anchor.dataset.position));
+						let position = JSON.parse(anchor.dataset.position);
+						// A cross-library citation (see chat-pane.js's
+						// _renderMarkdown) -- the position is a region in
+						// that OTHER paper, not the current reader tab, so
+						// open it there instead of navigating in place.
+						if (anchor.dataset.crossPaperId) {
+							await LLMCitation.openLibraryItem(parseInt(anchor.dataset.crossPaperId, 10), position);
+						}
+						else {
+							LLMCitation.navigateToPosition(position);
+						}
 					}
 					catch (err) {
 						Zotero.debug(`LLM Chat Pane [Chat]: Failed to parse position for link: ${err.message}`);

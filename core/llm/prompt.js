@@ -32,11 +32,14 @@ LLMPrompt = {
 	maxPDFContextChars: 60000,
 	maxPageContextChars: 5000,
 	chunkContextTopK: 10,
-	// How many cross-library paragraphs (see shouldIncludeCrossLibraryWithLLM/
+	// How many cross-library chunks (see shouldIncludeCrossLibraryWithLLM/
 	// LLMCitation.getCrossLibraryChunks) get attached when the model decides
-	// a question needs OTHER papers, not just the current one. Same
+	// a question needs OTHER papers, not just the current one -- used TWICE
+	// by getCrossLibraryChunks (a paragraph-only search and an any-kind
+	// search, unioned -- see its own comment), so up to 2x this many chunks
+	// can actually be attached, not a hard cap of exactly this many. Same
 	// not-exposed-in-Advanced-yet status as maxPageContextChars above.
-	crossLibraryTopK: 5,
+	crossLibraryTopK: 10,
 	// Caps on how many figures/tables/equations selectFiguresWithLLM/
 	// selectTablesWithLLM/selectEquationsWithLLM will attach as context for a
 	// single request, even if the model's own selection response names more
@@ -231,7 +234,7 @@ LLMPrompt = {
 		"You may cite one of these entries if it genuinely helps answer the question (e.g. it's the direct source of a claim, or clearly relevant further reading) — do not force one in otherwise, and do not list entries just because they exist.",
 		"Format any such citation as [N](<ref:reference:N>), where N is the bibliography number, e.g. '[3]' — matching how the paper itself cites its own references.",
 		"Example: 'This approach was first proposed by [12](<ref:reference:12>).'",
-		"A <CROSS_LIBRARY_CONTEXT> block, if present, contains paragraphs retrieved from OTHER papers in the user's Zotero library -- not the current PDF, and not necessarily cited by it -- that may help answer the question. Each entry states its source paper's title, authors, and paper_id before its paragraph text.",
+		"A <CROSS_LIBRARY_CONTEXT> block, if present, contains excerpts (paragraphs, table captions/content, figure captions, or equation context) retrieved from OTHER papers in the user's Zotero library -- not the current PDF, and not necessarily cited by it -- that may help answer the question. Each entry states its source paper's title, authors, and paper_id before its excerpt text.",
 		"If you use information from a <CROSS_LIBRARY_CONTEXT> entry to answer the question, mention which paper it came from by wrapping its title in a link so the user can open that paper directly: [Title](<ref:library:paper_id>), using that entry's own exact title as the visible label and its paper_id as the link target -- so the user knows it did not come from the paper they're currently reading, and can jump straight to it.",
 		"Example: for an entry '\"Attention Is All You Need\" by Vaswani et al. [paper_id: 4821]: ...', write 'This is consistent with findings in [Attention Is All You Need](<ref:library:4821>).' -- the paper's own title is the label, 4821 (that entry's own paper_id) is the link target.",
 		"A <NOTE_CONTEXT> block, if present, contains one or more of the user's own annotations on this PDF -- each either a sticky note they wrote, or a passage they highlighted/underlined (quoted verbatim from the PDF) together with any comment they added on it. Any 'Note:' text in it is the user's own authoritative commentary, distinct from the paper's own claims -- don't confuse the two.",

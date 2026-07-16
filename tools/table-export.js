@@ -70,6 +70,8 @@ LLMTableExport = {
 			"the user asks to export, save, extract, or download tables AS CSV/a zip",
 			"file -- NOT for downloading or linking a bibliography reference (separate",
 			"tools exist for those), and not for anything else about the PDF's content.",
+			"Do NOT use if the user asks to format, print, show, or display the tables",
+			"as a CSV."
 		].join(" "),
 		schema: {
 			type: "object",

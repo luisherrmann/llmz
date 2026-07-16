@@ -74,6 +74,34 @@ LLMRequest = {
 	// linking strictly needs, but shared for simplicity.
 	_REFERENCE_CONCURRENCY: 8,
 
+	// How many recent transcript entries _buildCrossLibraryContext peeks at
+	// (see its own comment) to resolve a short affirmation ("yes please")
+	// against something the model itself just proposed -- deliberately much
+	// smaller than LLMPrompt.maxHistoryMessages, since this only needs to
+	// cover "the model's last message, and enough around it to be sure",
+	// not the main reply's own recency/relevance budget. Exactly 2 (the
+	// single most recent exchange: the model's own last message plus the
+	// user turn that led to it), not more -- confirmed concretely that a
+	// wider window (4) reaches back far enough to also catch an OLDER
+	// exchange, which then dominates both the gating decision and (via
+	// LLMPrompt._buildCrossLibraryQuery) the retrieval embedding: a chained
+	// "please do that" -> [long answer, ends with a NEW offer] -> "okay,
+	// sure" ended up re-answering the OLDER offer instead of the one the
+	// model had just actually made, because the older exchange's own text
+	// was still in the window and pulled retrieval back toward it. Two
+	// keeps this anchored to only the offer immediately being affirmed.
+	_CROSS_LIBRARY_RECENT_HISTORY_TURNS: 2,
+
+	// Same window/rationale as _CROSS_LIBRARY_RECENT_HISTORY_TURNS above,
+	// for LLMIntent.detectIntent's own recentHistory param (see its own
+	// comment) -- kept as a separate constant rather than reusing the same
+	// one since the two calls are independent and may need retuning
+	// separately later, even though they start at the same value for the
+	// same reason: just the single most recent exchange, to avoid
+	// re-anchoring on an older offer instead of whatever's actually being
+	// affirmed/declined right now.
+	_INTENT_RECENT_HISTORY_TURNS: 2,
+
 	// Resolves `intent` (see llm/intent.js's detectIntent) down to a concrete
 	// list of numbers, against whichever index `tool`'s own resolver bundle
 	// (see llm/intent.js's getResolver -- each tool's intentTool.resolver,
@@ -644,13 +672,20 @@ LLMRequest = {
 	// library are actually worth searching for this question. Skipped
 	// entirely with no active PDF (pdfItem null) -- "the current paper" and
 	// "every OTHER paper" both stop being meaningful without one.
-	async _buildCrossLibraryContext(prompt, readerContext, pdfItem, title, ctx) {
+	//
+	// `recentHistory` is passed straight through to
+	// shouldIncludeCrossLibraryWithLLM -- see its own comment on why this
+	// classification call needs a peek at recent turns regardless of
+	// LLMPrompt.useMessageHistory's own mode (a short "yes please" affirming
+	// a cross-library offer the model itself just made has no other signal
+	// to go on).
+	async _buildCrossLibraryContext(prompt, readerContext, pdfItem, title, recentHistory, ctx) {
 		let { appendMessage, isCancelled } = ctx;
 		if (!pdfItem) return { addition: "" };
 
 		let includeCrossLibrary = false;
 		try {
-			includeCrossLibrary = await LLMPrompt.shouldIncludeCrossLibraryWithLLM(prompt, title, readerContext);
+			includeCrossLibrary = await LLMPrompt.shouldIncludeCrossLibraryWithLLM(prompt, title, recentHistory, readerContext);
 		}
 		catch (e) {
 			this.log(`shouldIncludeCrossLibraryWithLLM failed: ${e.message}`);
@@ -670,7 +705,13 @@ LLMRequest = {
 		try {
 			let model = await LLMCitation.getEmbeddingModel();
 			let provider = LLMInterfaces._embeddingProvider;
-			chunks = await LLMCitation.getCrossLibraryChunks(prompt, model, provider, LLMPrompt.crossLibraryTopK, pdfItem.id);
+			// See LLMPrompt._buildCrossLibraryQuery's own comment -- the bare
+			// `prompt` alone (e.g. "please do that") is exactly the case
+			// includeCrossLibrary can say "yes" to via recentHistory above
+			// while itself embedding to nothing useful, so the same recent
+			// history is folded into the actual retrieval query too.
+			let retrievalQuery = LLMPrompt._buildCrossLibraryQuery(prompt, recentHistory);
+			chunks = await LLMCitation.getCrossLibraryChunks(retrievalQuery, model, provider, LLMPrompt.crossLibraryTopK, pdfItem.id);
 		}
 		catch (e) {
 			this.log(`getCrossLibraryChunks failed: ${e.message}`);
@@ -931,7 +972,17 @@ LLMRequest = {
 			if (isCancelled()) return;
 			modelPrompt += referenceResult.addition;
 
-			let crossLibraryResult = await this._buildCrossLibraryContext(prompt, readerContext, pdfItem, contextInfo?.title, ctx);
+			// Last few turns only (not LLMPrompt.maxHistoryMessages' own,
+			// much larger window) -- shouldIncludeCrossLibraryWithLLM is a
+			// cheap one-off classification call, not the main chat request,
+			// and only needs enough to resolve a short affirmation against
+			// whatever the model itself most recently proposed, not the
+			// conversation's full recency/relevance budget. Read regardless
+			// of LLMPrompt.useMessageHistory's own mode (including "none")
+			// -- that setting governs how much history the MAIN reply resends,
+			// a separate, much costlier concern from this small peek.
+			let recentHistory = priorTranscript.slice(-this._CROSS_LIBRARY_RECENT_HISTORY_TURNS);
+			let crossLibraryResult = await this._buildCrossLibraryContext(prompt, readerContext, pdfItem, contextInfo?.title, recentHistory, ctx);
 			if (isCancelled()) return;
 			modelPrompt += crossLibraryResult.addition;
 
@@ -1251,11 +1302,23 @@ LLMRequest = {
 			// nothing useful to add to a request this specific.
 			// LLMIntent.detectIntent (see llm/intent.js) owns deciding WHICH of
 			// the three tools (if any) applies, via native tool-calling.
+			//
+			// A separate chat.exportTranscript() call from _handleNormalChat's
+			// own priorTranscript further down -- no actual double-fetch in
+			// practice, since the two paths are mutually exclusive per
+			// request (a tool-intent match returns before _handleNormalChat
+			// would ever run), same rationale as the pageNum fetch below.
+			// Sliced to just _INTENT_RECENT_HISTORY_TURNS (see its own
+			// comment) and passed to detectIntent so a bare "yes please"
+			// affirming a tool the model itself just offered still resolves
+			// -- see LLMIntent.detectIntent's own comment.
+			let priorTranscript = chat.exportTranscript();
 			try {
+				let recentHistory = priorTranscript.slice(-this._INTENT_RECENT_HISTORY_TURNS);
 				let detected = await LLMIntent.detectIntent(prompt, (msg) => {
 					if (cancelled) return;
 					appendMessage("System", msg);
-				});
+				}, recentHistory);
 				if (cancelled) return;
 				if (detected !== null) {
 					let { tool, intent } = detected;

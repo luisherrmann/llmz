@@ -422,6 +422,29 @@ LLMChatPane = {
 	//                                  no linkIndex lookup -- PAPER_ID is a
 	//                                  real, stable Zotero item id, resolved
 	//                                  directly against the library.
+	//   [PAPER_ID Table N](<ref:PAPER_ID:table:N>) /
+	//   [PAPER_ID TableExtra N](<ref:PAPER_ID:tableExtra:N>) -- cross-library
+	//                                  TABLE mention (table-only for now, see
+	//                                  llm/prompt.js's own <CROSS_LIBRARY_CONTEXT>
+	//                                  table citation hint): like ref:library:
+	//                                  above, opens that DIFFERENT paper, but
+	//                                  ALSO highlights the specific table's
+	//                                  own region within it. Distinct 3-part
+	//                                  payload shape (PAPER_ID:table:N, not
+	//                                  table:N) -- detected before the
+	//                                  regular 2-part split below. No
+	//                                  linkIndex lookup either (same reason
+	//                                  as ref:library: -- PAPER_ID is real
+	//                                  and independently resolvable), and no
+	//                                  position resolved here -- that needs
+	//                                  reading the OTHER paper's own disk
+	//                                  cache (LLMCitation._loadTables), an
+	//                                  async file read this synchronous
+	//                                  render pass can't do, so it's
+	//                                  deferred to click time instead (see
+	//                                  llm/request.js's/ui/chat.js's click
+	//                                  handlers, LLMCitation.
+	//                                  resolveCrossLibraryTablePosition).
 	// Done before marked parses, so spaces/special chars in the query don't
 	// break markdown link parsing.
 	// `citationPositions`, if given, is a Map of citation phrase -> resolved
@@ -507,10 +530,20 @@ LLMChatPane = {
 			// combined with the LAZY quantifier, the regex engine keeps
 			// extending the match past any ">)" that ISN'T followed by such
 			// a boundary (e.g. followed by a digit or letter continuing the
-			// sentence) until it finds the real one. Same pattern (and same
+			// sentence) until it finds the real one. `*`/`_`/`` ` `` are ALSO
+			// valid boundaries -- the closing delimiter of a **bold**/
+			// _italic_/`code` span the model wrapped the whole link token
+			// in (e.g. '**[9012 Table 3](<ref:9012:table:3>)**', a real,
+			// reproduced case) -- without them, the lookahead fails right
+			// at the position where the actual token ends, so the WHOLE
+			// match fails there and the raw "[label](<ref:...>)" falls
+			// through unprocessed to marked's own native link parser
+			// instead (silently losing the custom class/data-* attributes
+			// -- and for a cross-library table link specifically, the
+			// author/year label substitution too). Same pattern (and same
 			// reasoning) in citation.js's groundCitations and llm/request.js's
 			// citation-position query extraction -- keep all three in sync.
-			/\$\$[\s\S]+?\$\$|\$(?!\s)[^$\n]*?[^\s$]\$(?!\d)|\[([^\]]+)\]\(<(find|ref):([\s\S]+?)>\)(?=[\s.,;:!?)\]]|\[|$)/g,
+			/\$\$[\s\S]+?\$\$|\$(?!\s)[^$\n]*?[^\s$]\$(?!\d)|\[([^\]]+)\]\(<(find|ref):([\s\S]+?)>\)(?=[\s.,;:!?)\]*_`]|\[|$)/g,
 			(whole, label, kind, payload) => {
 				if (label === undefined) return whole; // matched a math span -- leave untouched
 				if (kind === "find") {
@@ -533,6 +566,43 @@ LLMChatPane = {
 					// Citation links are geometry-backed only. If no pre-resolved
 					// position map is available, leave the label as plain text.
 					return label;
+				}
+				// Cross-library TABLE citation -- [label](<ref:PAPER_ID:table:N>) /
+				// [label](<ref:PAPER_ID:tableExtra:N>), a 3-part payload
+				// (PAPER_ID:table:N), detected before the regular 2-part
+				// split below (whose refType is always a fixed word, never
+				// numeric, so a numeric first segment unambiguously means
+				// this shape instead). See this function's own doc comment.
+				let crossParts = payload.split(":");
+				if (crossParts.length === 3 && (crossParts[1] === "table" || crossParts[1] === "tableExtra")) {
+					let [crossPaperIdStr, crossRefType, crossNumStr] = crossParts;
+					let crossPaperId = parseInt(crossPaperIdStr, 10);
+					let crossNum = parseInt(crossNumStr, 10);
+					if (!crossPaperId || !crossNum) return label;
+					let attachment = Zotero.Items.get(crossPaperId);
+					if (!attachment) return label;
+					let paperItem = attachment.parentItem || attachment;
+					let title = paperItem.getField("title") || label;
+					// The model's own label is instructed to be "PAPER_ID
+					// Table N"/"PAPER_ID TableExtra N" (see llm/prompt.js's
+					// own cross-library table instructions) -- the leading
+					// PAPER_ID is a placeholder, stripped here and replaced
+					// with a real "(FirstAuthor et al., Year)" derived from
+					// Zotero's own metadata (see LLMCitation.
+					// _formatCrossLibraryAuthorYear) rather than trusted
+					// from whatever the model wrote, same "prefer real data
+					// over the model's own guess" reasoning the ref:library:
+					// branch's own title lookup above already uses. Still
+					// works if the model didn't include the placeholder
+					// (the strip is then a no-op) -- the citation is
+					// prepended either way.
+					let authorYear = LLMCitation._formatCrossLibraryAuthorYear(paperItem);
+					let strippedLabel = label.replace(/^\d+\s*/, "");
+					let displayLabel = authorYear ? `${authorYear} ${strippedLabel}` : strippedLabel;
+					let numAttr = crossRefType === "table"
+						? `data-cross-table-num="${crossNum}"`
+						: `data-cross-table-extra-num="${crossNum}"`;
+					return `<a class="llm-find-link" data-cross-paper-id="${crossPaperId}" ${numAttr} title="${this._escapeAttr(title)}">${displayLabel}</a>`;
 				}
 				let [refType, refNum] = payload.split(":");
 				if (refType === "page") {

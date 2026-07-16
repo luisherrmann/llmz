@@ -490,6 +490,34 @@ LLMCitation = {
 		return result;
 	},
 
+	// Opens a DIFFERENT paper (not the one in the current reader tab) --
+	// used for cross-library citation links (see chat-pane.js's
+	// _renderMarkdown, ref:library:PAPER_ID) so a paper the model pulled
+	// into <CROSS_LIBRARY_CONTEXT> (see getCrossLibraryChunks above) can be
+	// opened directly by clicking its title in the response, the same way
+	// clicking a table/figure/reference link jumps straight to it instead
+	// of leaving the user to go find it themselves. `paperId` is always a
+	// PDF ATTACHMENT's item.id (same convention as getCrossLibraryChunks'
+	// own `paperId`, not a parent regular item) -- opens it as a reader tab
+	// directly when it's still a real PDF attachment, falling back to
+	// selecting its parent (or itself) in the library pane otherwise (e.g.
+	// the file was removed since this response was generated). Silently
+	// no-ops if the item no longer exists at all -- same "stale link,
+	// nothing to do" tolerance navigateToAnnotation/navigateToPosition
+	// already have for a deleted target.
+	async openLibraryItem(paperId) {
+		let win = Zotero.getMainWindow();
+		if (!win) return;
+		let attachment = Zotero.Items.get(paperId);
+		if (!attachment) return;
+		if (attachment.isPDFAttachment?.()) {
+			await Zotero.Reader.open(attachment.id);
+			return;
+		}
+		let item = attachment.parentItem || attachment;
+		await win.ZoteroPane.selectItem(item.id);
+	},
+
 	navigateToText(query) {
 		if (!Zotero.Reader) return;
 		let win = Zotero.getMainWindow();

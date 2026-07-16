@@ -1121,6 +1121,10 @@ LLMRequest = {
 							}
 							return;
 						}
+						if (anchor.dataset.openItemId) {
+							await LLMCitation.openLibraryItem(parseInt(anchor.dataset.openItemId, 10));
+							return;
+						}
 							if (anchor.dataset.query) {
 								LLMCitation.navigateToText(anchor.dataset.query);
 							}

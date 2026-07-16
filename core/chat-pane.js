@@ -413,6 +413,15 @@ LLMChatPane = {
 	//                                  unlike the others, this isn't tied to a
 	//                                  specific extracted item, just the page
 	//                                  itself
+	//   [Title](<ref:library:PAPER_ID>) -- cross-library citation (see
+	//                                  llm/prompt.js's <CROSS_LIBRARY_CONTEXT>
+	//                                  instructions): opens a DIFFERENT paper
+	//                                  in the user's library entirely (see
+	//                                  LLMCitation.openLibraryItem), not a
+	//                                  position within the current one. Also
+	//                                  no linkIndex lookup -- PAPER_ID is a
+	//                                  real, stable Zotero item id, resolved
+	//                                  directly against the library.
 	// Done before marked parses, so spaces/special chars in the query don't
 	// break markdown link parsing.
 	// `citationPositions`, if given, is a Map of citation phrase -> resolved
@@ -530,6 +539,26 @@ LLMChatPane = {
 					let pageNum = parseInt(refNum, 10);
 					if (!pageNum) return label;
 					return `<a class="llm-find-link" data-page-num="${pageNum}" title="Page ${pageNum}">${label}</a>`;
+				}
+				if (refType === "library") {
+					// Opens a DIFFERENT paper entirely (see
+					// LLMCitation.openLibraryItem), not a position within
+					// the CURRENT one -- no linkIndex lookup needed, same
+					// reasoning as page: above (paperId is a real, stable
+					// Zotero item id, always independently resolvable,
+					// not a per-message ordinal). Resolved against the
+					// library HERE (not just trusted from the model's own
+					// text) so a stale/hallucinated paper_id falls back to
+					// plain text instead of a dead link, and so the
+					// tooltip shows the paper's OWN current title rather
+					// than whatever the model echoed as the link label.
+					let paperId = parseInt(refNum, 10);
+					if (!paperId) return label;
+					let attachment = Zotero.Items.get(paperId);
+					if (!attachment) return label;
+					let paperItem = attachment.parentItem || attachment;
+					let title = paperItem.getField("title") || label;
+					return `<a class="llm-find-link" data-open-item-id="${paperId}" title="${this._escapeAttr(title)}">${label}</a>`;
 				}
 				// Every other ref: kind keys its linkIndex map by a numeric
 				// paper-native number EXCEPT note, which keys by the

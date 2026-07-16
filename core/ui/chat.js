@@ -428,7 +428,8 @@ LLMUIChat = {
 			}
 			// Same LLMCitation click-dispatch as a live streamed reply (see
 			// llm/request.js) -- annotationKey (notes only) beats position beats
-			// a page number beats a caption text-search.
+			// a page number beats opening a different library item entirely
+			// beats a caption text-search.
 			rendered.addEventListener("click", (e) => {
 				let anchor = e.target.closest(".llm-find-link");
 				if (!anchor) return;
@@ -448,6 +449,10 @@ LLMUIChat = {
 					catch (err) {
 						Zotero.debug(`LLM Chat Pane [Chat]: Failed to parse position for link: ${err.message}`);
 					}
+					return;
+				}
+				if (anchor.dataset.openItemId) {
+					LLMCitation.openLibraryItem(parseInt(anchor.dataset.openItemId, 10));
 					return;
 				}
 				LLMCitation.navigateToText(anchor.dataset.query);

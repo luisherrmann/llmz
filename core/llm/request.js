@@ -513,10 +513,6 @@ LLMRequest = {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
 		let notes = await notesPromise;
 		if (isCancelled()) return { notes: [], addition: "" };
-		if (notes?.error) {
-			appendMessage("System", `Note extraction failed: ${notes.error}`);
-			return { notes: [], addition: "" };
-		}
 		if (!notes.length) {
 			appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
 			return { notes: [], addition: "" };
@@ -571,17 +567,6 @@ LLMRequest = {
 		let addition = "";
 		let figureIndex = await figureIndexPromise;
 		if (isCancelled()) return { index: figureIndex, images, addition };
-		// Reported but NOT a return-early -- unlike the other five
-		// _buildXContext methods, this one also handles the user's own
-		// pasted image(s) (pastedImageDataUris below), which are entirely
-		// independent of figureIndex, so a failed figure extraction
-		// shouldn't block those from still being sent. The `figureIndex?.
-		// figures?.length` check further down already naturally skips the
-		// "select a figure from the paper" branch on an error object (no
-		// `.figures` property), so no other control-flow change is needed.
-		if (figureIndex?.error) {
-			appendMessage("System", `Figure extraction failed: ${figureIndex.error}`);
-		}
 		try {
 			let currentModel = await LLMInterfaces.getCurrentModel();
 			let supportsImages = await LLMInterfaces.modelSupportsImages(currentModel);
@@ -667,10 +652,6 @@ LLMRequest = {
 		let { appendMessage, isCancelled } = ctx;
 		let referenceIndex = await referenceIndexPromise;
 		if (isCancelled()) return { index: referenceIndex, addition: "" };
-		if (referenceIndex?.error) {
-			appendMessage("System", `Reference extraction failed: ${referenceIndex.error}`);
-			return { index: referenceIndex, addition: "" };
-		}
 		if (!referenceIndex?.references?.length) {
 			return { index: referenceIndex, addition: "" };
 		}
@@ -781,16 +762,15 @@ LLMRequest = {
 	// this is the fallback path once tool-intent detection has already
 	// fully finished.
 	async _handleNormalChat(prompt, chatPane, ctx) {
-		let { doc, appendMessage, chat, imagePaste, takeCapturedSelection, replyLabel, providerLabel, submissionTime, isCancelled, setCancelStream } = ctx;
+		let { doc, appendMessage, chat, imagePaste, takeCapturedSelection, replyLabel, providerLabel, submissionTime, priorTranscript, userReply, isCancelled, setCancelStream } = ctx;
 
 		try {
-			// Snapshotted BEFORE this turn's own "You" bubble (and reply
-			// placeholder) get appended below -- see the messages-array
-			// build further down, right before streamModel -- so history
-			// naturally excludes the CURRENT turn (which gets sent
-			// separately, as the full context-stuffed modelPrompt, not
-			// this turn's own raw/placeholder transcript entries).
-			let priorTranscript = chat.exportTranscript();
+			// `priorTranscript` (from ctx, captured once in send() BEFORE
+			// this turn's own "You" bubble was appended) naturally excludes
+			// the CURRENT turn -- which gets sent separately, as the full
+			// context-stuffed modelPrompt, not this turn's own raw/
+			// placeholder transcript entries -- see the messages-array
+			// build further down, right before streamModel.
 			let { text: liveText, info: selectionInfo } = chatPane.getReaderSelection();
 			let selectedText = liveText || takeCapturedSelection();
 			let { text: pageText, pageNum, info: pageInfo } = await chatPane.getReaderPageText();
@@ -807,13 +787,15 @@ LLMRequest = {
 				: null;
 			let readerContext = { pageNum, selectedText, selectedAnnotationNote };
 
-			// Created here -- BEFORE embedding recompute/context-building --
-			// rather than after, so onEmbeddingStart below has a reply
-			// bubble to update. Order relative to each other matters (see
-			// ui/chat.js's list.prepend -- each new message ends up ABOVE
-			// the previous one, so creating userReply first/reply second
-			// preserves the existing visual order: reply above userReply).
-			let userReply = appendMessage("You", prompt, submissionTime);
+			// `userReply` (from ctx) was already created in send(), before
+			// EVEN detectIntent ran -- see its own comment there for why.
+			// That still preserves the visual order a reply placeholder
+			// needs relative to it (see ui/chat.js's list.prepend -- each
+			// new message ends up ABOVE the previous one, so userReply
+			// existing before the reply placeholder created further down
+			// keeps "reply above userReply"), since userReply now exists
+			// even earlier than before.
+			//
 			// Fire-and-forget (not awaited) -- LLMSemanticHistory.selectRelevant
 			// (used by "semantic" mode, see the messages-array build further
 			// down) only ever looks at whatever's landed in its cache BY THE
@@ -918,13 +900,13 @@ LLMRequest = {
 			let figureIndexPromise = pdfItem
 				? LLMFigures.getFigureIndex(pdfItem, onEmbeddingStart, onStructureMessage).catch((e) => {
 					this.log(`getFigureIndex failed: ${e.message}`);
-					return { error: e.message };
+					return null;
 				})
 				: Promise.resolve(null);
 			let referenceIndexPromise = pdfItem
 				? LLMReferences.getReferenceIndex(pdfItem, onStructureMessage).catch((e) => {
 					this.log(`getReferenceIndex failed: ${e.message}`);
-					return { error: e.message };
+					return null;
 				})
 				: Promise.resolve(null);
 			let equationIndexPromise = pdfItem
@@ -936,7 +918,7 @@ LLMRequest = {
 			let notesPromise = pdfItem
 				? LLMNotes.getNotes(pdfItem).catch((e) => {
 					this.log(`getNotes failed: ${e.message}`);
-					return { error: e.message };
+					return [];
 				})
 				: Promise.resolve([]);
 			// Debug/status metadata about the request, not part of the actual
@@ -1275,11 +1257,35 @@ LLMRequest = {
 		let work = (async () => {
 			// Captured BEFORE any async work at all (getCurrentModel,
 			// detectIntent, PDF-context building, ...) so the "You" bubble
-			// -- created further down, sometimes noticeably later, e.g.
-			// detectIntent alone is a real LLM call -- can show the EXACT
-			// moment the user actually hit submit rather than whenever its
-			// own appendMessage call happens to run.
+			// created just below can show the EXACT moment the user
+			// actually hit submit.
 			let submissionTime = chat.formatTimestamp();
+
+			// Snapshotted BEFORE this turn's own "You" bubble is appended
+			// just below -- both LLMIntent.detectIntent's own recentHistory
+			// (further down) and _handleNormalChat's own history-building
+			// (see its own comment) need "everything before this turn", so
+			// this single snapshot is captured once here and threaded
+			// through via ctx, rather than each re-calling
+			// chat.exportTranscript() separately at its own, later point --
+			// which would incorrectly pick up the "You" bubble below as
+			// though it were a PRIOR turn instead of the current one.
+			let priorTranscript = chat.exportTranscript();
+
+			// Created as early as possible -- right after the two captures
+			// above, before EVEN getCurrentModel or LLMIntent.detectIntent
+			// (a real LLM call) -- so the user's own message appears in the
+			// chat immediately on submit, not only once those complete.
+			// Previously created much later and in TWO different places
+			// (inside the tool-intent-matched branch below, and again
+			// inside _handleNormalChat), which not only delayed the user's
+			// own bubble by a full detectIntent round-trip on every
+			// request, but meant moving either one of those calls any
+			// earlier without the other risked both firing -- a genuine
+			// double "You" message, since chat.appendMessage/exportTranscript
+			// has no de-duplication of its own (see ui/chat.js). One call,
+			// here, is now the single source of truth for both paths.
+			let userReply = appendMessage("You", prompt, submissionTime);
 
 			// Resolved up front (rather than only once the reply bubble is
 			// about to stream) so it's available immediately both for the
@@ -1312,6 +1318,8 @@ LLMRequest = {
 				replyLabel,
 				providerLabel,
 				submissionTime,
+				priorTranscript,
+				userReply,
 				isCancelled: () => cancelled,
 				setCancelStream: (fn) => { cancelStream = fn; },
 			};
@@ -1324,16 +1332,11 @@ LLMRequest = {
 			// LLMIntent.detectIntent (see llm/intent.js) owns deciding WHICH of
 			// the three tools (if any) applies, via native tool-calling.
 			//
-			// A separate chat.exportTranscript() call from _handleNormalChat's
-			// own priorTranscript further down -- no actual double-fetch in
-			// practice, since the two paths are mutually exclusive per
-			// request (a tool-intent match returns before _handleNormalChat
-			// would ever run), same rationale as the pageNum fetch below.
-			// Sliced to just _RECENT_HISTORY_TURNS (see its own comment) and
-			// passed to detectIntent so a bare "yes please" affirming a tool
-			// the model itself just offered still resolves -- see
-			// LLMIntent.detectIntent's own comment.
-			let priorTranscript = chat.exportTranscript();
+			// Sliced from `priorTranscript` (captured once above, before the
+			// "You" bubble) to just _RECENT_HISTORY_TURNS (see its own
+			// comment) and passed to detectIntent so a bare "yes please"
+			// affirming a tool the model itself just offered still resolves
+			// -- see LLMIntent.detectIntent's own comment.
 			try {
 				let recentHistory = priorTranscript.slice(-this._RECENT_HISTORY_TURNS);
 				let detected = await LLMIntent.detectIntent(prompt, (msg) => {
@@ -1343,7 +1346,6 @@ LLMRequest = {
 				if (cancelled) return;
 				if (detected !== null) {
 					let { tool, intent } = detected;
-					appendMessage("You", prompt, submissionTime);
 					let pdfItem = chatPane.getActiveReaderAttachment();
 					if (!pdfItem) {
 						appendMessage("System", "No active PDF to look up references from.");

@@ -890,7 +890,7 @@ LLMChatPane = {
 								LLMTables.getTableIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
 								LLMFigures.getFigureIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
 								LLMReferences.getReferenceIndex(pdfItem, onStructureMessage).catch(() => null),
-								LLMEquations.getEquationIndex(pdfItem, onStructureMessage).catch(() => null),
+								LLMEquations.getEquationIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
 								// ALL current annotations, not just some
 								// message's selected subset -- there's no way
 								// to know which ones the original (historical)

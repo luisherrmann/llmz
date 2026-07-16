@@ -860,7 +860,7 @@ LLMRequest = {
 				})
 				: Promise.resolve(null);
 			let equationIndexPromise = pdfItem
-				? LLMEquations.getEquationIndex(pdfItem, onStructureMessage).catch((e) => {
+				? LLMEquations.getEquationIndex(pdfItem, onEmbeddingStart, onStructureMessage).catch((e) => {
 					this.log(`getEquationIndex failed: ${e.message}`);
 					return { error: e.message };
 				})

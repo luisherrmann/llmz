@@ -111,6 +111,15 @@
 	display: flex;
 	flex-direction: column;
 	overflow-y: auto;
+	/* Hard horizontal boundary -- without it, a message wide enough to
+	   overflow its own box (a many-column table, a long display equation --
+	   see .llm-message-content's own overflow-x below, which is where such
+	   content is actually MEANT to scroll) has nowhere local to go and
+	   bleeds out into this list's own box instead, which in turn pushes the
+	   WHOLE chat pane (input box, controls, everything) into horizontal
+	   scroll along with it. This clips that bleed at the list boundary, so
+	   only the individual message scrolls. */
+	overflow-x: hidden;
 	/* height is set by JS based on available pane space */
 	/* Spacing between messages comes from .llm-message's own margin-bottom
 	   below, not a gap here -- avoids double-spacing on top of that. */
@@ -252,6 +261,16 @@
 	box-sizing: border-box;
 	white-space: pre-wrap;
 	font-family: inherit;
+	/* This message's own local horizontal scrollbar for content wider than
+	   the pane -- a many-column Markdown table (.llm-markdown table's own
+	   width: 100% only bounds it when its content actually FITS; a wide one
+	   still grows past that) or a long display equation (raw MathML, no
+	   wrapping of its own). Paired with .llm-message-list's overflow-x:
+	   hidden (see its own comment) -- that clips the hard outer boundary so
+	   the bleed can't reach the rest of the chat pane, this is where it
+	   actually scrolls instead, one message at a time rather than the whole
+	   list. */
+	overflow-x: auto;
 	/* Translucent white rather than a fixed hex -- always reads as "a few
 	   shades brighter than whatever's behind it" regardless of light/dark
 	   theme, since .llm-message itself has no background of its own to

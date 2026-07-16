@@ -48,6 +48,35 @@
 	filter: none;
 }
 
+/* Light-mode counterpart to the fixed dark colors above -- the base rules
+   are dark-tuned (see their own comment on why -moz-Field/-moz-FieldText
+   aren't used), so they don't invert on their own the way a native/system
+   color would when Zotero switches theme. prefers-color-scheme is used
+   instead of those system colors -- unlike them, it resolves reliably in
+   this chrome context (same mechanism Zotero's own SCSS uses throughout,
+   e.g. scss/components/_toolbar.scss). Each pair here is the base pair
+   swapped background<->text, keeping the same relative contrast/weight.
+   .llm-icon recolors for free (background-color: currentColor, see its own
+   rule), since it tracks whichever `color` is active here, not a fixed
+   shade of its own. :hover darkens rather than brightens here -- brightening
+   a light background pushes it toward white (washed out, not "highlighted"),
+   the opposite of what brightening a dark background does. */
+@media (prefers-color-scheme: light) {
+	.llm-body button {
+		background-color: #e3e3e3;
+		color: #4d4d4d;
+	}
+
+	.llm-body button:hover {
+		filter: brightness(0.85);
+	}
+
+	.llm-body button:disabled {
+		background-color: #d4d4d4;
+		color: #a0a0a0;
+	}
+}
+
 /* Shared base for every collapsible <details>'s body (Providers, Keyboard
    Shortcuts, Logs, Context, Message History, Embeddings, Cache) -- the same
    inset (1em padding) and top gap (6px margin) for all of them, so they
@@ -738,9 +767,14 @@
 	color: -moz-nativehyperlinktext;
 }
 
-/* -moz-Field matches .llm-input's native (unstyled) textbox background
-   exactly, light or dark, since .llm-input relies on that same native
-   rendering rather than an explicit background-color of its own. */
+/* Used to be -moz-Field (matching .llm-input's native, theme-tracking
+   textbox background), but .llm-log-text/.llm-log-timestamp/.llm-find-link
+   below are all fixed light colors meant to read against a DARK background
+   -- in Zotero's light mode, -moz-Field resolves light too, leaving fixed-
+   light text on a now-light background, illegible. Same fix as
+   .llm-body button's own background-color/color (see its comment): a fixed
+   dark color instead, so this always renders as the dark, terminal-like
+   log it's styled to look like, regardless of Zotero's own theme. */
 .llm-logs-body {
 	gap: 2px;
 	/* Fixed (not min-) height, in em so it scales with this element's own
@@ -749,7 +783,7 @@
 	height: 15em;
 	overflow-y: auto;
 	border-radius: 4px;
-	background: -moz-Field;
+	background: #262626;
 	font-family: monospace;
 	font-size: 0.85em;
 	/* Without this, log text isn't selectable at all -- same reasoning as

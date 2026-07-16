@@ -54,26 +54,45 @@ LLMIntent = {
 
 	// Detects which tool (if any) `prompt` is asking for -- a single
 	// streamModel call carrying every registered tool, letting the model
-	// pick at most one itself. `prompt` is passed as a plain string (see
-	// llm/interfaces.js's streamModel, which wraps it into a single
-	// {role:"user"} entry with no history/system prompt) -- this is a one-
-	// off, non-conversational classification call, not part of the visible
-	// chat. onToken is a no-op -- never streamed to the visible chat, only
-	// the final toolCalls matter. The model choosing to call NEITHER tool
-	// (responding with plain text instead, or nothing) means this wasn't a
-	// reference-tool request at all -- result.toolCalls is empty either
-	// way, so no separate "none" check is needed for it.
+	// pick at most one itself. Still not part of the visible chat (onToken
+	// is a no-op below, and this never carries the full useMessageHistory
+	// window llm/prompt.js's own systemPrompt/chat flow does) -- but no
+	// longer BLIND to the conversation either, see `recentHistory` below.
+	// The model choosing to call NEITHER tool (responding with plain text
+	// instead, or nothing) means this wasn't a reference-tool request at
+	// all -- result.toolCalls is empty either way, so no separate "none"
+	// check is needed for it.
 	// `onProgress(msg)`, if given, is called once a call is actually made
 	// -- surfaced by the caller (llm/request.js) to the Logs panel (see
 	// ui/logs.js), same convention tools/reference-retrieval.js's
 	// downloadReferenceToLibrary already uses for its own progress
-	// messages. Returns { tool: "download"|"link"|"tables", intent:
-	// <six-shape intent object -- see llm/request.js's _resolveIntentIndices
-	// for how it's consumed, against whichever index (reference or table)
-	// the matched tool operates on> } or null if no tool applies (a normal
-	// chat message).
-	async detectIntent(prompt, onProgress) {
-		let result = await LLMInterfaces.streamModel(prompt, () => {}, { tools: this._tools() });
+	// messages.
+	// `recentHistory` -- a short slice of the conversation's own recent
+	// turns (see llm/request.js's own priorTranscript, mirroring
+	// LLMRequest._CROSS_LIBRARY_RECENT_HISTORY_TURNS/its own comment on why
+	// deliberately narrow: just the single most recent exchange, not a
+	// wider window that risks re-anchoring on an OLDER offer instead of
+	// whatever's actually being affirmed) -- sent as real prior {role,
+	// content} messages (not folded into `prompt` as text) plus a short
+	// system-prompt instruction, so a bare "yes please"/"no thanks" reply
+	// to something the model itself just proposed (e.g. "want me to export
+	// Table 3 as CSV?") can still resolve to the right tool call, or
+	// correctly resolve to none at all on a decline -- without this, such a
+	// reply carries no table/reference identity of its own for ANY
+	// registered tool to match against, confirmed concretely for the
+	// tables tool (tools/table-export.js).
+	// Returns { tool: "download"|"link"|"tables", intent: <six-shape intent
+	// object -- see llm/request.js's _resolveIntentIndices for how it's
+	// consumed, against whichever index (reference or table) the matched
+	// tool operates on> } or null if no tool applies (a normal chat
+	// message).
+	async detectIntent(prompt, onProgress, recentHistory = []) {
+		let messages = recentHistory.map(({ role, text }) => ({ role: role === "You" ? "user" : "assistant", content: text }));
+		messages.push({ role: "user", content: prompt });
+		let systemPrompt = recentHistory.length
+			? "You are deciding whether the user's latest message is requesting one of the tools available to you. If that message is a short reply (e.g. 'yes', 'yes please', 'sure', 'no thanks') affirming or declining something YOU proposed, offered, or asked about earlier in this conversation, resolve what is being affirmed/declined from your own last message before deciding whether a tool applies and what arguments to use -- e.g. if you asked 'want me to export Table 3 as CSV?' and the user replies 'yes please', call the export tool for Table 3. If the reply is a decline, do not call any tool."
+			: undefined;
+		let result = await LLMInterfaces.streamModel(messages, () => {}, { tools: this._tools(), systemPrompt });
 		let call = result.toolCalls?.[0];
 		if (!call || !call.arguments) {
 			onProgress?.("Intent detection: no tool called.");

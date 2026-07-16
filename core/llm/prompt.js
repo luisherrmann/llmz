@@ -204,6 +204,8 @@ LLMPrompt = {
 	},
 	_systemPrompt: [
 		"You are a helpful research assistant.",
+		"You may use your conversation history to answer requests from the user. In particular, you may refer to your own last message to understand what the user wants when they reply to it -- especially when they are affirming or declining something you proposed, offered, or asked about, e.g. 'Yes, please do that.' or 'No, let's skip this for now.' Resolve what 'that'/'this'/'it' refers to from your own last message rather than treating such a reply as a new, standalone question with no context.",
+		"This also applies when a reply combines a reference to your last message with an additional, separate request in the same message -- e.g. 'Please do that, and do X as well' means: do whatever you yourself proposed or offered last, AND also do X.",
 		"Always express mathematical formulas and equations using LaTeX notation.",
 		"Wrap every mathematical formula in latex notation as $<formula>$.",
 		"For display math, you MUST wrap the formula in double dollar signs: $$<formula>$$. The opening $$ and closing $$ are mandatory.",
@@ -245,6 +247,26 @@ LLMPrompt = {
 		Zotero.debug("LLM Chat Pane [Prompt]: " + msg);
 	},
 
+	// Only relevant in "semantic" useMessageHistory mode -- "last-k"/"none"
+	// send either a plain contiguous recent window or nothing at all, so
+	// there's no structure to explain. "semantic" mode's messages array is a
+	// UNION (see LLMSemanticHistory.selectRelevant) that can have real gaps:
+	// an older turn gets included because it's topically relevant to the
+	// CURRENT question, while turns between it and the recent window are
+	// simply missing, not summarized or referenced in any way. selectRelevant
+	// itself re-sorts the union back into true chronological order before
+	// returning it (see its own comment), so the LAST message the model sees
+	// is always genuinely the most recent turn -- this note is only about the
+	// possibility of gaps EARLIER in the list, not about ordering being
+	// wrong. Read live (this.useMessageHistory) each call from
+	// buildPromptWithActivePDFContext below, same as every other advanced
+	// setting here, so it always reflects whichever mode is actually active
+	// for this request.
+	_historyStructureNote() {
+		if (this.useMessageHistory !== "semantic") return "";
+		return "The conversation history you are given may not be a contiguous window of the whole conversation -- alongside your most recent exchanges, it can also include older messages that were pulled in because they are semantically related to the user's current question, with unrelated messages in between them left out. Every message you do see is in its true original chronological order (oldest first), but there can be gaps between them -- do not assume two consecutive messages you see were adjacent in the live conversation, and do not assume nothing relevant happened in a gap you don't see.";
+	},
+
 	// Shared by every selectXWithLLM below: surfaces what page the user is
 	// currently looking at, any text they have selected there, and any
 	// annotation they have actively selected/highlighted in the reader
@@ -265,6 +287,40 @@ LLMPrompt = {
 			lines.push(`The user currently has this annotation selected/highlighted in the reader: ${selectedAnnotationNote.title}: ${selectedAnnotationNote.text}`);
 		}
 		return lines;
+	},
+
+	// Formats a plain { role, text } transcript slice (chat.exportTranscript()'s
+	// own shape, same as priorTranscript in llm/request.js) as "User"/
+	// "Assistant" lines for a one-off classification prompt -- see
+	// shouldIncludeCrossLibraryWithLLM's own comment on why a call like that
+	// needs this at all. Each entry is truncated the same way selectedText
+	// is in _buildReaderContextLines above (a full prior reply can be long,
+	// and only enough of it to resolve what a short reply refers to is
+	// actually needed here).
+	_formatRecentHistory(recentHistory) {
+		return recentHistory.map(({ role, text }) => {
+			let label = role === "You" ? "User" : "Assistant";
+			let truncated = text.length > 500 ? `${text.slice(0, 500)}…` : text;
+			return `${label}: ${truncated}`;
+		}).join("\n");
+	},
+
+	// Builds the actual text embedded for cross-library retrieval (see
+	// LLMCitation.getCrossLibraryChunks) -- deliberately not just the bare
+	// current prompt. shouldIncludeCrossLibraryWithLLM's own recentHistory-
+	// aware check (see its own comment) can decide cross-library search is
+	// warranted from a short reply like "please do that" -- but that same
+	// bare reply, embedded on its own, carries no topical content to match
+	// against (no mention of whatever paper/topic was actually being
+	// discussed), so retrieval would come back empty even once the gating
+	// decision itself is right. Prefixing the same recent-history text used
+	// for that gating decision biases the embedding toward whatever was
+	// actually offered/discussed (e.g. a specific paper the model itself
+	// just named), rather than searching on words the short reply happens
+	// to contain.
+	_buildCrossLibraryQuery(prompt, recentHistory) {
+		if (!recentHistory.length) return prompt;
+		return `${this._formatRecentHistory(recentHistory)}\n${prompt}`;
 	},
 
 	// Asks the LLM itself to pick which figures (if any) help answer a user's
@@ -436,15 +492,31 @@ LLMPrompt = {
 	// asking about it by name -- it's a citation INSIDE whatever paper IS
 	// open. The explicit named-citation rule and worked example below exist
 	// because of that failure, not as a hypothetical.
-	async shouldIncludeCrossLibraryWithLLM(query, title, readerContext = {}) {
+	//
+	// `recentHistory` -- a short slice of the conversation's own recent turns
+	// (see llm/request.js's own priorTranscript, passed in independently of
+	// LLMPrompt.useMessageHistory's own mode -- this classification call is
+	// cheap and one-off, not the main request's own context budget), given so
+	// a bare affirmation/rejection ("yes please", "sure", "no thanks") can be
+	// resolved against whatever the model itself just proposed. Without it, a
+	// reply like "yes please" to the model's own earlier "want me to pull in
+	// related work on X?" carries no signal on its own -- the word "yes"
+	// names no paper, author, or method, so neither yes-condition below would
+	// ever fire for it even though the CURRENT question, in context, is
+	// exactly a cross-library request.
+	async shouldIncludeCrossLibraryWithLLM(query, title, recentHistory = [], readerContext = {}) {
 		let selectionPrompt = [
 			"You are deciding whether answering a user's question would benefit from ALSO searching the OTHER papers in the user's Zotero library, not just the paper they currently have open.",
 			title ? `The paper currently open is titled: "${title}".` : "",
-			'Answer "yes" if EITHER of these applies:',
+			'Answer "yes" if ANY of these applies:',
 			"- The question names a SPECIFIC paper, author, or citation (e.g. \"in He et al. 2016\", \"the ResNet paper\", \"reference 12\", \"as Smith et al. showed\") that is a DIFFERENT paper from the one currently open (compare the named paper against the title above -- if they don't clearly match, treat it as different). The answer to a question phrased this way almost always needs that OTHER paper's own text, not just however it's cited in passing in the current one.",
 			"- The question asks for related work, alternative methods, background the current paper likely doesn't cover, comparisons across papers, or replication of a result.",
+			"- The question is a short reply (e.g. \"yes\", \"yes please\", \"sure\", \"go ahead\") affirming something YOU proposed, offered, or asked about in the recent history below that itself involved another paper or the library's other papers (e.g. you asked \"want me to explain paper X?\" or \"should I look at related work?\") or \"I can give you a side-by-side comparison of paper X and paper Y.\") -- treat that as confirming the cross-library search, using the recent history to see what's being affirmed.",
 			"Answer \"no\" only if the current paper alone is clearly sufficient -- e.g. the question is about the currently open paper's own content, figures, methodology, or results, or explicitly names the CURRENT paper itself (matching the title above) as the source.",
 			'Example: current paper titled "Attention Is All You Need", question "explain the approach for over 1000 layers in He et al. (2016)" -> "yes" (He et al. 2016 is a different, named paper, not this one).',
+			'Example: recent history ends with you asking "Want me to pull in the PairNorm paper for comparison?", question "yes please" -> "yes" (affirming your own cross-library offer).',
+			recentHistory.length ? "Recent conversation history (oldest first):" : "",
+			recentHistory.length ? this._formatRecentHistory(recentHistory) : "",
 			...this._buildReaderContextLines(readerContext),
 			`User's question: "${query}"`,
 			"",
@@ -793,6 +865,7 @@ LLMPrompt = {
 	// whole conversation.
 	async buildPromptWithActivePDFContext(userPrompt, selectedText = null, pageText = null, onEmbeddingStart = null, onMessage = null) {
 		let item = LLMChatPane.getActiveReaderAttachment();
+		let systemPrompt = [this._systemPrompt, this._historyStructureNote()].filter(Boolean).join(" ");
 
 		if (!item || !item.isPDFAttachment()) {
 			let parts = [];
@@ -801,7 +874,7 @@ LLMPrompt = {
 			parts.push(userPrompt);
 			return {
 				prompt: parts.join("\n"),
-				systemPrompt: this._systemPrompt,
+				systemPrompt,
 				contextInfo: null,
 				selectedText,
 				item: null,
@@ -812,7 +885,7 @@ LLMPrompt = {
 		if (!text.trim()) {
 			return {
 				prompt: userPrompt,
-				systemPrompt: this._systemPrompt,
+				systemPrompt,
 				contextInfo: {
 					title: item.getField("title") || item.libraryKey,
 					missingText: true,
@@ -867,7 +940,7 @@ LLMPrompt = {
 
 		return {
 			prompt: parts.filter(line => line !== "").join("\n"),
-			systemPrompt: this._systemPrompt,
+			systemPrompt,
 			contextInfo: {
 				title,
 				charCount: text.length,

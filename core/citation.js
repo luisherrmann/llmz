@@ -1,6 +1,18 @@
 LLMCitation = {
 	maxCitationChunks: 1000,
 	_indexCache: new Map(), // item.id -> { sentences, paragraphs, model, provider }
+	// Bump whenever the disk-cached sentence/paragraph CONTENT itself would
+	// come out different for the same PDF -- not just when the schema
+	// shape changes (see tables.js's/figures.js's/equations.js's own
+	// _cacheVersion, same convention). _loadDiskCache's own fingerprint
+	// check alone can't detect this: the fingerprint is still based on
+	// Zotero's own linear text (see _textFingerprint), which hasn't
+	// changed, even though _buildSentencesAndParagraphsFromStructure now
+	// derives the actual sentences/paragraphs from the SDT structure
+	// instead -- so a stale cache from before that change would otherwise
+	// keep being treated as fresh forever. Bumped once, here, for exactly
+	// that switch.
+	_cacheVersion: 2,
 
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Citation]: " + msg);
@@ -26,6 +38,69 @@ LLMCitation = {
 			paragraphs.push(sentences.slice(i, i + sentencesPerParagraph).join(" "));
 		}
 		return paragraphs;
+	},
+
+	// Recursively concatenates one SDT block's own leaf .text nodes -- same
+	// shape as extract_equations.js's/document/figures.js's own flattenText,
+	// duplicated here rather than shared since it's five lines (same
+	// reasoning as _formatCreatorName below). Used ONLY on a single block at
+	// a time (never across blocks), so -- unlike LLMCitationPosition's own
+	// _buildFullTextWithOffsetMap, which walks EVERY block in
+	// structure.content and inserts a separator BETWEEN them -- this never
+	// introduces a synthetic character that isn't literally present in that
+	// one block's own source text.
+	_flattenBlockText(node) {
+		if (!node) return "";
+		if (typeof node.text === "string") return node.text;
+		if (Array.isArray(node.content)) return node.content.map(child => this._flattenBlockText(child)).join("");
+		return "";
+	},
+
+	// Builds `sentences`/`paragraphs` from the SDT structure's own
+	// 'paragraph'-type blocks, in document order -- the single source of
+	// truth for BOTH citation-index content AND LLMCitationPosition's own
+	// exact/fuzzy text-matching index (_buildFullTextWithOffsetMap walks the
+	// SAME structure.content), so a sentence/paragraph produced here is
+	// guaranteed to be a literal, contiguous substring of that OTHER index,
+	// making citation re-anchoring an exact match instead of depending on
+	// the fuzzy tier to bridge two independently-extracted texts. Replaces
+	// splitIntoSentences/splitIntoParagraphs' own PREVIOUS text source
+	// (Zotero's linear PDF-text extraction, LLMPrompt.getAttachmentFullText)
+	// -- that pipeline's own reading-order for stacked math notation
+	// (combining tildes/dots-above, sub+superscript ordering) routinely
+	// diverges from the SDT's own, which is exactly what made a math-heavy
+	// citation fail to re-anchor (confirmed concretely: edit distance 20
+	// against a fuzzy budget of 3, for the PairNorm "TPSD" citation).
+	//
+	// Deliberately scoped PER BLOCK, not over a flattened cross-block list
+	// of every paragraph's sentences -- chunking within one block only means
+	// a sentence AND a paragraph chunk can never straddle two different SDT
+	// blocks (e.g. bridging over an intervening 'math'/'table'/'figure'
+	// block the way Zotero's own linear extraction's period-splitting did),
+	// which is the actual root cause this whole change exists to eliminate.
+	// A block with no sentences surviving splitIntoSentences' own length
+	// filter (20-500 chars) contributes nothing, same as an empty block
+	// would today. `maxCitationChunks` is applied ONCE, to the final
+	// combined sentence list (matching splitIntoParagraphs' own existing
+	// behavior of building paragraphs from the same already-capped list,
+	// since it calls splitIntoSentences internally) -- not per block, which
+	// would let a single pathological block alone reach the cap.
+	async _buildSentencesAndParagraphsFromStructure(structure, sentencesPerParagraph = 5) {
+		let sentences = [];
+		let paragraphs = [];
+		for (let block of structure.content) {
+			if (block.type !== "paragraph") continue;
+			let text = this._flattenBlockText(block).replace(/\s+/g, " ").trim();
+			if (!text) continue;
+			let blockSentences = this.splitIntoSentences(text);
+			if (!blockSentences.length) continue;
+			sentences.push(...blockSentences);
+			for (let i = 0; i < blockSentences.length; i += sentencesPerParagraph) {
+				paragraphs.push(blockSentences.slice(i, i + sentencesPerParagraph).join(" "));
+			}
+		}
+		sentences = sentences.slice(0, this.maxCitationChunks);
+		return { sentences, paragraphs };
 	},
 
 	// Plain-text progress bar for a Logs entry (see llm/request.js's
@@ -76,22 +151,30 @@ LLMCitation = {
 		return dir;
 	},
 
-	// Fingerprint is the ONLY staleness check needed here -- unlike the old
-	// per-kind cache files, this joint file carries no `model`/`provider`
-	// fields at all (see _saveDiskCache below): the chunk TEXT itself
-	// doesn't depend on which embedding model/provider is active, only the
-	// EMBEDDINGS do, and those live solely in the embeddings DB (one .sqlite
-	// file per model under LLMz/cache/embeddings/, see embeddings-db.js) --
-	// see getTextIndex's own hasEmbeddings check for that half. The cache
-	// file also carries no `embeddings` field -- the embeddings DB
-	// is the sole store for the actual vectors now that retrieval
-	// (getRelevantChunks/getNearestSentences) only ever queries the DB,
-	// never reads them back off a loaded disk cache.
+	// Fingerprint + _cacheVersion are the only staleness checks needed here
+	// -- unlike the old per-kind cache files, this joint file carries no
+	// `model`/`provider` fields at all (see _saveDiskCache below): the
+	// chunk TEXT itself doesn't depend on which embedding model/provider is
+	// active, only the EMBEDDINGS do, and those live solely in the
+	// embeddings DB (one .sqlite file per model under
+	// LLMz/cache/embeddings/, see embeddings-db.js) -- see getTextIndex's
+	// own hasEmbeddings check for that half. The cache file also carries
+	// no `embeddings` field -- the embeddings DB is the sole store for the
+	// actual vectors now that retrieval (getRelevantChunks/
+	// getNearestSentences) only ever queries the DB, never reads them back
+	// off a loaded disk cache. `cacheVersion` catches the OTHER kind of
+	// staleness fingerprint alone can't -- the same Zotero-extracted text
+	// producing DIFFERENT sentences/paragraphs because HOW they're derived
+	// from it changed (see _cacheVersion's own comment).
 	async _loadDiskCache(item, fingerprint) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
 			if (!await IOUtils.exists(path)) return null;
 			let cached = JSON.parse(await IOUtils.readUTF8(path));
+			if (cached.cacheVersion !== this._cacheVersion) {
+				this.log(`_loadDiskCache: stale (cacheVersion changed) for item ${item.id}`);
+				return null;
+			}
 			if (cached.fingerprint !== fingerprint) return null;
 			this.log(`_loadDiskCache: loaded ${cached.sentences.length} sentences, ${cached.paragraphs.length} paragraphs for item ${item.id}`);
 			return { sentences: cached.sentences, paragraphs: cached.paragraphs };
@@ -105,7 +188,7 @@ LLMCitation = {
 	async _saveDiskCache(item, fingerprint, sentences, paragraphs) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
-			await IOUtils.writeUTF8(path, JSON.stringify({ fingerprint, sentences, paragraphs }, null, 2));
+			await IOUtils.writeUTF8(path, JSON.stringify({ cacheVersion: this._cacheVersion, fingerprint, sentences, paragraphs }, null, 2));
 			this.log(`_saveDiskCache: saved ${sentences.length} sentences, ${paragraphs.length} paragraphs for item ${item.id}`);
 		}
 		catch (e) {
@@ -168,8 +251,26 @@ LLMCitation = {
 		let fingerprint = this._textFingerprint(text);
 
 		let diskCached = await this._loadDiskCache(item, fingerprint);
-		let sentences = diskCached ? diskCached.sentences : this.splitIntoSentences(text);
-		let paragraphs = diskCached ? diskCached.paragraphs : this.splitIntoParagraphs(text);
+		let sentences, paragraphs;
+		if (diskCached) {
+			({ sentences, paragraphs } = diskCached);
+		}
+		else {
+			// SDT structure is the single source of truth for the actual
+			// sentence/paragraph TEXT now (see
+			// _buildSentencesAndParagraphsFromStructure's own comment) --
+			// `text`/`fingerprint` above are still used only for the disk
+			// cache's own staleness check, same as before. Returns null
+			// (same as the `!sentences.length` guard below already does for
+			// an empty result) if the structure itself isn't available at
+			// all -- e.g. no PDF file on this attachment -- rather than
+			// falling back to the old Zotero-text-based splitting, since
+			// that's exactly the divergent-extraction source this change
+			// exists to stop depending on.
+			let structure = await LLMCitationPosition._getStructure(item);
+			if (!structure) return null;
+			({ sentences, paragraphs } = await this._buildSentencesAndParagraphsFromStructure(structure));
+		}
 		if (!sentences.length) return null;
 
 		let [sentenceDbCount, paragraphDbCount] = await Promise.all([
@@ -343,9 +444,11 @@ LLMCitation = {
 	// to be paid per query). A falsy entry in `queryEmbeddings` (embedBatched
 	// can fail for an individual text) is skipped rather than sent to the
 	// DB, same as the caller's own old `if (!queryEmbedding) continue`
-	// check before this moved here. Returns one sentence string (or null,
-	// for a skipped/no-match query) per entry in `queryEmbeddings`, same
-	// order/length.
+	// check before this moved here. Returns one { text, distance } (or
+	// null, for a skipped/no-match query) per entry in `queryEmbeddings`,
+	// same order/length -- `distance` (cosine distance, 0 = identical) is
+	// exposed alongside `text` so a caller can log/inspect match quality,
+	// not just consume the winning sentence blindly.
 	async getNearestSentences(index, queryEmbeddings) {
 		let validIndices = [];
 		let queries = [];
@@ -359,7 +462,7 @@ LLMCitation = {
 		let results = await LLMEmbeddingsDB.queryBatch(index.model, queries);
 		results.forEach((rows, qi) => {
 			let best = rows[0];
-			if (best) sentences[validIndices[qi]] = index.sentences[best.sourceId];
+			if (best) sentences[validIndices[qi]] = { text: index.sentences[best.sourceId], distance: best.distance };
 		});
 		return sentences;
 	},
@@ -687,6 +790,29 @@ LLMCitation = {
 			chunks.push({ paperId: result.paperId, title, authors, text, source: result.source, meta });
 		}
 		return chunks;
+	},
+
+	// Parses a [CITE](<find:...>) token's payload into { paperId, phrase } --
+	// either a plain phrase (a same-paper citation, grounded against the
+	// CURRENT PDF) or "PAPER_ID:phrase" (a cross-library citation, grounded
+	// against that OTHER paper instead -- see llm/prompt.js's own
+	// cross-library citation instructions). paperId is null for the plain
+	// case. A real quoted sentence essentially never starts with
+	// "<digits>:" as its own literal first characters, so a leading run of
+	// digits immediately followed by exactly one colon unambiguously means
+	// the cross-library shape -- same disambiguation chat-pane.js's own
+	// ref: parsing already relies on (a numeric first segment there too).
+	// Shared by groundCitations (unaffected -- its own regex already
+	// captures either shape as one opaque payload), llm/request.js's
+	// citation-position resolution (groups payloads by paperId before
+	// calling LLMCitationPosition.resolvePositions, once per distinct
+	// paper), and chat-pane.js's _renderMarkdown (decides whether a
+	// resolved position navigates within the current reader or opens a
+	// different paper).
+	parseFindPayload(payload) {
+		let m = payload.match(/^(\d+):([\s\S]+)$/);
+		if (m) return { paperId: parseInt(m[1], 10), phrase: m[2] };
+		return { paperId: null, phrase: payload };
 	},
 
 	// Numbers each [CITE](<find:phrase>) token in order -- [1], [2], etc,

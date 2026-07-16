@@ -31,7 +31,7 @@ LLMTables = {
 	// (document/figures.js), so PyMuPDF here isn't adding a new dependency
 	// either way.
 	_renderScriptName: "render_crops.py",
-	_cacheVersion: 4, // bump when the cached index schema changes (JS-side, not just Python scripts)
+	_cacheVersion: 5, // bump when the cached index schema changes (JS-side, not just Python scripts)
 	_indexCache: new Map(),
 
 	log(msg) {
@@ -129,13 +129,34 @@ LLMTables = {
 		}
 	},
 
-	async _loadDiskCache(item) {
+	// `embeddingProvider`/`embeddingModel` are resolved ONCE by the caller
+	// (getTableIndex), not re-resolved here -- see getTableIndex's own
+	// comment for why (the same values are also needed for the memory-cache
+	// check, which happens before this is ever called).
+	async _loadDiskCache(item, embeddingProvider, embeddingModel) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
 			if (!await IOUtils.exists(path)) return null;
 			let index = JSON.parse(await IOUtils.readUTF8(path));
 			if (index.scriptFingerprint !== await this._scriptFingerprint()) {
 				this.log(`_loadDiskCache: stale (extract_tables_sdt.js changed) for item ${item.id}`);
+				return null;
+			}
+			// tables.captionEmbedding/contentEmbedding were computed via
+			// LLMCitation.getEmbedding(Batched), which routes through
+			// whichever embedding provider/model was selected AT THAT TIME --
+			// a cache built under a different provider/model is silently
+			// incompatible (not comparable via cosine similarity, even if the
+			// vector happens to be the same length), so it must invalidate
+			// here too, same as document/figures.js's own _loadDiskCache.
+			// This also forces getTableIndex back through its "fresh
+			// extraction" branch on a provider/model switch, which is what
+			// actually gets the NEW model's own embeddings.sqlite file (one
+			// file per model, see embeddings-db.js) populated for this paper
+			// -- without this check, a disk-cache hit would skip that sync
+			// entirely and silently leave the new model blind to this paper.
+			if (index.embeddingProvider !== embeddingProvider || index.embeddingModel !== embeddingModel) {
+				this.log(`_loadDiskCache: stale (embedding provider/model changed) for item ${item.id}`);
 				return null;
 			}
 			this.log(`_loadDiskCache: loaded ${index.tables.length} tables for item ${item.id}`);
@@ -154,13 +175,18 @@ LLMTables = {
 			// JPEG (base64), regenerable on demand from `position` (the
 			// bounding box) via renderMissingImages whenever actually needed,
 			// so persisting it here would just be dead weight bloating this
-			// cache file for tables that never end up exported. A shallow
-			// per-table copy, not a mutation of `index.tables` itself -- the
-			// caller keeps holding (and memory-caching) that same object,
-			// image_data and all, unrelated to what actually lands on disk.
+			// cache file for tables that never end up exported.
+			// captionEmbedding/contentEmbedding are stripped for the same
+			// reason as citation.js's/figures.js's own disk caches --
+			// embeddings.sqlite (one file per model, see getTableIndex's own
+			// sync right after this call) is the sole store for the actual
+			// vectors now. All three are a shallow per-table copy, not a
+			// mutation of `index.tables` itself -- the caller keeps holding
+			// (and memory-caching) that same object, unrelated to what
+			// actually lands on disk.
 			let diskIndex = {
 				...index,
-				tables: index.tables.map(({ image_data, ...rest }) => rest),
+				tables: index.tables.map(({ image_data, captionEmbedding, contentEmbedding, ...rest }) => rest),
 			};
 			await IOUtils.writeUTF8(path, JSON.stringify(diskIndex, null, 2));
 			this.log(`_saveDiskCache: saved ${index.tables.length} tables for item ${item.id}`);
@@ -234,53 +260,127 @@ LLMTables = {
 		return (data || []).map(row => row.join(" | ")).join("\n");
 	},
 
-	// Embeds each table's "label: caption" and its flattened cell content as text
-	// (nomic-embed-text), so a query can be matched against either via text-to-text
-	// similarity.
-	async _addTextEmbeddings(tables) {
+	// Embeds each table's "label: caption" and its flattened cell content
+	// (tab.contentText, already set by getTableIndex before this runs) as
+	// text, so a query can be matched against either via text-to-text
+	// similarity, and so both get synced to the embeddings DB (see
+	// getTableIndex's own sync right after this call) under separate
+	// sources ("table_caption"/"table_content") for future cross-library
+	// table retrieval -- kept as two independent vectors rather than one
+	// combined embedding: caption and content are different-length,
+	// different-quality signals (content is often a long, unstructured
+	// flattened blob -- see extract_tables_sdt.js's own TableNode.content
+	// comment elsewhere -- while caption is one clean sentence), and
+	// combining them into a single vector risks the longer/noisier one
+	// diluting the other; keeping them separate lets a future retrieval
+	// step query both independently and union the results instead.
+	// `progress`, if given, has its setProgress(current, total) called as
+	// batches complete -- same in-place progress reporting citation.js's
+	// getTextIndex/figures.js's _addCaptionEmbeddings do for their own
+	// embedding loops. Batched+concurrency-limited via
+	// LLMCitation.embedBatched rather than one request per table/per field.
+	async _addTextEmbeddings(tables, textModel, progress, provider) {
 		if (!tables.length) return tables;
-		let textModel = await LLMCitation.getEmbeddingModel();
-		for (let tab of tables) {
-			try {
-				tab.captionEmbedding = await LLMCitation.getEmbedding(`${tab.label}: ${tab.caption}`, textModel);
-				tab.contentText = this._flattenTableData(tab.data);
-				tab.contentEmbedding = await LLMCitation.getEmbedding(tab.contentText, textModel);
+		if (!textModel) textModel = await LLMCitation.getEmbeddingModel();
+		try {
+			let captionTexts = tables.map(t => `${t.label}: ${t.caption}`);
+			let contentTexts = tables.map(t => t.contentText);
+			let total = tables.length * 2;
+			let captionEmbeddings = await LLMCitation.embedBatched(captionTexts, textModel, provider, {
+				onProgress: completed => progress?.setProgress?.(completed, total),
+			});
+			let contentEmbeddings = await LLMCitation.embedBatched(contentTexts, textModel, provider, {
+				onProgress: completed => progress?.setProgress?.(tables.length + completed, total),
+			});
+			for (let i = 0; i < tables.length; i++) {
+				tables[i].captionEmbedding = captionEmbeddings[i];
+				tables[i].contentEmbedding = contentEmbeddings[i];
 			}
-			catch (e) {
-				this.log(`_addTextEmbeddings: failed for ${tab.label}: ${e.message}`);
-			}
+		}
+		catch (e) {
+			this.log(`_addTextEmbeddings: failed: ${e.message}`);
 		}
 		return tables;
 	},
 
-	async getTableIndex(item, onMessage) {
-		if (this._indexCache.has(item.id)) {
+	// Returns the table index for an item, using memory/disk cache where
+	// possible. Index shape: { tables: [{ ..., contentText, captionEmbedding,
+	// contentEmbedding, image_data }] } -- captionEmbedding/contentEmbedding/
+	// image_data all start absent from a disk-cache hit (none of the three
+	// are ever persisted there, see _saveDiskCache's own comment) and are
+	// only ever (re)computed on a fresh extraction below/filled in on demand
+	// by renderMissingImages.
+	// `onEmbeddingStart(provider, model)`, if given, is called ONLY when a
+	// cache miss/staleness actually forces the text embeddings to be
+	// recomputed (see citation.js's getTextIndex/figures.js's
+	// getFigureIndex, same pattern) -- its return value (e.g. a Logs entry's
+	// content element) is updated in place with a completion line once
+	// recomputation finishes, rather than logging start/done as two
+	// separate messages.
+	async getTableIndex(item, onEmbeddingStart, onMessage) {
+		// Resolved BEFORE the memory-cache check below (not just threaded
+		// through to _loadDiskCache further down) -- switching provider/
+		// model mid-session must invalidate an already-loaded memory-cached
+		// index too, since _loadDiskCache's own check would otherwise never
+		// even run (only consulted on a memory-cache MISS).
+		let embeddingProvider = LLMInterfaces._embeddingProvider;
+		let embeddingModel = await LLMCitation.getEmbeddingModel();
+
+		let memoryCached = this._indexCache.get(item.id);
+		if (memoryCached && memoryCached.embeddingProvider === embeddingProvider && memoryCached.embeddingModel === embeddingModel) {
 			this.log(`getTableIndex: memory cache hit for item ${item.id}`);
-			return this._indexCache.get(item.id);
+			return memoryCached;
 		}
 
-		let cached = await this._loadDiskCache(item);
+		let cached = await this._loadDiskCache(item, embeddingProvider, embeddingModel);
 		if (cached) {
 			this._indexCache.set(item.id, cached);
 			return cached;
 		}
 
 		let tables = await this._extractRaw(item, onMessage);
-		// _addTextEmbeddings is deliberately never called here -- neither it
-		// nor the (since-removed) image-embedding step is on the live
-		// selection path (selectTablesWithLLM doesn't use them -- see
-		// llm/prompt.js; getBestMatchingTableByImage/ByTextMax, which do,
-		// aren't called from llm/request.js). contentText itself, though, is
-		// cheap (no network call, just a local join -- see
-		// _flattenTableData) and is a real dependency of
-		// tools/table-export.js's CSV-conversion prompt, so it's still
-		// computed unconditionally here.
+		// Computed unconditionally, before embedding -- cheap (no network
+		// call, just a local join, see _flattenTableData), a real dependency
+		// of tools/table-export.js's CSV-conversion prompt regardless of
+		// embeddings, and _addTextEmbeddings below reads tab.contentText
+		// directly rather than recomputing it itself.
 		for (let tab of tables) {
 			tab.contentText = this._flattenTableData(tab.data);
 		}
-		let index = { tables, scriptFingerprint: await this._scriptFingerprint() };
+		let progress = tables.length ? onEmbeddingStart?.(embeddingProvider, embeddingModel) : null;
+		let embedded = await this._addTextEmbeddings(tables, embeddingModel, progress, embeddingProvider);
+		if (progress) progress.textContent = `Recomputed ${embedded.length} table caption/content embedding${embedded.length === 1 ? "" : "s"} using ${embeddingProvider} ${embeddingModel}.`;
+		let index = { tables: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
+		// Mirrors the disk-cache write into the embeddings DB (one .sqlite
+		// file per model, see core/llm/embeddings-db.js) -- source_id is
+		// table_id (already a stable, always-present per-table identifier,
+		// see extract_tables_sdt.js's own header comment), not array
+		// position, since that's the same handle callers already use to
+		// look a table back up in this cache file. Two separate sources
+		// ("table_caption"/"table_content") rather than one, matching
+		// _addTextEmbeddings' own reasoning for keeping them as separate
+		// vectors. Filtered to tables that actually got an embedding --
+		// _addTextEmbeddings' own try/catch means a total embedding-call
+		// failure leaves EVERY table without one, not a partial set, but
+		// this stays defensive rather than assuming that. Best-effort, same
+		// reasoning as citation.js's/figures.js's own sync -- the disk cache
+		// above is already the source of truth LLMTables itself reads from;
+		// this DB is an additional, non-authoritative mirror for now.
+		try {
+			let withCaption = embedded.filter(t => t.captionEmbedding);
+			let withContent = embedded.filter(t => t.contentEmbedding);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "table_caption",
+				withCaption.map(t => ({ sourceId: t.table_id, embedding: t.captionEmbedding })));
+			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "table_content",
+				withContent.map(t => ({ sourceId: t.table_id, embedding: t.contentEmbedding })));
+			onMessage?.(`Synced ${withCaption.length} table caption and ${withContent.length} table content embedding${(withCaption.length + withContent.length) === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
+		}
+		catch (e) {
+			this.log(`getTableIndex: failed to sync to embeddings DB: ${e.message}`);
+			onMessage?.(`Failed to sync table embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
+		}
 		return index;
 	},
 

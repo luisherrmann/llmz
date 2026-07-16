@@ -342,11 +342,17 @@ LLMFigures = {
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, index);
 		// Mirrors the disk-cache write into the embeddings DB (one .sqlite
-		// file per model, see core/llm/embeddings-db.js) -- source_id is figure_id
-		// (already a stable, always-present per-figure identifier, see
-		// extract_figures_sdt.js's own header comment), not array position,
-		// since that's the same handle callers already use to look a figure
-		// back up in this cache file. Filtered to figures that actually got
+		// file per model, see core/llm/embeddings-db.js) under source
+		// "figure_caption" -- matching document/tables.js's own
+		// "table_caption"/"table_content" naming convention, so a future
+		// cross-library retrieval step querying across all three has a
+		// predictable, self-documenting source taxonomy to work from rather
+		// than a bare "figure" that reads ambiguously once tables have two
+		// sources of their own. source_id is figure_id (already a stable,
+		// always-present per-figure identifier, see extract_figures_sdt.js's
+		// own header comment), not array position, since that's the same
+		// handle callers already use to look a figure back up in this cache
+		// file. Filtered to figures that actually got
 		// a captionEmbedding -- _addCaptionEmbeddings' own try/catch means a
 		// total embedding-call failure leaves EVERY figure without one, not
 		// a partial set, but this stays defensive rather than assuming that.
@@ -356,7 +362,7 @@ LLMFigures = {
 		// for now.
 		try {
 			let withEmbeddings = embedded.filter(f => f.captionEmbedding);
-			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "figure",
+			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "figure_caption",
 				withEmbeddings.map(f => ({ sourceId: f.figure_id, embedding: f.captionEmbedding })));
 			onMessage?.(`Synced ${withEmbeddings.length} figure embedding${withEmbeddings.length === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
 		}

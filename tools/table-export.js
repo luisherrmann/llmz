@@ -100,7 +100,7 @@ LLMTableExport = {
 			required: ["type"],
 		},
 		resolver: {
-			getIndex: pdfItem => LLMTables.getTableIndex(pdfItem),
+			getIndex: pdfItem => LLMTables.getTableIndex(pdfItem, undefined),
 			// "single"/"list" both route through resolveTableByDescription
 			// (the SAME table-listing-aware lookup "describe" already uses)
 			// rather than trusting intent.index/indices as literal ids --
@@ -528,7 +528,7 @@ LLMTableExport = {
 		}
 
 		onProgress?.(`Looking up ${tableIds.length} table${tableIds.length === 1 ? "" : "s"} in the paper...`);
-		let tableIndex = await LLMTables.getTableIndex(pdfItem);
+		let tableIndex = await LLMTables.getTableIndex(pdfItem, undefined, onProgress);
 		let tables = tableIds
 			.map(id => tableIndex?.tables?.find(t => t.table_id === id))
 			.filter(Boolean);

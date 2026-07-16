@@ -887,7 +887,7 @@ LLMChatPane = {
 								if (reply) chat.updateMessageText(reply, text);
 							};
 							let [tableIndex, figureIndex, referenceIndex, equationIndex, notes] = await Promise.all([
-								LLMTables.getTableIndex(pdfItem, onStructureMessage).catch(() => null),
+								LLMTables.getTableIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
 								LLMFigures.getFigureIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
 								LLMReferences.getReferenceIndex(pdfItem, onStructureMessage).catch(() => null),
 								LLMEquations.getEquationIndex(pdfItem, onStructureMessage).catch(() => null),

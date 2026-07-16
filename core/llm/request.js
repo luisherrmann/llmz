@@ -842,7 +842,7 @@ LLMRequest = {
 			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText, onEmbeddingStart, onStructureMessage);
 			if (isCancelled()) return;
 			let tableIndexPromise = pdfItem
-				? LLMTables.getTableIndex(pdfItem, onStructureMessage).catch((e) => {
+				? LLMTables.getTableIndex(pdfItem, onEmbeddingStart, onStructureMessage).catch((e) => {
 					this.log(`getTableIndex failed: ${e.message}`);
 					return { error: e.message };
 				})

@@ -1125,13 +1125,15 @@ LLMRequest = {
 				if (pdfItem) {
 					// Boundary lookahead (matching _renderMarkdown's own
 					// regex and citation.js's groundCitations exactly --
-					// see either one's comment for why) so a citation
-					// phrase that happens to contain a literal ">)" doesn't
-					// get truncated at that false terminator. Must extract
+					// see either one's comment for why, including the
+					// `*`/`_`/`` ` `` additions for a citation the model
+					// wrapped in bold/italic/code) so a citation phrase
+					// that happens to contain a literal ">)" doesn't get
+					// truncated at that false terminator. Must extract
 					// the SAME payload string _renderMarkdown will (below),
 					// or citationPositions' lookup-by-payload silently
 					// misses.
-					let queries = [...groundedText.matchAll(/\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]]|\[|$)/g)].map(m => m[1]);
+					let queries = [...groundedText.matchAll(/\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]*_`]|\[|$)/g)].map(m => m[1]);
 					if (queries.length) {
 						try {
 							citationPositions = await LLMCitationPosition.resolvePositions(pdfItem, queries, onEmbeddingStart, onStructureMessage);
@@ -1200,6 +1202,19 @@ LLMRequest = {
 						}
 						if (anchor.dataset.openItemId) {
 							await LLMCitation.openLibraryItem(parseInt(anchor.dataset.openItemId, 10));
+							return;
+						}
+						if (anchor.dataset.crossPaperId) {
+							// See chat-pane.js's _renderMarkdown for how this
+							// pair of attributes gets set -- position isn't
+							// resolved until now (click time), since it needs
+							// reading the OTHER paper's own disk cache.
+							let crossPaperId = parseInt(anchor.dataset.crossPaperId, 10);
+							let opts = anchor.dataset.crossTableNum
+								? { tableNum: parseInt(anchor.dataset.crossTableNum, 10) }
+								: { tableExtraNum: parseInt(anchor.dataset.crossTableExtraNum, 10) };
+							let position = await LLMCitation.resolveCrossLibraryTablePosition(crossPaperId, opts);
+							await LLMCitation.openLibraryItem(crossPaperId, position);
 							return;
 						}
 							if (anchor.dataset.query) {

@@ -237,12 +237,14 @@ LLMPrompt = {
 		"A <CROSS_LIBRARY_CONTEXT> block, if present, contains excerpts (paragraphs, table captions/content, figure captions, or equation context) retrieved from OTHER papers in the user's Zotero library -- not the current PDF, and not necessarily cited by it -- that may help answer the question. Each entry states its source paper's title, authors, and paper_id before its excerpt text.",
 		"If you use information from a <CROSS_LIBRARY_CONTEXT> entry to answer the question, mention which paper it came from by wrapping its title in a link so the user can open that paper directly: [Title](<ref:library:paper_id>), using that entry's own exact title as the visible label and its paper_id as the link target -- so the user knows it did not come from the paper they're currently reading, and can jump straight to it.",
 		"Example: for an entry '\"Attention Is All You Need\" by Vaswani et al. [paper_id: 4821]: ...', write 'This is consistent with findings in [Attention Is All You Need](<ref:library:4821>).' -- the paper's own title is the label, 4821 (that entry's own paper_id) is the link target.",
+			"A <CROSS_LIBRARY_CONTEXT> entry for a TABLE carries its own bracketed hint right after its paper_id, like '[cite as ref:4821:table:3]' or '[cite as ref:4821:tableExtra:2]' -- if you mention that specific table (not just the paper in general), wrap it in a link using that EXACT hint copied verbatim as the link target, with the visible label formatted as 'PAPER_ID Table N' (or 'PAPER_ID TableExtra N'): [PAPER_ID Table N](<ref:PAPER_ID:table:N>) or [PAPER_ID TableExtra N](<ref:PAPER_ID:tableExtra:N>), where PAPER_ID and N are exactly the paper_id and number shown in the hint -- never invent or count your own PAPER_ID or N for this format, and never use it for a paper's own tables (that's the plain ref:table:N/ref:tableExtra:N format above, with no paper id). PAPER_ID in the visible label gets replaced with a real author/year citation automatically -- always include it exactly as given, never substitute your own author/year guess there. This is separate from -- and takes priority over, for a specific table -- the plain [Title](<ref:library:paper_id>) link above.",
+			"Example: for an entry '\"GraphNorm\" by Cai et al. [paper_id: 9012] [cite as ref:9012:table:3]: ...', write 'As shown in [9012 Table 3](<ref:9012:table:3>) of GraphNorm, ...' -- 9012 (that entry's own paper_id, both in the label and the link target) and 3 (the hint's own N) copied verbatim.",
 		"A <NOTE_CONTEXT> block, if present, contains one or more of the user's own annotations on this PDF -- each either a sticky note they wrote, or a passage they highlighted/underlined (quoted verbatim from the PDF) together with any comment they added on it. Any 'Note:' text in it is the user's own authoritative commentary, distinct from the paper's own claims -- don't confuse the two.",
 		"Each entry in <NOTE_CONTEXT> starts with 'Note N (...) [key: XXXXXXXX]:' -- when you mention it, wrap it in a link so the reader can jump to it: [Note N](<ref:note:XXXXXXXX>). Use 'Note N' (that entry's display number) as the visible label, but the link target itself must be the exact key shown in brackets, not N -- copy the key exactly, character for character; never use N or invent a key.",
 		"Example: for an entry 'Note 1 (Highlight, p. 4) [key: AB12CD34]: ...', write 'Your highlight on this point [Note 1](<ref:note:AB12CD34>) is directly relevant here.' -- 'Note 1' is the label, 'AB12CD34' (that note's own key) is the link target.",
 		"Whenever you mention a specific page of the PDF by number (e.g. 'on page 5', 'see page 12'), wrap the page number in a link so the reader can jump straight there: [page N](<ref:page:N>), where N is the page number -- this works for any page, not just ones with a table/figure/equation/note on them, and is separate from those ref: formats above.",
 		"Example: 'The methodology is described in more detail on [page 7](<ref:page:7>).'",
-		"NEVER put any of the link formats above -- [CITE](<find:...>), [Table N](<ref:table:N>), [<label>](<ref:tableExtra:N>), [Figure N](<ref:figure:N>), [<label>](<ref:figureExtra:N>), [Equation N](<ref:equation:N>), [Formula N](<ref:formula:N>), [N](<ref:reference:N>), [Note N](<ref:note:...>), or [page N](<ref:page:N>), or [Title](<ref:library:paper_id>) -- inside a math environment ($<formula>$ or $$<formula>$$). Links only work in plain text; a $...$/$$...$$ formula must contain ONLY the formula itself, never a link. This does not apply to Markdown table cells (which are plain text, not math) -- links work normally there.",
+		"NEVER put any of the link formats above -- [CITE](<find:...>), [Table N](<ref:table:N>), [<label>](<ref:tableExtra:N>), [Figure N](<ref:figure:N>), [<label>](<ref:figureExtra:N>), [Equation N](<ref:equation:N>), [Formula N](<ref:formula:N>), [N](<ref:reference:N>), [Note N](<ref:note:...>), [page N](<ref:page:N>), [Title](<ref:library:paper_id>), or [PAPER_ID Table N](<ref:PAPER_ID:table:N>)/[PAPER_ID TableExtra N](<ref:PAPER_ID:tableExtra:N>) -- inside a math environment ($<formula>$ or $$<formula>$$). Links only work in plain text; a $...$/$$...$$ formula must contain ONLY the formula itself, never a link. This does not apply to Markdown table cells (which are plain text, not math) -- links work normally there.",
 		"If a $...$/$$...$$ formula needs to reference a table/figure/equation/note, write its plain label as ordinary text immediately next to the formula instead, not inside it -- e.g. 'the result in Equation 1: $x = \\phi_s(s)$' with the link on 'Equation 1', not inside the $...$.",
 	].join(" "),
 
@@ -555,16 +557,25 @@ LLMPrompt = {
 		return /^yes/i.test(text);
 	},
 
-	// One entry per retrieved cross-library paragraph -- title/authors/
+	// One entry per retrieved cross-library excerpt -- title/authors/
 	// paper_id first (see LLMCitation.getCrossLibraryChunks), so the model
-	// can both judge which paper each paragraph is from and copy the exact
+	// can both judge which paper each excerpt is from and copy the exact
 	// title into its answer (see _systemPrompt's own <CROSS_LIBRARY_CONTEXT>
 	// instructions -- paper_id is included for traceability only, the model
-	// is told NOT to cite it in place of the title).
+	// is told NOT to cite it in place of the title). A table entry (see
+	// _tableCrossLibraryMeta) additionally gets a bracketed citation hint,
+	// same convention as _formatTableMarkdown's own SAME-paper
+	// [cite as ref:tableExtra:N] hint -- table_num (a real paper-printed
+	// number) if the table has one, else table_extra_num (an
+	// SDT-only-detected table with no real printed number) -- table-only
+	// for now (cross-library linking doesn't cover figures/equations yet).
 	_formatCrossLibraryContext(chunks) {
 		return chunks.map((c) => {
 			let byline = c.authors ? ` by ${c.authors}` : "";
-			return `**"${c.title}"${byline} [paper_id: ${c.paperId}]:**\n${c.text}`;
+			let citeHint = "";
+			if (c.meta?.tableNum != null) citeHint = ` [cite as ref:${c.paperId}:table:${c.meta.tableNum}]`;
+			else if (c.meta?.tableExtraNum != null) citeHint = ` [cite as ref:${c.paperId}:tableExtra:${c.meta.tableExtraNum}]`;
+			return `**"${c.title}"${byline} [paper_id: ${c.paperId}]${citeHint}:**\n${c.text}`;
 		}).join("\n\n");
 	},
 

@@ -99,6 +99,19 @@ LLMRequest = {
 	// same failure mode, just against a different downstream selection.
 	_RECENT_HISTORY_TURNS: 2,
 
+	// Human-readable label per DB `source` kind (see embeddings-db.js's
+	// schema comment and citation.js's _crossLibrarySourceResolvers), for
+	// _buildCrossLibraryContext's own Logs breakdown below -- "+s" pluralizes
+	// cleanly for every one of these as-is, so no separate plural form is
+	// needed.
+	_CROSS_LIBRARY_SOURCE_LABELS: {
+		paragraph: "paragraph",
+		table_caption: "table caption",
+		table_content: "table excerpt",
+		figure_caption: "figure caption",
+		equation_context: "equation excerpt",
+	},
+
 	// Resolves `intent` (see llm/intent.js's detectIntent) down to a concrete
 	// list of numbers, against whichever index `tool`'s own resolver bundle
 	// (see llm/intent.js's getResolver -- each tool's intentTool.resolver,
@@ -726,27 +739,37 @@ LLMRequest = {
 		}
 		if (isCancelled()) return { addition: "" };
 		if (!chunks.length) {
-			appendMessage("System", "Cross-library context judged relevant, but no matching paragraphs were found in other papers.");
+			appendMessage("System", "Cross-library context judged relevant, but no matching excerpts were found in other papers.");
 			return { addition: "" };
 		}
 
 		let addition = `\n\n<CROSS_LIBRARY_CONTEXT>\n${LLMPrompt._formatCrossLibraryContext(chunks)}\n</CROSS_LIBRARY_CONTEXT>`;
-		// Grouped by paper (chunks.length counts PARAGRAPHS, several of
-		// which can come from the same paper) so this reads as "which papers
-		// got pulled in" rather than a flat, possibly-repetitive per-chunk
-		// list -- exactly what to check to confirm cross-library retrieval
-		// is actually pulling from the papers you'd expect, not something
+		// Grouped by paper (chunks.length counts EXCERPTS, several of which
+		// can come from the same paper) so this reads as "which papers got
+		// pulled in" rather than a flat, possibly-repetitive per-chunk list
+		// -- exactly what to check to confirm cross-library retrieval is
+		// actually pulling from the papers you'd expect, not something
 		// misconfigured (e.g. the wrong embedding model, or a paper that
-		// silently never got indexed).
+		// silently never got indexed). Further broken down by each chunk's
+		// own `source` (paragraph/table/figure/equation, see
+		// _CROSS_LIBRARY_SOURCE_LABELS) -- a plain per-paper COUNT alone
+		// doesn't say what kind of thing a low count actually is (e.g. "1"
+		// reads very differently as "1 paragraph" vs. "1 table excerpt"),
+		// and getCrossLibraryChunks' own union (see its comment) means a
+		// paper's contribution is no longer always paragraphs to begin with.
 		let byPaper = new Map();
 		for (let chunk of chunks) {
 			let entry = byPaper.get(chunk.paperId);
-			if (!entry) byPaper.set(chunk.paperId, entry = { title: chunk.title, count: 0 });
-			entry.count++;
+			if (!entry) byPaper.set(chunk.paperId, entry = { title: chunk.title, countsBySource: new Map() });
+			entry.countsBySource.set(chunk.source, (entry.countsBySource.get(chunk.source) || 0) + 1);
 		}
-		appendMessage("System", `Including cross-library context (${chunks.length} paragraph${chunks.length === 1 ? "" : "s"} from ${byPaper.size} other paper${byPaper.size === 1 ? "" : "s"}).`);
-		for (let [paperId, { title, count }] of byPaper) {
-			appendMessage("System", `  - "${title}" [paper_id: ${paperId}]: ${count} paragraph${count === 1 ? "" : "s"}`);
+		appendMessage("System", `Including cross-library context (${chunks.length} excerpt${chunks.length === 1 ? "" : "s"} from ${byPaper.size} other paper${byPaper.size === 1 ? "" : "s"}).`);
+		for (let [paperId, { title, countsBySource }] of byPaper) {
+			let breakdown = [...countsBySource.entries()].map(([source, count]) => {
+				let label = this._CROSS_LIBRARY_SOURCE_LABELS[source] || source;
+				return `${count} ${label}${count === 1 ? "" : "s"}`;
+			}).join(", ");
+			appendMessage("System", `  - "${title}" [paper_id: ${paperId}]: ${breakdown}`);
 		}
 		return { addition };
 	},

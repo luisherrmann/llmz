@@ -162,22 +162,31 @@ LLMEmbeddingsDB = {
 	},
 
 	// Returns [{ id, paperId, source, sourceId, distance }, ...], nearest
-	// first, length <= topK. `paperId`/`excludePaperId`/`source` (all
-	// optional) restrict the search -- see db.py's own _cmd_query comment
-	// for how filtering actually works under the hood (an over-fetch-then-
-	// filter approach, not a native filtered vec0 query). `excludePaperId`
+	// first, length <= topK. `paperId`/`excludePaperId`/`source`/`sources`
+	// (all optional) restrict the search -- see db.py's own _cmd_query
+	// comment for how filtering actually works under the hood: pushed down
+	// as a `rowid IN (subquery)` restriction BEFORE the vec0 MATCH search
+	// runs (a true filtered search, not an over-fetch-then-filter
+	// approximation that could miss a real top-k match). `excludePaperId`
 	// is citation.js's getCrossLibraryChunks' own use -- searching every
 	// OTHER paper in the library for the currently open one's question --
 	// and is mutually exclusive with `paperId` in practice (one includes a
 	// single paper, the other excludes one), though nothing here enforces
-	// that.
-	async query(model, embedding, topK, { paperId, excludePaperId, source } = {}) {
+	// that. `sources` (an array, restricting to ANY of several kinds at
+	// once via SQL IN) is a separate param from the singular `source`
+	// (exactly one kind) rather than overloading one into accepting either
+	// a string or an array -- also getCrossLibraryChunks' own use, for a
+	// search restricted to "any of these several non-prose kinds" (see its
+	// own comment); giving both is not meaningful and not validated against
+	// here.
+	async query(model, embedding, topK, { paperId, excludePaperId, source, sources } = {}) {
 		let result = await this._run("query", model, {
 			embedding,
 			top_k: topK,
 			...(paperId !== undefined ? { paper_id: paperId } : {}),
 			...(excludePaperId !== undefined ? { exclude_paper_id: excludePaperId } : {}),
 			...(source !== undefined ? { source } : {}),
+			...(sources !== undefined ? { sources } : {}),
 		});
 		return result.results.map(r => ({
 			id: r.id,
@@ -196,8 +205,8 @@ LLMEmbeddingsDB = {
 	// fixed per-invocation cost (python startup + imports + connect, see
 	// db.py's own _cmd_query_batch comment), paid once for the whole batch
 	// instead of once per query. `queries` is [{ embedding, topK, paperId?,
-	// excludePaperId?, source? }, ...], all against the SAME `model` (and
-	// therefore the same underlying file) -- returns one
+	// excludePaperId?, source?, sources? }, ...], all against the SAME
+	// `model` (and therefore the same underlying file) -- returns one
 	// [{ id, paperId, source, sourceId, distance }, ...] array per entry,
 	// same order -- e.g. citation.js's getNearestSentences, looking up the
 	// nearest sentence for each of several unresolved citations in one
@@ -210,6 +219,7 @@ LLMEmbeddingsDB = {
 				...(q.paperId !== undefined ? { paper_id: q.paperId } : {}),
 				...(q.excludePaperId !== undefined ? { exclude_paper_id: q.excludePaperId } : {}),
 				...(q.source !== undefined ? { source: q.source } : {}),
+				...(q.sources !== undefined ? { sources: q.sources } : {}),
 			})),
 		});
 		return result.results.map(rows => rows.map(r => ({

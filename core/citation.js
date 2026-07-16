@@ -386,6 +386,96 @@ LLMCitation = {
 		}
 	},
 
+	// Same shape/rationale as _loadParagraphs above (reads just one field of
+	// ANOTHER paper's disk cache, no staleness/fingerprint checks, a miss is
+	// just skipped by the caller), generalized to the other three DB
+	// `source` kinds getCrossLibraryChunks below can now resolve a hit
+	// against -- reads straight from document/tables.js's/figures.js's/
+	// equations.js's own cache dir rather than duplicating their shape here.
+	async _loadTables(paperId) {
+		try {
+			let path = PathUtils.join(await LLMTables._cacheDir(), `${paperId}.json`);
+			if (!await IOUtils.exists(path)) return null;
+			return JSON.parse(await IOUtils.readUTF8(path)).tables || null;
+		}
+		catch (e) {
+			this.log(`_loadTables: failed for paper ${paperId}: ${e.message}`);
+			return null;
+		}
+	},
+
+	async _loadFigures(paperId) {
+		try {
+			let path = PathUtils.join(await LLMFigures._cacheDir(), `${paperId}.json`);
+			if (!await IOUtils.exists(path)) return null;
+			return JSON.parse(await IOUtils.readUTF8(path)).figures || null;
+		}
+		catch (e) {
+			this.log(`_loadFigures: failed for paper ${paperId}: ${e.message}`);
+			return null;
+		}
+	},
+
+	async _loadEquations(paperId) {
+		try {
+			let path = PathUtils.join(await LLMEquations._cacheDir(), `${paperId}.json`);
+			if (!await IOUtils.exists(path)) return null;
+			return JSON.parse(await IOUtils.readUTF8(path)).equations || null;
+		}
+		catch (e) {
+			this.log(`_loadEquations: failed for paper ${paperId}: ${e.message}`);
+			return null;
+		}
+	},
+
+	// Maps a DB `source` value (see embeddings-db.js's schema comment) to
+	// how a (paperId, sourceId) hit resolves back to real, displayable
+	// text -- which loader above reads that kind's own disk cache, and how
+	// sourceId locates a record within it. Paragraphs are matched by raw
+	// array POSITION -- sourceId literally IS the array index (see this
+	// file's own DB sync: `paragraphs.map((p, i) => ({ sourceId: i, ... }))`)
+	// -- but a table/figure/equation hit instead carries that record's own
+	// stable 1-based table_id/figure_id/equation_id (see each module's own
+	// DB sync), NOT a raw array position, so those are resolved via .find()
+	// against that field instead of direct indexing -- the same convention
+	// selectTablesWithLLM/selectFiguresWithLLM already use to resolve an
+	// id back to a record, robust regardless of whether the on-disk array
+	// still happens to be in id order. getText returns the same text each
+	// kind's own embedding was actually computed from (see e.g.
+	// document/figures.js's `${fig.label}: ${fig.caption}` or
+	// document/equations.js's preceding/text/following join), so a
+	// retrieved chunk always reads consistently with whatever made it
+	// match in the first place.
+	_crossLibrarySourceResolvers: {
+		paragraph: {
+			load: paperId => LLMCitation._loadParagraphs(paperId),
+			getText: (records, sourceId) => records?.[sourceId] || null,
+		},
+		table_caption: {
+			load: paperId => LLMCitation._loadTables(paperId),
+			getText: (records, sourceId) => records?.find(t => t.table_id === sourceId)?.caption || null,
+		},
+		table_content: {
+			load: paperId => LLMCitation._loadTables(paperId),
+			getText: (records, sourceId) => records?.find(t => t.table_id === sourceId)?.contentText || null,
+		},
+		figure_caption: {
+			load: paperId => LLMCitation._loadFigures(paperId),
+			getText: (records, sourceId) => {
+				let f = records?.find(fig => fig.figure_id === sourceId);
+				return f ? `${f.label}: ${f.caption}` : null;
+			},
+		},
+		equation_context: {
+			load: paperId => LLMCitation._loadEquations(paperId),
+			getText: (records, sourceId) => {
+				let eq = records?.find(e => e.equation_id === sourceId);
+				if (!eq) return null;
+				return [eq.preceding_sentence, eq.text, eq.following_sentence].filter(Boolean).join(" ") || null;
+			},
+		},
+	},
+
 	// Same institutional-vs-personal-name handling as export.js's own
 	// _formatCreatorName -- duplicated rather than shared since it's three
 	// lines and pulling in a whole other module for it isn't worth it.
@@ -395,42 +485,81 @@ LLMCitation = {
 	},
 
 	// Cross-library retrieval for llm/prompt.js's <CROSS_LIBRARY_CONTEXT> --
-	// ranks paragraphs from EVERY OTHER paper in the library (excludePaperId
+	// ranks candidates from EVERY OTHER paper in the library (excludePaperId
 	// is always the currently active PDF) against `query`, via the same
 	// sqlite-vec MATCH path getRelevantChunks uses above, then resolves each
-	// hit's paper_id back to that paper's own paragraph text (its disk
-	// cache -- see _loadParagraphs) and Zotero metadata. `paperId`
-	// here is always a PDF ATTACHMENT's item.id, same as everywhere else in
-	// this file -- its own title/creator fields are usually just generic
-	// translator-assigned values, not the real paper's, so metadata is read
-	// from the PARENT item instead (same `item.parentItem || item` pattern
-	// as export.js's own paperItem).
+	// hit back to real text and Zotero metadata. `paperId` here is always a
+	// PDF ATTACHMENT's item.id, same as everywhere else in this file -- its
+	// own title/creator fields are usually just generic translator-assigned
+	// values, not the real paper's, so metadata is read from the PARENT item
+	// instead (same `item.parentItem || item` pattern as export.js's own
+	// paperItem).
+	//
+	// Two searches, unioned -- not one: a plain top-K nearest-neighbor
+	// search across every embedded kind at once tends to be dominated by
+	// whichever kind is most numerous/verbose in the library, so a
+	// genuinely relevant table or equation elsewhere can rank below topK
+	// purely on volume, not relevance -- confirmed concretely: "sentence"
+	// rows alone outnumber "equation_context" rows 100:1 in a real
+	// library. The first search is restricted to source: "paragraph" (the
+	// prose half); the second to sources: [table_caption, table_content,
+	// figure_caption, equation_context] (the "structural" half) --
+	// deliberately excluding BOTH "sentence" (never surfaced as cross-
+	// library context at all, paragraph is the prose granularity this
+	// context is meant to read at) AND "paragraph" itself (already fully
+	// covered by the first search, so including it here again would just
+	// let paragraphs re-dominate the SECOND search's own ranking too,
+	// undermining the exact thing this split search exists to prevent).
+	// Both go out in ONE db.py subprocess call via queryBatch (see its own
+	// comment) rather than two separate query() round-trips. Deduped by
+	// `id` (the embeddings table's own primary key, globally unique across
+	// every source in the file) since the SAME row can legitimately appear
+	// in both result sets (in practice never will here, since the two
+	// searches' source/sources are disjoint -- kept anyway since it's
+	// nearly free and makes that invariant load-bearing rather than
+	// assumed).
 	//
 	// Returned already ranked nearest-first (unlike getRelevantChunks, which
 	// re-sorts back to paragraph position order -- that only makes sense
 	// within a SINGLE paper's own paragraph sequence; across different
 	// papers there's no shared position to sort by, so relevance rank is
 	// the only meaningful order here). Silently skips any hit whose paper no
-	// longer exists in the library, or whose paragraph cache is missing/
-	// unreadable -- both are exactly the kind of stale state a
+	// longer exists in the library, whose source kind isn't one
+	// _crossLibrarySourceResolvers recognizes, or whose disk cache is
+	// missing/unreadable -- all exactly the kind of stale state a
 	// supplementary cross-library chunk should just drop, not fail the
-	// whole request over -- so the returned list can be shorter than topK.
+	// whole request over -- so the returned list can be shorter than 2*topK.
 	async getCrossLibraryChunks(query, model, provider, topK, excludePaperId) {
 		let queryEmbedding = await this.getEmbedding(query, model, provider);
-		let results = await LLMEmbeddingsDB.query(model, queryEmbedding, topK, {
-			source: "paragraph",
-			excludePaperId,
-		});
+		let [paragraphResults, structuralResults] = await LLMEmbeddingsDB.queryBatch(model, [
+			{ embedding: queryEmbedding, topK, excludePaperId, source: "paragraph" },
+			{
+				embedding: queryEmbedding, topK, excludePaperId,
+				sources: ["table_caption", "table_content", "figure_caption", "equation_context"],
+			},
+		]);
+		let resultById = new Map();
+		for (let result of [...paragraphResults, ...structuralResults]) {
+			resultById.set(result.id, result);
+		}
+		let results = [...resultById.values()].sort((a, b) => a.distance - b.distance);
 
 		let chunks = [];
-		let sentencesByPaperId = new Map();
+		let recordsByKey = new Map();
 		for (let result of results) {
-			let sentences = sentencesByPaperId.get(result.paperId);
-			if (sentences === undefined) {
-				sentences = await this._loadParagraphs(result.paperId);
-				sentencesByPaperId.set(result.paperId, sentences);
+			let resolver = this._crossLibrarySourceResolvers[result.source];
+			if (!resolver) continue;
+			// Keyed by kind+paper, not just paper -- a paper's table/figure/
+			// equation/paragraph caches are four separate disk files (see
+			// each _loadX above), so a paper contributing hits of more than
+			// one kind needs one cache-file load per kind, not just one.
+			let key = `${result.source}:${result.paperId}`;
+			let records = recordsByKey.get(key);
+			if (records === undefined) {
+				records = await resolver.load(result.paperId);
+				recordsByKey.set(key, records);
 			}
-			let text = sentences?.[result.sourceId];
+			let text = resolver.getText(records, result.sourceId);
 			if (!text) continue;
 
 			let attachment = Zotero.Items.get(result.paperId);
@@ -439,7 +568,12 @@ LLMCitation = {
 			let title = paperItem.getField("title") || paperItem.libraryKey;
 			let authors = paperItem.getCreatorsJSON().map(c => this._formatCreatorName(c)).filter(Boolean).join(", ");
 
-			chunks.push({ paperId: result.paperId, title, authors, text });
+			// `source` carried through -- llm/request.js's own
+			// _buildCrossLibraryContext Logs breakdown needs it to report
+			// what KIND of excerpt each chunk actually is (paragraph vs.
+			// table/figure/equation), now that a chunk isn't always a
+			// paragraph.
+			chunks.push({ paperId: result.paperId, title, authors, text, source: result.source });
 		}
 		return chunks;
 	},

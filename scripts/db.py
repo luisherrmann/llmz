@@ -172,51 +172,39 @@ def _cmd_insert(db, data):
     return {'ids': ids}
 
 
-# Input: { embedding: [float, ...], top_k, paper_id?, exclude_paper_id?, source? }
+# Input: { embedding: [float, ...], top_k, paper_id?, exclude_paper_id?, source?, sources? }
 # Output: { results: [{ id, paper_id, source, source_id, distance }, ...] },
 #   sorted by distance ascending (cosine distance, i.e. 1 - cosine similarity
 #   -- 0 is identical, 2 is opposite), length <= top_k.
 #
-# paper_id/exclude_paper_id/source, if given, are NOT pushed into the vec0
-# MATCH query itself (they live in the separate `embeddings` table, not the
-# vec0 one) -- instead this over-fetches CANDIDATE_MULTIPLIER * top_k nearest
-# neighbors first (or top_k itself if unfiltered) and filters/trims in SQL
-# after joining back to `embeddings`. At this plugin's actual scale (one
-# person's library, not a web-scale index) that's simpler and plenty fast;
-# it CAN in principle miss a true top-k match if more than CANDIDATE_LIMIT
-# non-matching vectors rank closer to the query than every matching one
-# does, which is only a realistic risk for a query that matches a tiny
-# fraction of a very large library. `exclude_paper_id` (core/citation.js's
-# getCrossLibraryChunks, searching every OTHER paper for the currently open
-# one's own question) is exactly as selective as `paper_id` in the OPPOSITE
-# direction -- both narrow the candidate pool by one paper's worth of rows
-# -- so it's treated as "filtered" the same way, widening candidate_limit
-# the same way.
-CANDIDATE_MULTIPLIER = 20
-CANDIDATE_LIMIT_FLOOR = 200
-
-
-# One nearest-neighbor lookup -- factored out of _cmd_query so
-# _cmd_query_batch below can run several of these against the SAME open
-# connection, one per query vector, without each needing its own db.py
-# subprocess invocation. Returns a plain list (not the {'results': ...}
-# wrapper), already trimmed to top_k.
-def _query_one(db, top_k, embedding, paper_id, exclude_paper_id, source):
-    filtered = paper_id is not None or exclude_paper_id is not None or source is not None
-    candidate_limit = max(top_k * CANDIDATE_MULTIPLIER, CANDIDATE_LIMIT_FLOOR) if filtered else top_k
+# paper_id/exclude_paper_id/source, if given, restrict which rowids the vec0
+# MATCH search is even allowed to consider (via `rowid IN (subquery)` against
+# the separate `embeddings` table, which is where they actually live -- not
+# in the vec0 table itself) -- applied BEFORE the nearest-neighbor search
+# runs, not as a post-filter on an over-fetched candidate window. Used to
+# instead over-fetch CANDIDATE_MULTIPLIER * top_k unfiltered neighbors and
+# filter/trim afterward, which could silently miss a true top-k match
+# whenever more than that many non-matching vectors ranked closer to the
+# query than every matching one did -- confirmed concretely as a real,
+# not just theoretical, failure: `exclude_paper_id` is core/citation.js's
+# getCrossLibraryChunks searching every OTHER paper for the CURRENTLY OPEN
+# one's own question, so the excluded paper's own rows are usually the
+# closest possible match to the query by far, and a single paper's own rows
+# were found to exceed 1000 in a real library -- enough to fill the entire
+# old fixed-size candidate window on their own and starve out every
+# genuinely relevant OTHER paper's match. Pre-filtering has no such blind
+# spot (the search only ever ranks among rows that were already allowed),
+# and was confirmed empirically to cost ~10-15% over a plain unfiltered
+# MATCH at this table's actual size (sqlite-vec has no partition/metadata
+# index on this table to exploit either way -- both paths brute-force the
+# distance computation, so restricting the candidate rowid set up front
+# doesn't add a second full pass, unlike the old over-fetch-then-filter
+# shape did for a wide window).
+def _query_one(db, top_k, embedding, paper_id, exclude_paper_id, source, sources=None):
     query_vec = sqlite_vec.serialize_float32(embedding)
 
-    candidates = db.execute(
-        f'SELECT rowid, distance FROM {VEC_TABLE} WHERE embedding MATCH ? ORDER BY distance LIMIT ?',
-        [query_vec, candidate_limit]
-    ).fetchall()
-    if not candidates:
-        return []
-
-    distance_by_id = {row_id: distance for row_id, distance in candidates}
-    placeholders = ','.join('?' * len(distance_by_id))
-    where = [f'id IN ({placeholders})']
-    params = list(distance_by_id.keys())
+    where = []
+    params = []
     if paper_id is not None:
         where.append('paper_id = ?')
         params.append(paper_id)
@@ -226,9 +214,45 @@ def _query_one(db, top_k, embedding, paper_id, exclude_paper_id, source):
     if source is not None:
         where.append('source = ?')
         params.append(source)
+    if sources is not None:
+        # Restricts to ANY of several kinds at once (e.g. citation.js's
+        # getCrossLibraryChunks searching only table/figure/equation
+        # excerpts, not prose) -- a separate param from `source` above
+        # (exactly one kind) rather than one param accepting either a
+        # string or a list, so the input shape stays predictable on the JS
+        # side (see embeddings-db.js's own comment). Giving both `source`
+        # and `sources` together just ANDs two WHERE clauses, which is
+        # never useful (the singular one would already subsume or
+        # contradict the list) -- not validated against, since no caller
+        # does this.
+        placeholders = ','.join('?' * len(sources))
+        where.append(f'source IN ({placeholders})')
+        params.extend(sources)
+
+    if where:
+        allowed_sql = f'SELECT id FROM embeddings WHERE {" AND ".join(where)}'
+        candidates = db.execute(
+            f'SELECT rowid, distance FROM {VEC_TABLE} WHERE embedding MATCH ? AND rowid IN ({allowed_sql}) ORDER BY distance LIMIT ?',
+            [query_vec, *params, top_k]
+        ).fetchall()
+    else:
+        candidates = db.execute(
+            f'SELECT rowid, distance FROM {VEC_TABLE} WHERE embedding MATCH ? ORDER BY distance LIMIT ?',
+            [query_vec, top_k]
+        ).fetchall()
+    if not candidates:
+        return []
+
+    # Already the true top_k (in distance order) at this point -- this
+    # second query is a plain metadata lookup (paper_id/source/source_id
+    # for the matched ids), not a further filter/trim, so no `[:top_k]`
+    # slice is needed afterward the way the old over-fetch shape's
+    # subsequent SQL filter step needed one.
+    distance_by_id = {row_id: distance for row_id, distance in candidates}
+    placeholders = ','.join('?' * len(distance_by_id))
     rows = db.execute(
-        f'SELECT id, paper_id, source, source_id FROM embeddings WHERE {" AND ".join(where)}',
-        params
+        f'SELECT id, paper_id, source, source_id FROM embeddings WHERE id IN ({placeholders})',
+        list(distance_by_id.keys())
     ).fetchall()
 
     results = [
@@ -236,7 +260,7 @@ def _query_one(db, top_k, embedding, paper_id, exclude_paper_id, source):
         for row_id, p_id, s, s_id in rows
     ]
     results.sort(key=lambda r: r['distance'])
-    return results[:top_k]
+    return results
 
 
 def _cmd_query(db, data):
@@ -244,13 +268,13 @@ def _cmd_query(db, data):
         return {'results': []}  # nothing has ever been embedded into this file
     results = _query_one(
         db, data['top_k'], data['embedding'],
-        data.get('paper_id'), data.get('exclude_paper_id'), data.get('source')
+        data.get('paper_id'), data.get('exclude_paper_id'), data.get('source'), data.get('sources')
     )
     return {'results': results}
 
 
 # Input: { queries: [{ embedding, top_k, paper_id?, exclude_paper_id?,
-#   source? }, ...] }
+#   source?, sources? }, ...] }
 # Output: { results: [[{ id, paper_id, source, source_id, distance },
 #   ...], ...] } -- one results array per entry in `queries`, same order.
 #
@@ -273,7 +297,7 @@ def _cmd_query_batch(db, data):
     results = [
         _query_one(
             db, q['top_k'], q['embedding'],
-            q.get('paper_id'), q.get('exclude_paper_id'), q.get('source')
+            q.get('paper_id'), q.get('exclude_paper_id'), q.get('source'), q.get('sources')
         )
         for q in queries
     ]

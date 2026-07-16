@@ -555,6 +555,23 @@ LLMCitation = {
 		return { kind, num: record[config.numField], extraNum: record[config.extraField], label: record.label };
 	},
 
+	// Caption + cell content together for one table record, joined by a
+	// blank line -- used by BOTH _crossLibrarySourceResolvers' table_caption
+	// and table_content entries (see their own comment) so a cross-library
+	// table chunk always shows the full table, not just whichever half its
+	// matching embedding happened to be computed from. Either half can be
+	// legitimately absent (a table with no caption still embeds/matches on
+	// content alone, and vice versa) -- filtered out rather than left as an
+	// empty line. Returns null only if the table_id itself isn't found.
+	_tableCombinedText(records, sourceId) {
+		let t = records?.find(r => r.table_id === sourceId);
+		if (!t) return null;
+		let parts = [];
+		if (t.caption) parts.push(`${t.label}: ${t.caption}`);
+		if (t.contentText) parts.push(t.contentText);
+		return parts.join("\n\n") || null;
+	},
+
 	// Resolves a cross-library element link's highlight region at CLICK
 	// time, not render time -- unlike a SAME-paper link (resolved up front
 	// via buildLinkIndex, from the index already in memory for the PDF
@@ -622,20 +639,32 @@ LLMCitation = {
 	// document/figures.js's `${fig.label}: ${fig.caption}` or
 	// document/equations.js's preceding/text/following join), so a
 	// retrieved chunk always reads consistently with whatever made it
-	// match in the first place.
+	// match in the first place -- EXCEPT table_caption/table_content below,
+	// which both deliberately return caption+content together regardless of
+	// which one matched (see their own comment).
 	_crossLibrarySourceResolvers: {
 		paragraph: {
 			load: paperId => LLMCitation._loadParagraphs(paperId),
 			getText: (records, sourceId) => records?.[sourceId] || null,
 		},
+		// table_caption and table_content are separate DB `source` rows (see
+		// document/tables.js's own _addTextEmbeddings) so a query can match
+		// EITHER a table's caption wording or its cell content wording, but
+		// they resolve back to the SAME table record (both keyed by
+		// table_id/sourceId) -- so regardless of which one a query actually
+		// matched, getText below returns caption AND content together
+		// (_tableCombinedText), rather than just whichever half happened to
+		// score highest. getCrossLibraryChunks' own seenTables dedup below
+		// then collapses a table that matched on BOTH into one chunk, not
+		// two near-duplicate ones.
 		table_caption: {
 			load: paperId => LLMCitation._loadTables(paperId),
-			getText: (records, sourceId) => records?.find(t => t.table_id === sourceId)?.caption || null,
+			getText: (records, sourceId) => LLMCitation._tableCombinedText(records, sourceId),
 			getMeta: (records, sourceId) => LLMCitation._elementCrossLibraryMeta("table", records, sourceId),
 		},
 		table_content: {
 			load: paperId => LLMCitation._loadTables(paperId),
-			getText: (records, sourceId) => records?.find(t => t.table_id === sourceId)?.contentText || null,
+			getText: (records, sourceId) => LLMCitation._tableCombinedText(records, sourceId),
 			getMeta: (records, sourceId) => LLMCitation._elementCrossLibraryMeta("table", records, sourceId),
 		},
 		figure_caption: {
@@ -755,9 +784,23 @@ LLMCitation = {
 
 		let chunks = [];
 		let recordsByKey = new Map();
+		// table_caption and table_content are two separate DB rows for the
+		// SAME table (see _crossLibrarySourceResolvers' own comment on
+		// _tableCombinedText) -- a table whose caption AND content both
+		// score within topK would otherwise produce two chunks with
+		// identical (combined) text. Keyed by paperId+table_id (sourceId is
+		// the shared table_id for both source rows), so the second hit for
+		// an already-emitted table is dropped, keeping only its
+		// nearer-ranked (results is already distance-sorted) occurrence.
+		let seenTables = new Set();
 		for (let result of results) {
 			let resolver = this._crossLibrarySourceResolvers[result.source];
 			if (!resolver) continue;
+			if (result.source === "table_caption" || result.source === "table_content") {
+				let tableKey = `${result.paperId}:${result.sourceId}`;
+				if (seenTables.has(tableKey)) continue;
+				seenTables.add(tableKey);
+			}
 			// Keyed by kind+paper, not just paper -- a paper's table/figure/
 			// equation/paragraph caches are four separate disk files (see
 			// each _loadX above), so a paper contributing hits of more than

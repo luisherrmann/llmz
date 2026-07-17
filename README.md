@@ -49,12 +49,12 @@ Click any text / table / figure / equation / reference / page-number link in a r
 
 - Zotero 9.
 - A running LLM backend [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) locally, a [LiteLLM](https://www.litellm.ai) proxy, or an OpenAI/Anthropic API key.
-- Node.js, for the bundled document-structure pipeline (`sdt/document-worker/`) used to extract equations, references, and notes. Its own runtime dependencies are installed locally (once) via npm:
+- Node.js, for the document-structure pipeline (`sdt/document-worker/`) used to extract equations, references, and notes. `npm install` both installs its own runtime dependencies and fetches Zotero's `document-worker`, `pdf.js`, and `structured-document-text` sources at pinned commits directly from their own repos (not bundled in this repo -- see [Licensing](#license) below and [PINNED-SOURCES.md](sdt/document-worker/PINNED-SOURCES.md)):
   ```bash
   cd sdt/document-worker
   npm install
   ```
-  `npm install` resolves the correct native binary for your platform automatically (macOS/Windows/Linux, x64/arm64) -- no manual steps needed beyond running it.
+  `npm install` resolves the correct native binary for your platform automatically (macOS/Windows/Linux, x64/arm64) -- no manual steps needed beyond running it and having `git` and network access available.
 - A Python 3 virtual environment at `$ZOTERO_HOME/LLMz/venv`, used to extract and crop figures using `pymupdf`, and to communiate with the `sqlite-vec` embeddings database, with dependencies specified in [`requirements.txt`](requirements.txt):
   ```bash
   python3 -m venv ~/Zotero/LLMz/venv
@@ -129,8 +129,19 @@ llmz/
 
 Feel free to get in touch if you want to contribute to this project, or to open a PR if there is something you would like to see included.
 
+- Email: luismherrmann@gmail.com
+- LinkedIn: https://www.linkedin.com/in/luis-herrmann-32468814a/
+
+
 ## License
 
 [MIT](LICENSE) © 2026 Luis Herrmann
 
-Note: `pymupdf`, a runtime dependency used for rendering and figure extraction (see [Requirements](#requirements)), is dual-licensed AGPL-3.0 / commercial by Artifex and is not bundled with LLMz -- it's installed separately into your own virtual environment. This doesn't affect LLMz's own MIT license, but it's worth being aware of if you plan to redistribute a packaged install or use LLMz commercially.
+LLMz depends on a few pieces of code it does not own the license to, none of which are bundled in this repo -- each is installed or fetched separately at install time, directly from its own source, so it doesn't affect LLMz's own MIT license:
+
+- `pymupdf`, used for rendering and figure extraction (see [Requirements](#requirements)), is dual-licensed AGPL-3.0 / commercial by Artifex. It's installed into your own Python virtual environment, not bundled with LLMz.
+- `document-worker` and `pdf.js` (Zotero's fork), used by the document-structure pipeline, are licensed AGPL-3.0 and Apache-2.0 respectively. `npm install` fetches them directly from [zotero/document-worker](https://github.com/zotero/document-worker) and [zotero/pdf.js](https://github.com/zotero/pdf.js) at pinned commits rather than committing their source here -- see [PINNED-SOURCES.md](sdt/document-worker/PINNED-SOURCES.md).
+- `structured-document-text`, also fetched by `npm install` from [zotero/structured-document-text](https://github.com/zotero/structured-document-text), publishes no LICENSE file upstream as of the pinned commit. It's fetched on the assumption that it's licensed the same as its sibling Zotero repositories (AGPL-3.0), pending confirmation -- see `structured-document-text/NOTICE.md`, written into `sdt/document-worker/` by `fetch-sources.js` once fetched (not committed here, same as the fetched source itself).
+- `marked`, `highlight.js`, and `KaTeX`, bundled directly as minified builds in [`vendor/`](vendor/README.md) -- all permissively licensed (MIT / BSD-3-Clause), compatible with LLMz's own MIT license. See [vendor/README.md](vendor/README.md) for versions and per-file details.
+
+None of this is legal advice -- if you're redistributing a packaged install or using LLMz commercially, check the terms of these dependencies yourself.

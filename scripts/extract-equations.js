@@ -1,7 +1,7 @@
 // Extracts equations from a PDF using Zotero's own document-worker structure
-// pipeline (ML-based PDF layout classification, vendored under
-// ../sdt/document-worker/) -- same pipeline extract-references.js uses. The
-// classifier tags each equation block directly (`type: 'equation'`), and
+// pipeline (ML-based PDF layout classification, fetched at install time
+// under ../sdt/document-worker/) -- same pipeline extract-references.js
+// uses. The classifier tags each equation block directly (`type: 'equation'`), and
 // structure/math.js's getMathBlocks() identifies which ones the paper itself
 // numbers via a trailing right-aligned "(N)" label (e.g. "(3)"), the same way
 // papers themselves cross-reference equations in prose ("as given by (3)").

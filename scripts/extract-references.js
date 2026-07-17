@@ -1,6 +1,6 @@
 // Extracts the paper's own References/Bibliography list using Zotero's
 // document-worker structure pipeline (ML-based PDF layout classification),
-// vendored under ../sdt/document-worker/. This replaces regex/line-based
+// fetched at install time under ../sdt/document-worker/. This replaces regex/line-based
 // reference-list parsing: the classifier tags each bibliography entry
 // directly (`reference: true` on a list item), which is far more reliable
 // than pattern-matching flat extracted text (handles lowercase-starting

@@ -1,5 +1,5 @@
 // Extracts tables using ONLY Zotero's document-worker structure pipeline
-// (ML-based PDF layout classification, vendored under ../sdt/document-worker/)
+// (ML-based PDF layout classification, fetched at install time under ../sdt/document-worker/)
 // -- no PyMuPDF/Python involved. Replaced the old caption-anchored approach
 // (extract_tables.py, since removed), which structurally could not find
 // tables with no caption at all (e.g. an "Appendix B. <title>" heading

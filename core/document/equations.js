@@ -1,9 +1,10 @@
 // Retrieves the paper's own equations and formulas, the same way
 // LLMReferences retrieves its bibliography -- via Zotero's document-worker
-// structure pipeline (ML-based PDF layout classification, vendored under
-// sdt/document-worker/). The classifier tags each equation block directly
-// (`type: 'equation'`); a trailing right-aligned "(N)" label identifies which
-// ones the paper itself numbers and cross-references in its own prose (e.g.
+// structure pipeline (ML-based PDF layout classification, fetched at
+// install time under sdt/document-worker/). The classifier tags each
+// equation block directly (`type: 'equation'`); a trailing right-aligned
+// "(N)" label identifies which ones the paper itself numbers and
+// cross-references in its own prose (e.g.
 // "as given by (3)") -- those get equation_num N. Blocks without one are
 // still extracted, as a separately-numbered "Formula N" series (formula_num)
 // -- see scripts/extract-equations.js for the exact extraction logic.

@@ -1,5 +1,5 @@
 // Extracts figures using Zotero's document-worker structure pipeline
-// (ML-based PDF layout classification, vendored under ../sdt/document-worker/)
+// (ML-based PDF layout classification, fetched at install time under ../sdt/document-worker/)
 // for DETECTION -- CAPTION-finding is SDT-only, no PyMuPDF/Python involved
 // (see scripts/render_crops.py for the separate, still-PyMuPDF-based
 // image-rendering step this plugin calls right after this script -- see

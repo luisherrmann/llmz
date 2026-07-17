@@ -1,7 +1,7 @@
 // Retrieves the paper's own References/Bibliography list.
 //
 // Uses Zotero's own document-worker structure pipeline (ML-based PDF layout
-// classification, vendored under sdt/document-worker/) rather than
+// classification, fetched at install time under sdt/document-worker/) rather than
 // regex/line-based text parsing: the classifier tags each bibliography
 // entry directly (a list item gets `reference: true`), which reliably
 // handles cases that broke a hand-rolled parser -- lowercase-starting
@@ -9,7 +9,7 @@
 // "References" headings from table columns -- with no special-casing needed.
 // Runs as a Node subprocess (see scripts/extract-references.js); Zotero
 // itself only ships this pipeline as a compiled worker bundle, not something
-// callable directly from plugin code, so we vendor+run the source ourselves.
+// callable directly from plugin code, so we fetch and run the source ourselves.
 LLMReferences = {
 	_scriptName: "extract-references.js",
 	// Other node/document-worker-based scripts that share this same deployed

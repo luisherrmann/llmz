@@ -3,3 +3,12 @@ node_modules/
 *.xpi
 __pycache__/
 build/
+
+# Fetched at install time by sdt/document-worker/fetch-sources.js -- not
+# committed, see sdt/document-worker/PINNED-SOURCES.md.
+sdt/document-worker/src/
+sdt/document-worker/scripts/
+sdt/document-worker/COPYING
+sdt/document-worker/pdf.js/
+sdt/document-worker/structured-document-text/
+sdt/document-worker/.source-pins.json

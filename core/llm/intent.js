@@ -79,8 +79,7 @@ LLMIntent = {
 	// Table 3 as CSV?") can still resolve to the right tool call, or
 	// correctly resolve to none at all on a decline -- without this, such a
 	// reply carries no table/reference identity of its own for ANY
-	// registered tool to match against, confirmed concretely for the
-	// tables tool (tools/table-export.js).
+	// registered tool to match against.
 	// Returns { tool: "download"|"link"|"tables", intent: <six-shape intent
 	// object -- see llm/request.js's _resolveIntentIndices for how it's
 	// consumed, against whichever index (reference or table) the matched

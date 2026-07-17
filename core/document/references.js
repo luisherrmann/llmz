@@ -272,11 +272,10 @@ LLMReferences = {
 	// number, e.g. "[17]") when the paper actually has one, but that's null
 	// for a paper whose bibliography is author-year/alphabetical with no
 	// printed numbers at all (common e.g. in ML papers using natbib-style
-	// citations -- confirmed concretely, not a hypothetical: a real paper's
-	// extraction came back with EVERY entry's `index` null). `reference_id`
-	// (this module's own 1..N extraction-order position, always present) is
-	// the only stand-in a user could mean by "reference 17" for that paper
-	// -- the same number they'd get counting down the PDF's own list by eye,
+	// citations). `reference_id` (this module's own 1..N extraction-order
+	// position, always present) is the only stand-in a user could mean by
+	// "reference 17" for that paper -- the same number they'd get counting
+	// down the PDF's own list by eye,
 	// since there's no printed number to read off instead. For an actually-
 	// numbered paper this always resolves to the real printed number
 	// (`index` is non-null), so this is a strict superset of the old

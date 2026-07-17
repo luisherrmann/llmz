@@ -399,12 +399,11 @@ LLMFigures = {
 	},
 
 	// Embeds each figure's "label: caption" as text (nomic-embed-text), so a
-	// query can be matched against it via plain text-to-text similarity. Tested
-	// empirically against the image embeddings (nomic-embed-vision, joint latent
-	// space with nomic-embed-text): text-to-text scored far higher and more
-	// discriminatively (0.5-0.87 vs. 0.04-0.08) and, unlike image similarity,
-	// correctly handles explicit "figure N" references, since the caption text
-	// itself starts with "Figure N:".
+	// query can be matched against it via plain text-to-text similarity --
+	// scores far higher and more discriminatively than image embeddings
+	// (nomic-embed-vision) and, unlike image similarity, correctly handles
+	// explicit "figure N" references, since the caption text itself starts
+	// with "Figure N:".
 	// `progress`, if given, has its setProgress(current, total) called as
 	// batches complete -- same in-place progress reporting citation.js's
 	// getTextIndex does for its own embedding loop (see llm/request.js's

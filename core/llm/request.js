@@ -85,16 +85,12 @@ LLMRequest = {
 	// model's last message, and enough around it to be sure", not the main
 	// reply's own recency/relevance budget. Exactly 2 (the single most
 	// recent exchange: the model's own last message plus the user turn that
-	// led to it), not more -- confirmed concretely, for cross-library
-	// specifically, that a wider window (4) reaches back far enough to also
-	// catch an OLDER exchange, which then dominates both the gating
-	// decision and (via LLMPrompt._buildCrossLibraryQuery) the retrieval
-	// embedding: a chained "please do that" -> [long answer, ends with a
-	// NEW offer] -> "okay, sure" ended up re-answering the OLDER offer
-	// instead of the one the model had just actually made, because the
-	// older exchange's own text was still in the window and pulled
-	// retrieval back toward it. Two keeps every one of these calls anchored
-	// to only the offer immediately being affirmed/referenced -- applied
+	// led to it), not more -- a wider window risks reaching back far enough
+	// to also catch an OLDER exchange, which can then dominate both the
+	// gating decision and the retrieval embedding, causing a short reply
+	// like "okay, sure" to resolve against a stale earlier offer instead of
+	// the one just made. Two keeps every one of these calls anchored to
+	// only the offer immediately being affirmed/referenced -- applied
 	// uniformly rather than per-call-site since they all share the exact
 	// same failure mode, just against a different downstream selection.
 	_RECENT_HISTORY_TURNS: 2,

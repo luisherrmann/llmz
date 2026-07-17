@@ -415,7 +415,7 @@ LLMUIAdvanced = {
 		// represents every paper in "My Library". Two grow inward from the
 		// LEFT: green (fully indexed, indexed/total, anchored at 0%) then
 		// cyan immediately to ITS right (partially indexed -- some, but not
-		// all, of the five extraction caches -- citation/equations/figures/
+		// all, of the six caches -- text/structure/equations/figures/
 		// references/tables, see getIndexStatus below -- are present; left
 		// = the green bar's own width, not a fixed anchor). Two grow inward
 		// from the RIGHT: gray (no PDF attachment at all, anchored at 100%)
@@ -477,8 +477,12 @@ LLMUIAdvanced = {
 		// Refresh re-runs the scan below on demand (e.g. after indexing/
 		// clearing elsewhere). Index All indexes every paper that isn't
 		// FULLY indexed yet -- partial or none, see getIndexStatus below
-		// (runIndexAll below). Clear All drops all five extraction caches
-		// for EVERY paper in the library, not just the active one
+		// (runIndexAll below; note that since citation-position is never
+		// populated by indexing itself, this means every paper gets
+		// re-processed on every run, though cheaply for ones already fully
+		// built elsewhere -- see getIndexStatus's own comment). Clear All
+		// drops all eight cache directories (including embeddings) for
+		// EVERY paper in the library, not just the active one
 		// (runClearAll below) -- the destructive counterpart to Index All,
 		// hence the red text (same convention as the existing per-PDF Clear
 		// Cache button).
@@ -567,19 +571,30 @@ LLMUIAdvanced = {
 			return { total: papers.length, pdfItems, noPDFCount, brokenCount };
 		};
 
-		// "Fully indexed" = every one of the five extraction caches this
-		// paper's PDF can have is present (text embeddings, equations,
-		// figures, references, tables -- the same five LLMUIIndexAll's own
-		// _indexItem builds, and the same five listed as checkboxes further
-		// down under Clear Cache). "Partial" = some but not all -- a very
-		// real state in practice (e.g. an embedding-provider quota error
-		// leaves text missing while tables/figures/etc. still built
-		// fine, or vice versa; see the ENOENT/429 cases already observed).
-		// "None" = zero. Each module's own hasCache(item) is a cheap disk
-		// existence check, no content read.
+		// "Fully indexed" = every one of the six caches this paper's PDF
+		// can have is present (text, structure, equations, figures,
+		// references, tables -- six of the seven checkboxes listed further
+		// down under Active Title Cache, everything except Citations and
+		// Embeddings). "Partial" = some but not all -- a very real state
+		// in practice (e.g. an embedding-provider quota error leaves text
+		// missing while tables/figures/etc. still built fine, or vice
+		// versa; see the ENOENT/429 cases already observed). "None" =
+		// zero. Each module's own hasCache(item) is a cheap disk existence
+		// check, no content read. Citation-position is deliberately
+		// excluded here -- unlike the other six, it's NEVER populated by
+		// Index/Index All itself (LLMUIIndexAll's own _indexItem never
+		// touches LLMCitationPosition at all), only by actually clicking/
+		// resolving a citation link during chat, so requiring it would mean
+		// no paper could ever reach "full" from indexing alone. Single-item
+		// -- used by runIndexAll's own worker loop to re-check just the ONE
+		// paper it just finished extracting (see its own comment on why
+		// result.ok alone isn't trusted there); a per-item check is the
+		// right amount of work for that case, unlike scanning the WHOLE
+		// library (see getIndexStatusBulk below, used for that instead).
 		let getIndexStatus = async (item) => {
 			let present = await Promise.all([
 				LLMCitation.hasCache(item),
+				LLMCitationPosition.hasCache(item),
 				LLMEquations.hasCache(item),
 				LLMFigures.hasCache(item),
 				LLMReferences.hasCache(item),
@@ -589,6 +604,87 @@ LLMUIAdvanced = {
 			if (count === present.length) return "full";
 			if (count === 0) return "none";
 			return "partial";
+		};
+
+		// Reads one cache dir's own file list and returns the set of item
+		// ids (as numbers) it holds -- "${item.id}.json" is the naming
+		// convention every _cacheDir()-based module uses (see hasCache's
+		// own PathUtils.join(dir, `${item.id}.json`) above). A missing/
+		// unreadable dir resolves to an empty set, same tolerance a single
+		// IOUtils.exists() check already had for "nothing cached yet".
+		let listCachedIds = async (cacheDir) => {
+			let ids = new Set();
+			let entries;
+			try {
+				entries = await IOUtils.getChildren(cacheDir);
+			}
+			catch (e) {
+				return ids;
+			}
+			for (let path of entries) {
+				let filename = PathUtils.filename(path);
+				if (!filename.endsWith(".json")) continue;
+				let id = parseInt(filename.slice(0, -".json".length), 10);
+				if (!Number.isNaN(id)) ids.add(id);
+			}
+			return ids;
+		};
+		let intersectSets = (sets) => {
+			let [first, ...rest] = sets;
+			let result = new Set();
+			for (let id of first) {
+				if (rest.every(s => s.has(id))) result.add(id);
+			}
+			return result;
+		};
+		let unionSets = (sets) => {
+			let result = new Set();
+			for (let s of sets) for (let id of s) result.add(id);
+			return result;
+		};
+		let differenceSets = (a, b) => {
+			let result = new Set();
+			for (let id of a) if (!b.has(id)) result.add(id);
+			return result;
+		};
+
+		// Library-wide replacement for calling getIndexStatus(item) once
+		// per pdfItem, i.e. 6*N individual IOUtils.exists() disk checks for
+		// an N-paper library -- lists each of the six cache dirs exactly
+		// ONCE (6 IOUtils.getChildren() calls total, regardless of library
+		// size) instead, then classifies every paper via in-memory Set
+		// membership: fully indexed = intersection of all six id sets,
+		// partially indexed = (union of all six) minus that intersection,
+		// unindexed = pdfItems minus the union. Both fully/partially are
+		// additionally intersected with pdfItems' own id set -- a cache dir
+		// can hold stale .json files for items getLibraryPapers has already
+		// excluded (deleted from the library since, or whose PDF went
+		// missing/broken since it was indexed); counting those would
+		// inflate the counts past `total` and send applyStats' own
+		// percentage math negative. Returns a Map (item.id -> "full"/
+		// "partial"/"none"), the same per-item classification getIndexStatus
+		// returns (including its own deliberate omission of citation-
+		// position, see that function's own comment), so scanLibrary/
+		// runIndexAll's own downstream consumers don't need to change.
+		let getIndexStatusBulk = async (pdfItems) => {
+			let cacheDirs = await Promise.all([
+				LLMCitation._cacheDir(),
+				LLMCitationPosition._structureCacheDir(),
+				LLMEquations._cacheDir(), LLMFigures._cacheDir(),
+				LLMReferences._cacheDir(), LLMTables._cacheDir(),
+			]);
+			let cacheSets = await Promise.all(cacheDirs.map(listCachedIds));
+			let pdfIdSet = new Set(pdfItems.map(item => item.id));
+			let fullSet = intersectSets(cacheSets);
+			let anySet = unionSets(cacheSets);
+			let fullyIndexedSet = intersectSets([fullSet, pdfIdSet]);
+			let partiallyIndexedSet = intersectSets([differenceSets(anySet, fullSet), pdfIdSet]);
+			let unindexedSet = differenceSets(pdfIdSet, anySet);
+			let statuses = new Map();
+			for (let id of fullyIndexedSet) statuses.set(id, "full");
+			for (let id of partiallyIndexedSet) statuses.set(id, "partial");
+			for (let id of unindexedSet) statuses.set(id, "none");
+			return statuses;
 		};
 
 		// Updates the bar/text from already-known counts -- split out of
@@ -656,7 +752,8 @@ LLMUIAdvanced = {
 		let scanLibrary = async () => {
 			statusText.textContent = "Scanning My Library…";
 			let { total, pdfItems, noPDFCount, brokenCount } = await getLibraryPapers();
-			let statuses = await Promise.all(pdfItems.map(item => getIndexStatus(item)));
+			let statusMap = await getIndexStatusBulk(pdfItems);
+			let statuses = pdfItems.map(item => statusMap.get(item.id));
 			let fullyIndexed = statuses.filter(s => s === "full").length;
 			let partiallyIndexed = statuses.filter(s => s === "partial").length;
 			applyStats(total, noPDFCount, brokenCount, fullyIndexed, partiallyIndexed);
@@ -871,12 +968,16 @@ LLMUIAdvanced = {
 			}
 		});
 
-		// Drops all five extraction caches (text sentence+paragraph,
-		// equations, figures, references, tables -- the same five
-		// getIndexStatus checks) for EVERY paper with a PDF in the library
-		// -- the exact counterpart to Index All/the bar's own definition of
-		// "fully indexed", so this always resets the bar to 0%. Irreversible,
-		// hence the confirm prompt.
+		// Drops all eight cache directories (text, structure,
+		// citation-position, equations, figures, references, tables,
+		// embeddings -- the six getIndexStatus checks, plus
+		// citation-position and embeddings, neither of which count toward
+		// "fully indexed" but should still be wiped by a full reset) for
+		// EVERY paper in the library at once, via whole-directory wipes
+		// rather than per-paper/per-kind clearing (see its own comment) --
+		// the exact counterpart to Index All/the bar's own definition of
+		// "fully indexed", so this always resets the bar to 0%.
+		// Irreversible, hence the confirm prompt.
 		let runClearAll = async () => {
 			let confirmed = Services.prompt.confirm(
 				doc.defaultView,
@@ -887,14 +988,51 @@ LLMUIAdvanced = {
 			setActionsDisabled(true);
 			try {
 				let { pdfItems } = await getLibraryPapers();
-				await Promise.all(pdfItems.map(async (item) => {
-					await LLMCitation.clearCache(item);
-					await LLMCitationPosition.clearCache(item);
-					await LLMEquations.clearCache(item);
-					await LLMFigures.clearCache(item);
-					await LLMReferences.clearCache(item);
-					await LLMTables.clearCache(item);
+				// Wipes every on-disk cache directory wholesale (recursive
+				// unlink + recreate empty) instead of iterating per paper
+				// per cache type -- "clear everything" doesn't need
+				// per-item granularity, so this replaces what used to be
+				// thousands of individual IOUtils.remove calls (and, for
+				// embeddings specifically, TWO Python subprocess spawns per
+				// paper -- see this session's own bottleneck diagnosis,
+				// each one paying full interpreter startup + venv
+				// resolution + sqlite-vec extension load, then serializing
+				// against every other paper's own spawn on the SAME
+				// per-model .sqlite file's write lock) with 8
+				// directory-level operations total, regardless of library
+				// size. The embeddings dir (LLMEmbeddingsDB._dbDir(),
+				// holding every per-model .sqlite file) is wiped the exact
+				// same way -- db.py's own _get_or_create_table already
+				// creates a fresh table lazily on the next real write, so
+				// there's nothing to eagerly recreate, let alone a
+				// subprocess call needed to do it here.
+				let dirs = await Promise.all([
+					LLMCitation._cacheDir(),
+					LLMCitationPosition._structureCacheDir(),
+					LLMCitationPosition._positionCacheDir(),
+					LLMEquations._cacheDir(),
+					LLMFigures._cacheDir(),
+					LLMReferences._cacheDir(),
+					LLMTables._cacheDir(),
+					LLMEmbeddingsDB._dbDir(),
+				]);
+				await Promise.all(dirs.map(async (dir) => {
+					await IOUtils.remove(dir, { recursive: true, ignoreAbsent: true });
+					await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
 				}));
+				// Every module's own in-memory Map also needs clearing --
+				// deleting the disk files alone would leave an
+				// already-loaded item's data silently served from memory
+				// (stale, no longer backed by anything on disk) for the
+				// rest of this Zotero session.
+				LLMCitation._indexCache.clear();
+				LLMCitationPosition._positionCache.clear();
+				LLMCitationPosition._structureCache.clear();
+				LLMCitationPosition._textIndexCache.clear();
+				LLMEquations._indexCache.clear();
+				LLMFigures._indexCache.clear();
+				LLMReferences._indexCache.clear();
+				LLMTables._indexCache.clear();
 				onMessage?.(`Clear All: cleared the index for ${pdfItems.length} paper${pdfItems.length === 1 ? "" : "s"}.`);
 			}
 			catch (e) {
@@ -919,18 +1057,50 @@ LLMUIAdvanced = {
 
 		let cacheTypes = [
 			{
-				// Covers LLMz/cache/text/ -- sentence AND paragraph chunks/
-				// embeddings together (see citation.js's getTextIndex), plus
-				// the citation-position cache (query -> resolved page
-				// position), which depends on this same text cache for its
-				// own embedding-based fallback match (see
-				// document/citations.js's resolvePositions).
+				// LLMz/cache/text/ -- the sentence/paragraph text itself
+				// (see citation.js's getTextIndex/clearTextCache). Separate
+				// from "Embeddings" below -- clearing just the disk JSON
+				// forces a re-derive from the SDT structure, but since
+				// that's byte-for-byte deterministic, the existing
+				// embeddings usually still match and don't need
+				// recomputing.
 				label: "Text",
 				hasCache: item => LLMCitation.hasCache(item),
-				clear: async (item) => {
-					await LLMCitation.clearCache(item);
-					await LLMCitationPosition.clearCache(item);
-				},
+				clear: item => LLMCitation.clearTextCache(item),
+			},
+			{
+				// This item's sentence/paragraph embeddings in the
+				// embeddings DB, under the currently selected model (see
+				// citation.js's hasEmbeddingsCache/clearEmbeddingsCache).
+				// Separate from "Text" above so re-embedding (e.g. after
+				// switching providers, or suspecting a corrupted vector)
+				// doesn't require redoing SDT-derived sentence splitting.
+				label: "Embeddings",
+				hasCache: item => LLMCitation.hasEmbeddingsCache(item),
+				clear: item => LLMCitation.clearEmbeddingsCache(item),
+			},
+			{
+				// LLMz/cache/structure/ -- the SDT structure blob,
+				// structure.json (see document/citations.js's
+				// hasCache/clearStructureCache). Shared with references/
+				// equations/tables/figures extraction, not citation-
+				// specific -- clearing it can trigger a real SDT
+				// recomputation the NEXT time any of those four also need
+				// to rebuild their own cache, not immediately.
+				label: "Structure",
+				hasCache: item => LLMCitationPosition.hasCache(item),
+				clear: item => LLMCitationPosition.clearStructureCache(item),
+			},
+			{
+				// LLMz/cache/citation-position/ -- the resolved query ->
+				// {pageIndex, rects} cache for every citation link already
+				// clicked/matched (see document/citations.js's
+				// hasPositionCache/clearPositionCache). Forces every
+				// citation link to be freshly re-matched against the
+				// (untouched) structure/text index next time it's clicked.
+				label: "Citations",
+				hasCache: item => LLMCitationPosition.hasPositionCache(item),
+				clear: item => LLMCitationPosition.clearPositionCache(item),
 			},
 			{ label: "Equations", hasCache: item => LLMEquations.hasCache(item), clear: item => LLMEquations.clearCache(item) },
 			{ label: "Figures", hasCache: item => LLMFigures.hasCache(item), clear: item => LLMFigures.clearCache(item) },
@@ -1027,6 +1197,17 @@ LLMUIAdvanced = {
 			finally {
 				indexButton.disabled = false;
 				await refreshCacheCheckboxes();
+				// Keeps the Library Index Status bar in sync with this one
+				// paper's own newly-built caches, without waiting for the
+				// user to click that bar's own Refresh -- skipped while an
+				// Index All run is active (same guard as this pane's own
+				// initial scan below) since that run already keeps the bar
+				// live via its own per-item applyStats updates, and a second
+				// concurrent scanLibrary() here would just be redundant work
+				// racing it.
+				if (!this._activeIndexAllRun) {
+					await refreshLibraryIndexStatus();
+				}
 			}
 		});
 		activeTitleActions.appendChild(indexButton);
@@ -1034,7 +1215,7 @@ LLMUIAdvanced = {
 		let clearCacheButton = doc.createElement("button");
 		clearCacheButton.className = "llm-clear-cache";
 		clearCacheButton.title = "Clear the checked caches, for this PDF only";
-		clearCacheButton.append(LLMUIIcon.create(doc, clearCacheIconURL), doc.createTextNode("Clear Cache"));
+		clearCacheButton.append(LLMUIIcon.create(doc, clearCacheIconURL), doc.createTextNode("Clear"));
 		clearCacheButton.addEventListener("click", async () => {
 			let item = getActiveItem?.();
 			if (!item) {
@@ -1058,6 +1239,10 @@ LLMUIAdvanced = {
 			LLMPrompt.noteCacheCleared(item, selected.map(c => c.label));
 			onMessage?.(`Cleared ${selected.map(c => c.label).join(", ")} cache for the active PDF. The next prompt will re-run extraction from scratch.`);
 			await refreshCacheCheckboxes();
+			// See indexButton's own comment on this same guard/call.
+			if (!this._activeIndexAllRun) {
+				await refreshLibraryIndexStatus();
+			}
 		});
 		activeTitleActions.appendChild(clearCacheButton);
 		cacheBody.appendChild(activeTitleActions);

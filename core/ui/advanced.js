@@ -532,10 +532,7 @@ LLMUIAdvanced = {
 		// neither of which is "a paper". A paper's own PDF is resolved via
 		// getBestAttachment()/isPDFAttachment(), same combination used
 		// elsewhere in this plugin (see tools/reference-retrieval.js,
-		// chat-pane.js's getActiveReaderAttachment, ui/index-all.js's own
-		// _getPDFItems -- those scan attachments more broadly, since
-		// "index every PDF" and "what fraction of my papers are indexed"
-		// are different questions). Scoped to "My Library" only
+		// chat-pane.js's getActiveReaderAttachment). Scoped to "My Library" only
 		// (Zotero.Libraries.userLibraryID), not group libraries.
 		// A paper with a recorded PDF attachment whose file is actually
 		// MISSING on disk (observed via ENOENT failures from
@@ -782,25 +779,21 @@ LLMUIAdvanced = {
 		// (re)compute whatever's actually missing, each stage reading its
 		// own cache first, so re-running it on an already-partial paper
 		// just fills the gaps rather than redoing completed work). Runs via
-		// LLMUIIndexAll._indexItem -- the SAME per-paper extraction logic
-		// (tables/figures/references/equations/citation embeddings)
-		// LLMUIIndexAll.run's own whole-overlay flow uses, just scoped to
-		// not-fully-indexed papers and reporting progress through this
-		// panel's own bar instead of a separate overlay. Same worker-pool
-		// concurrency pattern/level as LLMUIIndexAll.run (see its own
-		// comment) -- several papers' extraction pipelines running at once
-		// lets their network-bound embedding calls overlap instead of
-		// sitting fully idle between one paper's own sequential steps.
-		// Progress reflects the most recently COMPLETED paper, not "about
-		// to start" -- with several in flight at once, there's no single
-		// well-defined "current" paper to show before the fact (same
-		// reasoning as LLMUIIndexAll.run's own progress updates).
+		// LLMUIIndexAll._indexItem -- the same per-paper extraction logic
+		// (tables/figures/references/equations/citation embeddings),
+		// reporting progress through this panel's own bar. Worker-pool
+		// concurrency, level from LLMUIIndexAll.CONCURRENCY_LEVEL --
+		// several papers' extraction pipelines running at once lets their
+		// network-bound embedding calls overlap instead of sitting fully
+		// idle between one paper's own sequential steps. Progress reflects
+		// the most recently COMPLETED paper, not "about to start" -- with
+		// several in flight at once, there's no single well-defined
+		// "current" paper to show before the fact.
 		//
 		// indexAllButton doubles as Abort while this runs (see
 		// setIndexAllButtonState) -- clicking it sets the shared run's
 		// `cancelled` flag, which stops each worker from picking up a NEW
-		// item, but (same as LLMUIIndexAll.run's own Cancel -- see its
-		// comment) doesn't force-abort whichever items are already
+		// item, but doesn't force-abort whichever items are already
 		// mid-extraction; there's no cheap way to do that (would need
 		// AbortController plumbing through every network call/subprocess
 		// spawn _indexItem makes). Those still finish and populate their

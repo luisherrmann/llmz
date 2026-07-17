@@ -409,46 +409,4 @@ LLMTables = {
 		return IOUtils.exists(PathUtils.join(dir, `${item.id}.json`));
 	},
 
-	// --- Retrieval strategies (image embedding, text-embedding max, LLM selection
-	// lives in LLMChatPane since it needs to call the active model) ---
-
-	async getBestMatchingTableByImage(tableIndex, query) {
-		let tables = tableIndex?.tables;
-		if (!tables?.length) return null;
-		let embedModel = await LLMCitation.getEmbeddingModel();
-		let queryEmbedding = await LLMCitation.getEmbedding(query, embedModel);
-		let best = null;
-		let bestScore = -Infinity;
-		for (let tab of tables) {
-			if (!tab.embedding) continue;
-			let score = LLMCitation.cosineSimilarity(queryEmbedding, tab.embedding);
-			if (score > bestScore) {
-				bestScore = score;
-				best = tab;
-			}
-		}
-		if (best) this.log(`getBestMatchingTableByImage: ${best.label} (score=${bestScore.toFixed(4)})`);
-		return best;
-	},
-
-	async getBestMatchingTableByTextMax(tableIndex, query) {
-		let tables = tableIndex?.tables;
-		if (!tables?.length) return null;
-		let embedModel = await LLMCitation.getEmbeddingModel();
-		let queryEmbedding = await LLMCitation.getEmbedding(query, embedModel);
-		let best = null;
-		let bestScore = -Infinity;
-		for (let tab of tables) {
-			if (!tab.captionEmbedding || !tab.contentEmbedding) continue;
-			let capScore = LLMCitation.cosineSimilarity(queryEmbedding, tab.captionEmbedding);
-			let contentScore = LLMCitation.cosineSimilarity(queryEmbedding, tab.contentEmbedding);
-			let score = Math.max(capScore, contentScore);
-			if (score > bestScore) {
-				bestScore = score;
-				best = tab;
-			}
-		}
-		if (best) this.log(`getBestMatchingTableByTextMax: ${best.label} (score=${bestScore.toFixed(4)})`);
-		return best;
-	},
 };

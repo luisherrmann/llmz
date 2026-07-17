@@ -69,7 +69,7 @@ LLMIntent = {
 	// messages.
 	// `recentHistory` -- a short slice of the conversation's own recent
 	// turns (see llm/request.js's own priorTranscript, mirroring
-	// LLMRequest._CROSS_LIBRARY_RECENT_HISTORY_TURNS/its own comment on why
+	// LLMRequest._RECENT_HISTORY_TURNS/its own comment on why
 	// deliberately narrow: just the single most recent exchange, not a
 	// wider window that risks re-anchoring on an OLDER offer instead of
 	// whatever's actually being affirmed) -- sent as real prior {role,

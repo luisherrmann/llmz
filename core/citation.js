@@ -55,13 +55,11 @@ LLMCitation = {
 	// guaranteed to be a literal, contiguous substring of that OTHER index,
 	// making citation re-anchoring an exact match instead of depending on
 	// the fuzzy tier to bridge two independently-extracted texts. Replaces
-	// splitIntoSentences' own PREVIOUS text source
-	// (Zotero's linear PDF-text extraction, LLMPrompt.getAttachmentFullText)
-	// -- that pipeline's own reading-order for stacked math notation
-	// (combining tildes/dots-above, sub+superscript ordering) routinely
-	// diverges from the SDT's own, which is exactly what made a math-heavy
-	// citation fail to re-anchor (confirmed concretely: edit distance 20
-	// against a fuzzy budget of 3, for the PairNorm "TPSD" citation).
+	// splitIntoSentences' own PREVIOUS text source (Zotero's linear
+	// PDF-text extraction, LLMPrompt.getAttachmentFullText) -- that
+	// pipeline's own reading-order for stacked math notation (combining
+	// tildes/dots-above, sub+superscript ordering) routinely diverges from
+	// the SDT's own, which caused math-heavy citations to fail re-anchoring.
 	//
 	// Deliberately scoped PER BLOCK, not over a flattened cross-block list
 	// of every paragraph's sentences -- chunking within one block only means
@@ -69,13 +67,9 @@ LLMCitation = {
 	// blocks (e.g. bridging over an intervening 'math'/'table'/'figure'
 	// block the way Zotero's own linear extraction's period-splitting did),
 	// which is the actual root cause this whole change exists to eliminate.
-	// A block with no sentences surviving splitIntoSentences' own length
-	// filter (20-500 chars) contributes nothing, same as an empty block
-	// would today. `maxCitationChunks` is applied ONCE, to the final
-	// combined sentence list, matching the old paragraph-building logic's
-	// own behavior of chunking from that same already-capped list -- not
-	// per block, which would let a single pathological block alone reach
-	// the cap.
+	// `maxCitationChunks` is applied ONCE, to the final combined sentence
+	// list, not per block, which would let a single pathological block
+	// alone reach the cap.
 	async _buildSentencesAndParagraphsFromStructure(structure, sentencesPerParagraph = 5) {
 		let sentences = [];
 		let paragraphs = [];
@@ -283,13 +277,9 @@ LLMCitation = {
 			// write, or a JSON file deleted/moved outside this plugin), this
 			// is the only remaining place that would ever rewrite it. Without
 			// this, hasCache() (Library Index Status) and _loadParagraphs
-			// (cross-library retrieval's text lookup) silently keep treating
-			// this paper as unindexed forever, even though the embeddings DB
-			// has full embeddings for it -- confirmed concretely once (see
-			// git history): a paper whose text/ disk cache was gone still had
-			// matching sentence/paragraph rows in the DB from an earlier run,
-			// and every subsequent "Index" click took this shortcut without
-			// ever restoring the JSON file.
+			// (cross-library retrieval's text lookup) would silently keep
+			// treating this paper as unindexed forever, even with full
+			// embeddings already in the DB.
 			if (!diskCached) {
 				await this._saveDiskCache(item, fingerprint, sentences, paragraphs);
 			}
@@ -419,10 +409,8 @@ LLMCitation = {
 	// embeddings half of this, getTextIndex's own DB-count shortcut (see
 	// its comment) would find the current model's file still fully
 	// populated on the very next Index click and skip re-embedding
-	// entirely -- confirmed concretely once (see git history): a paper's
-	// text/ disk cache going missing while the DB still had full
-	// sentence/paragraph rows for it left every subsequent Index click
-	// taking this shortcut without ever restoring the JSON file.
+	// entirely, even if the disk cache file itself is what's actually
+	// missing.
 	async clearCache(item) {
 		await this.clearTextCache(item);
 		await this.clearEmbeddingsCache(item);
@@ -771,9 +759,9 @@ LLMCitation = {
 	// search across every embedded kind at once tends to be dominated by
 	// whichever kind is most numerous/verbose in the library, so a
 	// genuinely relevant table or equation elsewhere can rank below topK
-	// purely on volume, not relevance -- confirmed concretely: "sentence"
-	// rows alone outnumber "equation_context" rows 100:1 in a real
-	// library. The first search is restricted to source: "paragraph" (the
+	// purely on volume, not relevance (e.g. "sentence" rows vastly
+	// outnumber "equation_context" rows in a real library). The first
+	// search is restricted to source: "paragraph" (the
 	// prose half); the second to sources: [table_caption, table_content,
 	// figure_caption, equation_context] (the "structural" half) --
 	// deliberately excluding BOTH "sentence" (never surfaced as cross-
@@ -929,9 +917,8 @@ LLMCitation = {
 		// valid boundaries -- the closing delimiter of a **bold**/_italic_/
 		// `code` span the model wrapped the whole [CITE](<find:...>) token
 		// in -- without them, a bolded citation fails to match here at all,
-		// left ungrounded (see chat-pane.js's _renderMarkdown for the fuller
-		// version of this same failure, confirmed reproducible with a real
-		// bolded cross-library table link). Same pattern (and same
+		// left ungrounded (see chat-pane.js's _renderMarkdown for the
+		// fuller version of this same failure). Same pattern (and same
 		// reasoning) in llm/request.js's citation-position query extraction and
 		// chat-pane.js's _renderMarkdown -- keep all three in sync.
 		let pattern = /\[CITE\]\(<find:([\s\S]+?)>\)(?=[\s.,;:!?)\]*_`]|\[|$)/g;
@@ -1037,8 +1024,8 @@ LLMCitation = {
 	// search, and works regardless of whether the PDF has named destinations.
 	//
 	// The highlight itself is the reader's own transient flash (pdf-view.js's
-	// _highlightPosition, hardcoded ~2s, no public way to reconfigure or make
-	// persistent -- tried both, see git history if revisiting this). Its
+	// _highlightPosition, hardcoded ~2s, no public way to reconfigure or
+	// make persistent). Its
 	// visible duration is inconsistent on its own though: reader.navigate()
 	// starts that flash's 2s timer immediately, but the SCROLL to the target
 	// page (especially a distant one) can itself take a noticeable, variable

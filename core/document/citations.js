@@ -280,9 +280,8 @@ LLMCitationPosition = {
 	// buildRunData's output has ONE entry per GLYPH, but node.text also
 	// contains synthetic separator characters (spaces inserted for word/
 	// line breaks) that were never drawn and so have no position entry at
-	// all. Confirmed empirically against a real document: node.text.length
-	// - charData.length === the literal space count in node.text, exactly.
-	// So charData[i] does NOT correspond to node.text[i] in general --
+	// all -- node.text.length - charData.length equals the space count in
+	// node.text. So charData[i] does NOT correspond to node.text[i] in general --
 	// build the correct node.text-index -> charData-index mapping by
 	// walking node.text and only advancing the charData cursor on non-
 	// space characters.

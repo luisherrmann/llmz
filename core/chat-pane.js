@@ -249,39 +249,27 @@ LLMChatPane = {
 		}
 		if (typeof katex !== "undefined") {
 			// Two separate extensions, not one shared "inline" tokenizer for
-			// both $$ and $ (the original approach) -- confirmed concretely
-			// that combining them breaks in two distinct ways:
-			// (1) A single stray "$" earlier in the same paragraph (e.g. a
-			// currency amount, "$100. The formula is $$x=1$$.") gets matched
-			// as the OPENING of inline math by the single-$ pattern, which
-			// then greedily consumes everything up to the next "$" it can
-			// find -- which is the start of an unrelated $$ block -- turning
-			// an entire sentence into garbled "math" and leaving the real
-			// formula's closing $$ dangling as literal text.
-			// (2) A display math block containing a blank line (e.g. a
-			// multi-line derivation the model formatted with blank-line
-			// spacing) never renders AT ALL: marked's BLOCK-level lexer
-			// splits into separate paragraph tokens at the blank line before
-			// an "inline"-level tokenizer ever gets a chance to see the full
-			// $$...$$ span, so each half is left as literal, un-rendered "$$"
-			// text -- this matches the exact "I see $$ ... $$ not rendered"
-			// symptom directly.
+			// both $$ and $ -- combining them breaks in two ways: (1) a
+			// stray single "$" (e.g. a currency amount) gets matched as the
+			// opening of inline math and greedily consumes up to an
+			// unrelated $$ block; (2) a display math block containing a
+			// blank line never renders at all, since marked's block-level
+			// lexer splits into separate paragraph tokens at the blank line
+			// before an inline tokenizer ever sees the full $$...$$ span.
 			marked.use({
 				// Disables Setext-style headings ("Text\n===" / "Text\n---").
 				// A model-written multi-line equation that puts "=" alone on
 				// its own line (e.g. "\dot{x}_i\n=\ns \cdot ...") is valid
-				// LaTeX formatting but ALSO matches marked's Setext-heading
-				// underline syntax -- confirmed concretely that this makes
-				// marked's built-in lheading tokenizer convert everything
-				// from the start of the paragraph up through the line before
-				// the "=" into an <h1>, consuming the opening "$$" in the
-				// process. That leaves the blockMath extension below with no
-				// opening delimiter to match, so the rest of the equation
-				// falls through to plain inline parsing, where its
-				// underscores get misread as emphasis markers. We only ever
-				// instruct the model to use ATX ("#"/"##") headings, so
-				// disabling Setext recognition costs nothing (a bare "---"
-				// line still works as a thematic break/<hr>).
+				// LaTeX formatting but also matches marked's Setext-heading
+				// underline syntax: marked's built-in lheading tokenizer
+				// would convert everything from the start of the paragraph
+				// up through the line before the "=" into an <h1>,
+				// consuming the opening "$$" and leaving the rest of the
+				// equation to fall through to plain inline parsing (where
+				// underscores get misread as emphasis markers). We only
+				// ever instruct the model to use ATX ("#"/"##") headings,
+				// so disabling Setext recognition costs nothing (a bare
+				// "---" line still works as a thematic break/<hr>).
 				tokenizer: {
 					lheading(src) { return undefined; },
 				},
@@ -579,27 +567,24 @@ LLMChatPane = {
 			// instructions): a phrase can contain the literal TWO-character
 			// sequence ">)" itself (e.g. "...the effect (>)5 in most
 			// cases..."), which would truncate the match at that false
-			// terminator instead of the real one -- confirmed reproducible
-			// with a synthetic example before this fix. The trailing
-			// lookahead requires whatever follows a candidate ">)" to
-			// actually look like a token boundary (whitespace, sentence
-			// punctuation, a new "[" link starting, or end of string) --
-			// combined with the LAZY quantifier, the regex engine keeps
-			// extending the match past any ">)" that ISN'T followed by such
-			// a boundary (e.g. followed by a digit or letter continuing the
-			// sentence) until it finds the real one. `*`/`_`/`` ` `` are ALSO
-			// valid boundaries -- the closing delimiter of a **bold**/
-			// _italic_/`code` span the model wrapped the whole link token
-			// in (e.g. '**[9012 Table 3](<ref:9012:table:3>)**', a real,
-			// reproduced case) -- without them, the lookahead fails right
-			// at the position where the actual token ends, so the WHOLE
-			// match fails there and the raw "[label](<ref:...>)" falls
-			// through unprocessed to marked's own native link parser
-			// instead (silently losing the custom class/data-* attributes
-			// -- and for a cross-library table link specifically, the
-			// author/year label substitution too). Same pattern (and same
-			// reasoning) in citation.js's groundCitations and llm/request.js's
-			// citation-position query extraction -- keep all three in sync.
+			// terminator instead of the real one. The trailing lookahead
+			// requires whatever follows a candidate ">)" to actually look
+			// like a token boundary (whitespace, sentence punctuation, a
+			// new "[" link starting, or end of string) -- combined with the
+			// LAZY quantifier, the regex engine keeps extending the match
+			// past any ">)" that ISN'T followed by such a boundary until it
+			// finds the real one. `*`/`_`/`` ` `` are ALSO valid boundaries
+			// -- the closing delimiter of a **bold**/_italic_/`code` span
+			// the model wrapped the whole link token in -- without them,
+			// the lookahead fails right at the position where the actual
+			// token ends, so the WHOLE match fails there and the raw
+			// "[label](<ref:...>)" falls through unprocessed to marked's
+			// own native link parser instead (silently losing the custom
+			// class/data-* attributes -- and for a cross-library table link
+			// specifically, the author/year label substitution too). Same
+			// pattern (and same reasoning) in citation.js's groundCitations
+			// and llm/request.js's citation-position query extraction --
+			// keep all three in sync.
 			/\$\$[\s\S]+?\$\$|\$(?!\s)[^$\n]*?[^\s$]\$(?!\d)|\[([^\]]+)\]\(<(find|ref):([\s\S]+?)>\)(?=[\s.,;:!?)\]*_`]|\[|$)/g,
 			(whole, label, kind, payload) => {
 				if (label === undefined) return whole; // matched a math span -- leave untouched

@@ -1,7 +1,7 @@
 // Regex patterns/helpers shared between the main plugin runtime (subscript-
 // loaded like every other core/*.js file -- see bootstrap.js) and Node
 // subprocess scripts (imported via createRequire -- see e.g.
-// extract_equations.js) -- kept in exactly ONE place so a pattern needed on
+// extract-equations.js) -- kept in exactly ONE place so a pattern needed on
 // both sides of that JS-runtime/Node-subprocess boundary never has two
 // copies to silently drift out of sync, the way e.g. the citation-boundary
 // ">)" regex currently has to be manually kept in sync across three files
@@ -27,7 +27,7 @@
 // file, multiple module systems," which is exactly this plugin's own split.
 //
 // For a packed .xpi install, this file also needs to be deployed to a real
-// filesystem path alongside extract_equations.js (Node needs a real path,
+// filesystem path alongside extract-equations.js (Node needs a real path,
 // not a jar: URI) -- see core/document/references.js's own
 // _siblingScriptNames, which this is listed in.
 LLMPatterns = {
@@ -37,7 +37,7 @@ LLMPatterns = {
 	// citation-chunk selection) on top of this same raw split. A caller
 	// that just wants the literal sentence immediately adjacent to
 	// something (e.g. equation surrounding-context extraction, see
-	// scripts/extract_equations.js) should call splitSentences directly
+	// scripts/extract-equations.js) should call splitSentences directly
 	// instead of splitIntoSentences -- that length filter would wrongly
 	// drop a short but perfectly valid transitional sentence ("Formally,",
 	// "Thus,") immediately before/after an equation.
@@ -51,7 +51,7 @@ LLMPatterns = {
 	// name, deliberately NOT `this.SENTENCE_BOUNDARY_PATTERN` -- confirmed
 	// concretely that `this` breaks here: the expected call shape on the
 	// Node side is `const { splitSentences } = require(...)` (see e.g.
-	// extract_equations.js), which detaches the function from its object
+	// extract-equations.js), which detaches the function from its object
 	// and leaves `this` undefined, silently turning `this.SENTENCE_BOUNDARY_PATTERN`
 	// into `undefined` and `.split(undefined)` into a no-op (String.split
 	// with no separator just returns the whole string as a one-element

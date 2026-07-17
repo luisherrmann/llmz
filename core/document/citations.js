@@ -10,10 +10,10 @@
 // Three DIFFERENT caches are involved:
 //  - structure cache (one JSON blob per item on DISK, holding the full SDT
 //    structure with every textMap): the ML-based layout classification
-//    that produces it -- the same cost extract_references.js/
-//    extract_equations.js/extract_tables_sdt.js/extract_figures_sdt.js each
+//    that produces it -- the same cost extract-references.js/
+//    extract-equations.js/extract-tables-sdt.js/extract-figures-sdt.js each
 //    already pay independently for their own concern -- is the genuinely
-//    expensive, unavoidable part. scripts/compute_document_structure.js
+//    expensive, unavoidable part. scripts/compute-document-structure.js
 //    computes this ONCE per item and writes it here; nothing else touches
 //    the PDF file itself.
 //  - structure MEMORY cache (_structureCache, item.id -> parsed structure):
@@ -43,7 +43,7 @@
 // reuses LLMReferences._extensionRoot/_nodePath()/_pdfjsSetupPath() rather
 // than deploying a second copy of sdt/.
 LLMCitationPosition = {
-	_scriptName: "compute_document_structure.js",
+	_scriptName: "compute-document-structure.js",
 	_cacheVersion: 1, // bump when the cached position schema changes (JS-side, not just the script/model)
 	_positionCache: new Map(), // item.id -> Map(normalizedQuery -> position)
 	_structureCache: new Map(), // item.id -> parsed SDT structure
@@ -212,7 +212,7 @@ LLMCitationPosition = {
 		return data;
 	},
 
-	// ---- Ported from scripts/compute_document_structure.js's former
+	// ---- Ported from scripts/compute-document-structure.js's former
 	// resolution logic (see git history) -- matching/rect-computation, now
 	// run in-process instead of via a spawned Node subprocess. ----
 

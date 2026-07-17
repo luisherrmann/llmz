@@ -7,21 +7,21 @@
 // surnames, page-footer watermark noise, and false-positive "References"
 // headings from table columns, all without special-casing).
 //
-// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_references.js <pdf_path> <output_json_path> [structure_cache_path]
+// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract-references.js <pdf_path> <output_json_path> [structure_cache_path]
 // Output: JSON array of { reference_id, index, text, position }. `index` =
 //   the paper's own printed reference number (or null if not parseable --
 //   see getReferences below) -- NOT reliably present, so it can't serve as a
 //   stable per-paper identifier on its own. `reference_id` is a separate,
 //   ALWAYS-present 1..N sequential id in document (list) order, mirroring
-//   extract_figures_sdt.js's own figure_id/extract_tables_sdt.js's own
+//   extract-figures-sdt.js's own figure_id/extract-tables-sdt.js's own
 //   table_id (see either one's header comment for the fuller rationale).
 //   `position` is { pageIndex, rects: [[x0,y0,x1,y1], ...] } (null if the
 //   entry had no anchor at all) -- read straight off the SAME list-item
 //   node's own item.anchor.pageRects that structure.js's ensureBlockPageRects
 //   already aggregates onto EVERY block/list-item in the tree (not just
 //   math/table/figure blocks -- see its own comment), same field
-//   extract_equations.js already reads for its own position. Unlike
-//   extract_equations.js (which only takes pageRects[0], since an equation
+//   extract-equations.js already reads for its own position. Unlike
+//   extract-equations.js (which only takes pageRects[0], since an equation
 //   is always a single line/block), a bibliography entry routinely wraps
 //   across several lines, so every pageRects entry on the entry's OWN first
 //   page is kept (see getReferences below) to produce a multi-line
@@ -29,7 +29,7 @@
 
 import fs from 'fs';
 
-import { loadOrComputeStructure } from './structure_sdt.js';
+import { loadOrComputeStructure } from './structure-sdt.js';
 
 function flattenText(node) {
 	if (!node || !Array.isArray(node.content)) return '';
@@ -84,7 +84,7 @@ function getReferences(structure) {
 async function main() {
 	let [, , pdfPath, outputPath, structureCachePath] = process.argv;
 	if (!pdfPath || !outputPath) {
-		console.error('Usage: extract_references.js <pdf_path> <output_json_path> [structure_cache_path]');
+		console.error('Usage: extract-references.js <pdf_path> <output_json_path> [structure_cache_path]');
 		process.exit(1);
 	}
 	let structure = await loadOrComputeStructure(pdfPath, structureCachePath);

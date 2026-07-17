@@ -63,7 +63,7 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "core/document/figures.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/tables.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/references.js");
-	Services.scriptloader.loadSubScript(rootURI + "core/document/structure_sdt.js");
+	Services.scriptloader.loadSubScript(rootURI + "core/document/structure-sdt.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/equations.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/notes.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/citations.js");

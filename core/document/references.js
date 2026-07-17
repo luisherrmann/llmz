@@ -7,27 +7,27 @@
 // handles cases that broke a hand-rolled parser -- lowercase-starting
 // surnames, page-footer watermark noise on preprint PDFs, and false-positive
 // "References" headings from table columns -- with no special-casing needed.
-// Runs as a Node subprocess (see scripts/extract_references.js); Zotero
+// Runs as a Node subprocess (see scripts/extract-references.js); Zotero
 // itself only ships this pipeline as a compiled worker bundle, not something
 // callable directly from plugin code, so we vendor+run the source ourselves.
 LLMReferences = {
-	_scriptName: "extract_references.js",
+	_scriptName: "extract-references.js",
 	// Other node/document-worker-based scripts that share this same deployed
 	// sdt/ copy (see _deployFromPackedXPI below) -- LLMEquations and (as of
 	// the SDT-only table/figure detection) LLMTables/LLMFigures, all of
 	// which reuse this module's _extensionRoot/_nodePath/_pdfjsSetupPath
 	// rather than deploying a second copy of sdt/ themselves.
-	// match_captions.js isn't itself run as a script (nothing calls
+	// match-captions.js isn't itself run as a script (nothing calls
 	// _runNode with it) but IS a relative `import`ed dependency of both
-	// extract_tables_sdt.js and extract_figures_sdt.js, so it still has to
+	// extract-tables-sdt.js and extract-figures-sdt.js, so it still has to
 	// be deployed alongside them -- see _deployFromPackedXPI below.
 	// shared-patterns.js is the same story -- a createRequire'd dependency
-	// of extract_equations.js (see scripts/shared-patterns.js's own header
+	// of extract-equations.js (see scripts/shared-patterns.js's own header
 	// comment for why it's loaded that way rather than a normal import),
 	// not something _runNode ever invokes directly, but it still has to
 	// land in the same deployed scripts/ directory for that require() to
 	// resolve.
-	_siblingScriptNames: ["extract_equations.js", "extract_tables_sdt.js", "extract_figures_sdt.js", "match_captions.js", "compute_document_structure.js", "structure_sdt.js", "shared-patterns.js"],
+	_siblingScriptNames: ["extract-equations.js", "extract-tables-sdt.js", "extract-figures-sdt.js", "match-captions.js", "compute-document-structure.js", "structure-sdt.js", "shared-patterns.js"],
 	_cacheVersion: 1, // bump when the cached index schema changes (JS-side, not just the script/model)
 	_indexCache: new Map(),
 	_extensionRoot: null,
@@ -43,7 +43,7 @@ LLMReferences = {
 	// jar:file:///.../llm-chat-pane.xpi!/ URI. Reading individual files via
 	// Zotero.File.getContentsFromURL works fine either way, but there's no
 	// such thing as a real filesystem path *inside* a jar -- so for a packed
-	// install, extract sdt/ and scripts/extract_references.js out to a
+	// install, extract sdt/ and scripts/extract-references.js out to a
 	// writable directory once (same nsIZipReader pattern Zotero's own
 	// schema.js/dictionaries.js use to unpack bundled styles/dictionaries),
 	// skipping re-extraction on later runs unless the xpi itself changed.
@@ -243,7 +243,7 @@ LLMReferences = {
 			if (!await IOUtils.exists(path)) return null;
 			let index = JSON.parse(await IOUtils.readUTF8(path));
 			if (index.scriptFingerprint !== await this._scriptFingerprint()) {
-				this.log(`_loadDiskCache: stale (extract_references.js changed) for item ${item.id}`);
+				this.log(`_loadDiskCache: stale (extract-references.js changed) for item ${item.id}`);
 				return null;
 			}
 			this.log(`_loadDiskCache: loaded ${index.references.length} references for item ${item.id}`);
@@ -290,7 +290,7 @@ LLMReferences = {
 	// instead in that case), reference_id = this extraction's own 1..N
 	// document-order position (always present), position = { pageIndex,
 	// rects } for navigateToPosition (see core/citation.js), null if the
-	// entry had no anchor at all -- see extract_references.js's own
+	// entry had no anchor at all -- see extract-references.js's own
 	// buildPosition for where this comes from.
 	async getReferenceIndex(item, onMessage) {
 		if (this._indexCache.has(item.id)) {

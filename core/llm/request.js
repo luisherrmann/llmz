@@ -564,7 +564,7 @@ LLMRequest = {
 	// printed caption (visible right there in the crop) implicitly can --
 	// this matters specifically for a figure_num === null figure (an
 	// appendix-lettered caption, or a synthetic heading-derived label for
-	// an uncaptioned one -- see scripts/extract_figures_sdt.js), which the
+	// an uncaptioned one -- see scripts/extract-figures-sdt.js), which the
 	// model has no way to derive a citable number for just by looking at
 	// the image. `index` is the raw figure index, needed later for
 	// linkIndex's citation-link resolution on figures the model's text

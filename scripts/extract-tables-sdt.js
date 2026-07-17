@@ -19,7 +19,7 @@
 //      -- by block-index proximity in structure.content's own
 //      page-spanning reading order, not bbox distance (a body's and a
 //      caption's bboxes on two different pages aren't in a shared
-//      coordinate space to begin with -- see match_captions.js's
+//      coordinate space to begin with -- see match-captions.js's
 //      pairWithCaptions for why this doesn't need page-geometry fusion to
 //      handle).
 //   4. Any table body STILL left unpaired (SDT sometimes splits one real
@@ -34,12 +34,12 @@
 //      sequential block ordering, so this needs no page/coordinate math),
 //      numbered in block order per section.
 //
-// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_tables_sdt.js <pdf_path> <output_json_path> [structure_cache_path]
+// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract-tables-sdt.js <pdf_path> <output_json_path> [structure_cache_path]
 // Output: JSON array of { table_id, page_num, table_num, table_extra_num,
 //   label, caption, data, image_data, position }. table_num is a plain
 //   integer only for plainly-numbered captions ("Table 3:"); table_extra_num
 //   is a separate 1..K counter for anything else (lettered-appendix or
-//   synthetic-from-heading), mirroring extract_equations.js's own
+//   synthetic-from-heading), mirroring extract-equations.js's own
 //   equation_num/formula_num split -- avoids the two ever colliding under
 //   the same key downstream (buildLinkIndex, citation-link resolution).
 // table_id is a THIRD, distinct numbering: a plain 1..N sequential id, in
@@ -61,8 +61,8 @@
 // unruled tables PyMuPDF's own find_tables() fails on).
 
 import fs from 'fs';
-import { flattenText, pairWithCaptions, flattenOutline, nearestSection } from './match_captions.js';
-import { loadOrComputeStructure } from './structure_sdt.js';
+import { flattenText, pairWithCaptions, flattenOutline, nearestSection } from './match-captions.js';
+import { loadOrComputeStructure } from './structure-sdt.js';
 
 // SDT's table block content is either a real row/column grid (array of
 // tablerow -> tablecell nodes, when its internal grid-fitting model
@@ -91,7 +91,7 @@ function tableContentToData(content) {
 async function main() {
 	let [, , pdfPath, outputPath, structureCachePath] = process.argv;
 	if (!pdfPath || !outputPath) {
-		console.error('Usage: extract_tables_sdt.js <pdf_path> <output_json_path> [structure_cache_path]');
+		console.error('Usage: extract-tables-sdt.js <pdf_path> <output_json_path> [structure_cache_path]');
 		process.exit(1);
 	}
 	let structure = await loadOrComputeStructure(pdfPath, structureCachePath);
@@ -109,7 +109,7 @@ async function main() {
 		// classification) -- SDT's block classifier can misclassify a
 		// genuine caption as something else entirely (observed on Scutteri
 		// et al. for a figure caption misclassified as 'heading' -- see
-		// extract_figures_sdt.js's own comment on this same check; the
+		// extract-figures-sdt.js's own comment on this same check; the
 		// same misclassification risk applies here). A caption
 		// misclassified as ANY other type is invisible to the pairing
 		// algorithm entirely -- it never even reaches the `captions` list
@@ -132,7 +132,7 @@ async function main() {
 
 	// Plain numeric caption ("Table 3: ...") -> table_num; anything else
 	// (lettered-appendix caption, or no caption at all) -> table_extra_num,
-	// a separate counter -- mirrors extract_equations.js's equation_num/
+	// a separate counter -- mirrors extract-equations.js's equation_num/
 	// formula_num split, avoiding a lettered "Table D.1" ever colliding with
 	// a plain "Table 1" under the same numeric key downstream.
 	const PLAIN_NUMBER_RE = /^tab(?:le)?\.?\s*(\d+)\s*[.:|–—]/i;

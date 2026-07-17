@@ -24,7 +24,7 @@ LLMCitation = {
 	// scripts/shared-patterns.js) -- a caller that wants the literal
 	// sentence adjacent to something, unfiltered, should call
 	// LLMPatterns.splitSentences directly instead (see e.g.
-	// scripts/extract_equations.js's own equation-context extraction).
+	// scripts/extract-equations.js's own equation-context extraction).
 	splitIntoSentences(text) {
 		return LLMPatterns.splitSentences(text)
 			.filter(s => s.length >= 20 && s.length <= 500)
@@ -32,7 +32,7 @@ LLMCitation = {
 	},
 
 	// Recursively concatenates one SDT block's own leaf .text nodes -- same
-	// shape as extract_equations.js's/document/figures.js's own flattenText,
+	// shape as extract-equations.js's/document/figures.js's own flattenText,
 	// duplicated here rather than shared since it's five lines (same
 	// reasoning as _formatCreatorName below). Used ONLY on a single block at
 	// a time (never across blocks), so -- unlike LLMCitationPosition's own
@@ -538,7 +538,7 @@ LLMCitation = {
 	// convention _crossLibrarySourceResolvers' own comment explains), and
 	// its own numbered/"extra" field pair. Table/figure share the same
 	// numbered/extraNum naming; equation's second series is called
-	// "formula" instead (see extract_equations.js's own header comment for
+	// "formula" instead (see extract-equations.js's own header comment for
 	// why -- a genuinely different word, not "equationExtra", so its own
 	// ref: type reflects that too: ref:PAPER_ID:formula:N, not
 	// ref:PAPER_ID:equationExtra:N -- see chat-pane.js's _renderMarkdown).
@@ -561,8 +561,8 @@ LLMCitation = {
 	// given `kind` -- `num` (the paper's own real printed number, e.g.
 	// "Table 3") if it has one, else `extraNum` (an SDT-only-detected/
 	// unlabeled element -- an appendix-lettered caption, or a synthetic
-	// heading-derived label, see extract_tables_sdt.js/
-	// extract_figures_sdt.js/extract_equations.js), same num/extraNum
+	// heading-derived label, see extract-tables-sdt.js/
+	// extract-figures-sdt.js/extract-equations.js), same num/extraNum
 	// split _formatTableMarkdown/buildLinkIndex already use for a
 	// SAME-paper link. Used by _crossLibrarySourceResolvers' own getMeta
 	// entries (getText resolves the TEXT shown to the model; this resolves

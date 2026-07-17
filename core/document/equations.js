@@ -6,7 +6,7 @@
 // ones the paper itself numbers and cross-references in its own prose (e.g.
 // "as given by (3)") -- those get equation_num N. Blocks without one are
 // still extracted, as a separately-numbered "Formula N" series (formula_num)
-// -- see scripts/extract_equations.js for the exact extraction logic.
+// -- see scripts/extract-equations.js for the exact extraction logic.
 //
 // Deployment (unpacking sdt/ for a packed .xpi install) is owned entirely by
 // LLMReferences -- both modules run scripts against the exact same
@@ -14,7 +14,7 @@
 // _nodePath()/_pdfjsSetupPath() rather than deploying (and keeping in sync) a
 // second copy of a multi-file, non-trivial-sized submodule.
 LLMEquations = {
-	_scriptName: "extract_equations.js",
+	_scriptName: "extract-equations.js",
 	_cacheVersion: 4, // bump when the cached index schema changes (JS-side, not just the script/model)
 	_indexCache: new Map(),
 
@@ -65,7 +65,7 @@ LLMEquations = {
 			if (!await IOUtils.exists(path)) return null;
 			let index = JSON.parse(await IOUtils.readUTF8(path));
 			if (index.scriptFingerprint !== await this._scriptFingerprint()) {
-				this.log(`_loadDiskCache: stale (extract_equations.js changed) for item ${item.id}`);
+				this.log(`_loadDiskCache: stale (extract-equations.js changed) for item ${item.id}`);
 				return null;
 			}
 			// equations.embedding was computed via LLMCitation.embedBatched,
@@ -117,7 +117,7 @@ LLMEquations = {
 
 	// Embeds each equation's own surrounding context -- preceding sentence +
 	// the equation's own text + following sentence (see
-	// scripts/extract_equations.js's preceding_sentence/following_sentence,
+	// scripts/extract-equations.js's preceding_sentence/following_sentence,
 	// found by walking to the nearest real prose block on either side) --
 	// joined into ONE string and embedded as ONE vector, unlike tables/
 	// figures' separate caption/content embeddings. Equations don't have a
@@ -199,7 +199,7 @@ LLMEquations = {
 		// convention. source_id is equation_id (already a stable,
 		// always-present per-equation identifier regardless of which of the
 		// equation_num/formula_num series it landed in, see
-		// extract_equations.js's own header comment), not array position.
+		// extract-equations.js's own header comment), not array position.
 		// Filtered to equations that actually got an embedding --
 		// _addContextEmbeddings' own try/catch means a total embedding-call
 		// failure leaves EVERY equation without one, not a partial set, but

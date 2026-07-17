@@ -16,14 +16,14 @@
 // already in flight.
 //
 // Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js
-//   compute_document_structure.js <pdf_path> <structure_cache_path>
+//   compute-document-structure.js <pdf_path> <structure_cache_path>
 
-import { loadOrComputeStructure } from './structure_sdt.js';
+import { loadOrComputeStructure } from './structure-sdt.js';
 
 async function main() {
 	let [, , pdfPath, structureCachePath] = process.argv;
 	if (!pdfPath || !structureCachePath) {
-		console.error('Usage: compute_document_structure.js <pdf_path> <structure_cache_path>');
+		console.error('Usage: compute-document-structure.js <pdf_path> <structure_cache_path>');
 		process.exit(1);
 	}
 	await loadOrComputeStructure(pdfPath, structureCachePath);

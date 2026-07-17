@@ -2,7 +2,7 @@
 // Keeps the "compute structure once per PDF, reuse everywhere" logic out of
 // feature-specific modules (references/equations/tables/figures).
 LLMStructureSDT = {
-	_scriptName: "compute_document_structure.js",
+	_scriptName: "compute-document-structure.js",
 	// item.id -> in-flight Promise<structureCachePath> -- see
 	// ensureStructureCache's own comment for why this exists.
 	_pendingComputations: new Map(),
@@ -28,7 +28,7 @@ LLMStructureSDT = {
 	// `llm/request.js` kicks off getReferenceIndex/getEquationIndex/
 	// getTableIndex/getFigureIndex together (Promise.all) -- on a cold
 	// cache (a newly opened PDF), all four would otherwise see "no cache
-	// yet" and independently spawn their own compute_document_structure.js
+	// yet" and independently spawn their own compute-document-structure.js
 	// subprocess, each redoing the expensive ML classification: exactly the
 	// 4x-redundant-computation problem this shared cache exists to
 	// prevent. Concurrent callers for the SAME item instead await the ONE

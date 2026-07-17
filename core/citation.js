@@ -31,15 +31,6 @@ LLMCitation = {
 			.slice(0, this.maxCitationChunks);
 	},
 
-	splitIntoParagraphs(text, sentencesPerParagraph = 5) {
-		let sentences = this.splitIntoSentences(text);
-		let paragraphs = [];
-		for (let i = 0; i < sentences.length; i += sentencesPerParagraph) {
-			paragraphs.push(sentences.slice(i, i + sentencesPerParagraph).join(" "));
-		}
-		return paragraphs;
-	},
-
 	// Recursively concatenates one SDT block's own leaf .text nodes -- same
 	// shape as extract_equations.js's/document/figures.js's own flattenText,
 	// duplicated here rather than shared since it's five lines (same
@@ -64,7 +55,7 @@ LLMCitation = {
 	// guaranteed to be a literal, contiguous substring of that OTHER index,
 	// making citation re-anchoring an exact match instead of depending on
 	// the fuzzy tier to bridge two independently-extracted texts. Replaces
-	// splitIntoSentences/splitIntoParagraphs' own PREVIOUS text source
+	// splitIntoSentences' own PREVIOUS text source
 	// (Zotero's linear PDF-text extraction, LLMPrompt.getAttachmentFullText)
 	// -- that pipeline's own reading-order for stacked math notation
 	// (combining tildes/dots-above, sub+superscript ordering) routinely
@@ -81,10 +72,10 @@ LLMCitation = {
 	// A block with no sentences surviving splitIntoSentences' own length
 	// filter (20-500 chars) contributes nothing, same as an empty block
 	// would today. `maxCitationChunks` is applied ONCE, to the final
-	// combined sentence list (matching splitIntoParagraphs' own existing
-	// behavior of building paragraphs from the same already-capped list,
-	// since it calls splitIntoSentences internally) -- not per block, which
-	// would let a single pathological block alone reach the cap.
+	// combined sentence list, matching the old paragraph-building logic's
+	// own behavior of chunking from that same already-capped list -- not
+	// per block, which would let a single pathological block alone reach
+	// the cap.
 	async _buildSentencesAndParagraphsFromStructure(structure, sentencesPerParagraph = 5) {
 		let sentences = [];
 		let paragraphs = [];

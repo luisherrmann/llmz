@@ -428,29 +428,4 @@ LLMFigures = {
 		}
 		return figures;
 	},
-
-	// Finds the figure whose caption embedding is most similar to the query text.
-	async getBestMatchingFigure(figureIndex, query) {
-		let figures = figureIndex?.figures;
-		if (!figures?.length) return null;
-
-		// Re-embed with the SAME provider/model this index's captionEmbeddings
-		// were actually built with (stored on the index by getFigureIndex),
-		// not necessarily the user's current Advanced-settings selection --
-		// see _loadDiskCache's own comment.
-		let queryEmbedding = await LLMCitation.getEmbedding(query, figureIndex.embeddingModel, figureIndex.embeddingProvider);
-
-		let best = null;
-		let bestScore = -Infinity;
-		for (let fig of figures) {
-			if (!fig.captionEmbedding) continue;
-			let score = LLMCitation.cosineSimilarity(queryEmbedding, fig.captionEmbedding);
-			if (score > bestScore) {
-				bestScore = score;
-				best = fig;
-			}
-		}
-		if (best) this.log(`getBestMatchingFigure: ${best.label} (score=${bestScore.toFixed(3)})`);
-		return best;
-	},
 };

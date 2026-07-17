@@ -679,17 +679,6 @@ LLMCitationPosition = {
 		return results;
 	},
 
-	// Thin single-query convenience wrapper over resolvePositions -- used by
-	// the click handler as a fallback for a query that (for whatever reason)
-	// wasn't part of the prefetched batch for its response (see llm/request.js).
-	// Returns { pageIndex, rects } on success, or null if the query
-	// couldn't be resolved (caller should fall back to text-search
-	// navigation -- see citation.js's navigateToText).
-	async resolvePosition(item, query) {
-		let results = await this.resolvePositions(item, [query]);
-		return results.get(query) ?? null;
-	},
-
 	// "Structure" cache checkbox (ui/advanced.js's Active Title Cache) --
 	// existence of structure.json specifically, same convention every other
 	// module's own hasCache(item) uses (a cheap disk check, no content

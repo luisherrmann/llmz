@@ -1,5 +1,5 @@
 LLMTables = {
-	// SDT-only detection (see scripts/extract_tables_sdt.js) -- replaced the
+	// SDT-only detection (see scripts/extract-tables-sdt.js) -- replaced the
 	// old caption-anchored PyMuPDF pipeline (extract_tables.py, since
 	// removed), which structurally couldn't find tables with no caption at
 	// all, or an appendix-lettered one like "Table D.1". Reuses
@@ -7,7 +7,7 @@ LLMTables = {
 	// (_extensionRoot/_nodePath/_pdfjsSetupPath), the same way LLMEquations
 	// already does, rather than deploying a second copy of sdt/ itself --
 	// see LLMReferences' _siblingScriptNames.
-	_sdtScriptName: "extract_tables_sdt.js",
+	_sdtScriptName: "extract-tables-sdt.js",
 	// Renders a table's own cropped JPEG on demand (see renderMissingImages
 	// below) -- split out of the old extract_tables.py, which used to
 	// render every table's image unconditionally as part of detection
@@ -139,7 +139,7 @@ LLMTables = {
 			if (!await IOUtils.exists(path)) return null;
 			let index = JSON.parse(await IOUtils.readUTF8(path));
 			if (index.scriptFingerprint !== await this._scriptFingerprint()) {
-				this.log(`_loadDiskCache: stale (extract_tables_sdt.js changed) for item ${item.id}`);
+				this.log(`_loadDiskCache: stale (extract-tables-sdt.js changed) for item ${item.id}`);
 				return null;
 			}
 			// tables.captionEmbedding/contentEmbedding were computed via
@@ -269,7 +269,7 @@ LLMTables = {
 	// table retrieval -- kept as two independent vectors rather than one
 	// combined embedding: caption and content are different-length,
 	// different-quality signals (content is often a long, unstructured
-	// flattened blob -- see extract_tables_sdt.js's own TableNode.content
+	// flattened blob -- see extract-tables-sdt.js's own TableNode.content
 	// comment elsewhere -- while caption is one clean sentence), and
 	// combining them into a single vector risks the longer/noisier one
 	// diluting the other; keeping them separate lets a future retrieval
@@ -356,7 +356,7 @@ LLMTables = {
 		// Mirrors the disk-cache write into the embeddings DB (one .sqlite
 		// file per model, see core/llm/embeddings-db.js) -- source_id is
 		// table_id (already a stable, always-present per-table identifier,
-		// see extract_tables_sdt.js's own header comment), not array
+		// see extract-tables-sdt.js's own header comment), not array
 		// position, since that's the same handle callers already use to
 		// look a table back up in this cache file. Two separate sources
 		// ("table_caption"/"table_content") rather than one, matching

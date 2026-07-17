@@ -536,7 +536,7 @@ LLMUIAdvanced = {
 		// (Zotero.Libraries.userLibraryID), not group libraries.
 		// A paper with a recorded PDF attachment whose file is actually
 		// MISSING on disk (observed via ENOENT failures from
-		// compute_document_structure.js -- moved/renamed outside Zotero, or
+		// compute-document-structure.js -- moved/renamed outside Zotero, or
 		// never actually downloaded under a "files as needed" sync setup)
 		// is deliberately NOT counted as a plain "has a PDF" paper --
 		// there's nothing for Index All to do with it (every SDT-based

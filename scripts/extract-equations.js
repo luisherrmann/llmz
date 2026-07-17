@@ -1,6 +1,6 @@
 // Extracts equations from a PDF using Zotero's own document-worker structure
 // pipeline (ML-based PDF layout classification, vendored under
-// ../sdt/document-worker/) -- same pipeline extract_references.js uses. The
+// ../sdt/document-worker/) -- same pipeline extract-references.js uses. The
 // classifier tags each equation block directly (`type: 'equation'`), and
 // structure/math.js's getMathBlocks() identifies which ones the paper itself
 // numbers via a trailing right-aligned "(N)" label (e.g. "(3)"), the same way
@@ -15,16 +15,16 @@
 // ascending in document order), since there's no real-paper number for the
 // model to cite them by -- see chat-pane.js's ref:formula:N handling.
 //
-// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_equations.js <pdf_path> <output_json_path> [structure_cache_path]
+// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract-equations.js <pdf_path> <output_json_path> [structure_cache_path]
 // Output: JSON array of { equation_id, page_num, equation_num, formula_num,
 //   label, text, preceding_sentence, following_sentence, position }.
 //   page_num is the plain 1-indexed page number (null if this block had no
-//   anchor at all), same convention/field name extract_tables_sdt.js/
-//   extract_figures_sdt.js already use. equation_id is a THIRD, distinct
+//   anchor at all), same convention/field name extract-tables-sdt.js/
+//   extract-figures-sdt.js already use. equation_id is a THIRD, distinct
 //   numbering from equation_num/formula_num -- a plain 1..N sequential id,
 //   in document (block) order, assigned to EVERY equation regardless of
-//   which of the two series it landed in (mirrors extract_figures_sdt.js's
-//   own figure_id/extract_tables_sdt.js's own table_id, see either one's
+//   which of the two series it landed in (mirrors extract-figures-sdt.js's
+//   own figure_id/extract-tables-sdt.js's own table_id, see either one's
 //   header comment for the fuller rationale: an always-present, stable
 //   identifier neither number-or-null field can be used as directly).
 //   preceding_sentence/following_sentence are the literal sentence
@@ -35,7 +35,7 @@
 import fs from 'fs';
 import { createRequire } from 'module';
 import { getMathBlocks } from '../sdt/document-worker/src/pdf/structure/math.js';
-import { loadOrComputeStructure } from './structure_sdt.js';
+import { loadOrComputeStructure } from './structure-sdt.js';
 
 // See shared-patterns.js's own header comment for why this is require()'d
 // (via Node's ESM-to-CommonJS bridge) rather than imported -- it's the same
@@ -110,7 +110,7 @@ function getEquations(structure) {
 			? { pageIndex: pageRect[0], rects: [pageRect.slice(1)] }
 			: null;
 		// Plain 1-indexed page number, same top-level field (and convention)
-		// extract_tables_sdt.js/extract_figures_sdt.js already expose as
+		// extract-tables-sdt.js/extract-figures-sdt.js already expose as
 		// `page_num` -- previously only reachable indirectly via
 		// position.pageIndex (0-indexed, and buried one level down), which
 		// meant every caller needing an equation's page had to know that
@@ -152,7 +152,7 @@ function getEquations(structure) {
 	// assigned to EVERY equation regardless of which series (equation_num
 	// vs. formula_num) it landed in -- see this file's own header comment
 	// for why this is separate from both. Safe to assign directly here (no
-	// sort needed first, unlike extract_tables_sdt.js's own table_id) since
+	// sort needed first, unlike extract-tables-sdt.js's own table_id) since
 	// `equations` is already pushed in structure.content's own document
 	// order by the loop above -- there's no second, separately-ordered
 	// group to interleave back in.
@@ -164,7 +164,7 @@ function getEquations(structure) {
 async function main() {
 	let [, , pdfPath, outputPath, structureCachePath] = process.argv;
 	if (!pdfPath || !outputPath) {
-		console.error('Usage: extract_equations.js <pdf_path> <output_json_path> [structure_cache_path]');
+		console.error('Usage: extract-equations.js <pdf_path> <output_json_path> [structure_cache_path]');
 		process.exit(1);
 	}
 	let structure = await loadOrComputeStructure(pdfPath, structureCachePath);

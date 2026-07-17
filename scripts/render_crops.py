@@ -5,8 +5,8 @@ generic, item-agnostic rendering step split out of the old caption-anchored
 extract_tables.py (which used to render every table's image unconditionally
 as part of detection itself), now shared by both document/tables.js
 (invoked lazily, only when an actual image is needed, e.g. at table-export
-time, against extract_tables_sdt.js's cached bounding boxes) and
-document/figures.js (invoked eagerly, right after extract_figures_sdt.js's
+time, against extract-tables-sdt.js's cached bounding boxes) and
+document/figures.js (invoked eagerly, right after extract-figures-sdt.js's
 own detection pass, since a figure's image is a hard dependency of the "send
 this figure as image context to the model" feature -- see figures.js's own
 comment for why that can't be deferred the way table images can). All this
@@ -71,7 +71,7 @@ def render_crops(pdf_path, regions):
 
             # Native (bottom-left origin, y-up) -> PyMuPDF page.rect
             # (top-left origin, y-down): flip each y coordinate and swap
-            # y0/y1 -- same transform extract_tables.py/extract_tables_sdt.js
+            # y0/y1 -- same transform extract_tables.py/extract-tables-sdt.js
             # already use throughout.
             x0, y0n, x1, y1n = bbox
             clip = fitz.Rect(x0, height - y1n, x1, height - y0n)

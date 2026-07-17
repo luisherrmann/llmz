@@ -15,27 +15,27 @@
 // stamp came back type: 'paragraph', invisible to this script's own
 // `type: 'image'` collection no matter how well the CAPTION side is
 // generalized, since an image has no distinctive text to pattern-match
-// against the way a caption does). Mirrors extract_tables_sdt.js's
+// against the way a caption does). Mirrors extract-tables-sdt.js's
 // approach (see its own module comment for the fuller rationale) applied
 // to `type: 'image'` SDT blocks instead of `type: 'table'` ones, sharing
-// the same caption-pairing algorithm via match_captions.js -- replaces the
+// the same caption-pairing algorithm via match-captions.js -- replaces the
 // old caption-anchored PyMuPDF pipeline (extract_figures.py, since
 // removed), which structurally could not find a figure with no caption at
 // all, or an appendix-lettered one ("Figure D.1").
 //
-// Pipeline (mirrors extract_tables_sdt.js, see its own comment, plus three
+// Pipeline (mirrors extract-tables-sdt.js, see its own comment, plus three
 // figures-only steps):
 //   1. Collect every `type: 'image'` block (body) and `type: 'caption'` block
 //      whose text starts with "Figure"/"Fig" (page + bbox for both) -- for
 //      a caption, also walk forward absorbing any immediately-following
 //      blocks that are really just the rest of the SAME caption (see
-//      match_captions.js's extendCaptionText for the full rationale: SDT
+//      match-captions.js's extendCaptionText for the full rationale: SDT
 //      only reliably types a multi-panel caption's OPENING sentence as its
 //      own block, dropping the "(a) ... (b) ..." panel breakdown that
 //      follows into separate blocks otherwise invisible to this step).
 //   2. Consolidate step 1's raw image blocks, per page, into one candidate
 //      per contiguous run bounded by the same nearest non-image neighbors
-//      above/below (see match_captions.js's groupImagesByBoundary for the
+//      above/below (see match-captions.js's groupImagesByBoundary for the
 //      full rationale) -- handles a badly fragmented multi-panel figure
 //      (chemical structures, plot tick labels, legend swatches, observed on
 //      Penner et al.'s Figure 2: 109 tiny image blocks on one page alone)
@@ -54,7 +54,7 @@
 //      false-positive "caption" -- observed on Lu et al., where this
 //      combination produced a bogus duplicate figure).
 //   4. Greedily pair each caption with its nearest image block on the same
-//      page (rect distance -- see match_captions.js's pairWithCaptions).
+//      page (rect distance -- see match-captions.js's pairWithCaptions).
 //   5. Greedily pair whatever's still unmatched across an ADJACENT page
 //      boundary instead, for a figure whose caption spilled onto the next
 //      page (e.g. a full-page figure with no room left for its own
@@ -76,19 +76,19 @@
 //      preceding section heading (via structure.catalog.outline), numbered
 //      in block order per section.
 //
-// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract_figures_sdt.js <pdf_path> <output_json_path> [pymupdf_images_json_path] [structure_cache_path]
+// Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js extract-figures-sdt.js <pdf_path> <output_json_path> [pymupdf_images_json_path] [structure_cache_path]
 //   pymupdf_images_json_path (optional): output of scripts/list_page_images.py
 //   for this same PDF -- see step 2 above.
 // Output: JSON array of { figure_id, page_num, figure_num, figure_extra_num,
 //   label, caption, image_data, position }. figure_num is a plain integer
 //   only for plainly-numbered captions ("Figure 3:"); figure_extra_num is a
 //   separate 1..K counter for anything else (lettered-appendix or
-//   synthetic-from-heading), mirroring extract_tables_sdt.js's own
+//   synthetic-from-heading), mirroring extract-tables-sdt.js's own
 //   table_num/table_extra_num split -- avoids the two ever colliding under
 //   the same key downstream (buildLinkIndex, citation-link resolution).
 // figure_id is a THIRD, distinct numbering: a plain 1..N sequential id, in
 // document (block) order, assigned to EVERY figure regardless of whether it
-// has a real printed number at all -- see extract_tables_sdt.js's own
+// has a real printed number at all -- see extract-tables-sdt.js's own
 // header comment for the fuller rationale (same one applies here: an LLM
 // asked to pick a figure needs a small, always-unambiguous integer to
 // answer with, not its own possibly long/comma-containing label text). See
@@ -100,8 +100,8 @@
 // than lazily on demand.
 
 import fs from 'fs';
-import { flattenText, pairWithCaptions, flattenOutline, nearestSection, iou, groupImagesByBoundary, extendCaptionText } from './match_captions.js';
-import { loadOrComputeStructure } from './structure_sdt.js';
+import { flattenText, pairWithCaptions, flattenOutline, nearestSection, iou, groupImagesByBoundary, extendCaptionText } from './match-captions.js';
+import { loadOrComputeStructure } from './structure-sdt.js';
 
 // How much IoU overlap (with an SDT-classified `type: 'image'` block on the
 // SAME page) a PyMuPDF-sourced candidate needs before it's treated as a
@@ -140,7 +140,7 @@ const MAX_IMAGE_ASPECT_RATIO = 5.0;
 async function main() {
 	let [, , pdfPath, outputPath, pymupdfImagesPath, structureCachePath] = process.argv;
 	if (!pdfPath || !outputPath) {
-		console.error('Usage: extract_figures_sdt.js <pdf_path> <output_json_path> [pymupdf_images_json_path] [structure_cache_path]');
+		console.error('Usage: extract-figures-sdt.js <pdf_path> <output_json_path> [pymupdf_images_json_path] [structure_cache_path]');
 		process.exit(1);
 	}
 	let structure = await loadOrComputeStructure(pdfPath, structureCachePath);
@@ -307,7 +307,7 @@ async function main() {
 
 	// Plain numeric caption ("Figure 3: ...") -> figure_num; anything else
 	// (lettered-appendix caption, or no caption at all) -> figure_extra_num,
-	// a separate counter -- mirrors extract_tables_sdt.js's table_num/
+	// a separate counter -- mirrors extract-tables-sdt.js's table_num/
 	// table_extra_num split, avoiding a lettered "Figure D.1" ever colliding
 	// with a plain "Figure 1" under the same numeric key downstream.
 	const PLAIN_NUMBER_RE = /^fig(?:ure)?\.?\s*(\d+)\s*[.:|–—]/i;

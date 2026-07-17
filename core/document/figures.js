@@ -1,5 +1,5 @@
 LLMFigures = {
-	// SDT-only detection (see scripts/extract_figures_sdt.js) -- replaced the
+	// SDT-only detection (see scripts/extract-figures-sdt.js) -- replaced the
 	// old caption-anchored PyMuPDF pipeline (extract_figures.py, since
 	// removed), which structurally couldn't find a figure with no caption at
 	// all, or an appendix-lettered one like "Figure D.1". Reuses
@@ -7,7 +7,7 @@ LLMFigures = {
 	// (_extensionRoot/_nodePath/_pdfjsSetupPath), the same way
 	// document/tables.js already does -- see LLMReferences'
 	// _siblingScriptNames.
-	_sdtScriptName: "extract_figures_sdt.js",
+	_sdtScriptName: "extract-figures-sdt.js",
 	// Ground-truth image regions from PyMuPDF (see scripts/list_page_images.py's
 	// own comment for the full rationale), run BEFORE _sdtScriptName and fed
 	// into it as an extra candidate source -- SDT is much better at finding
@@ -56,7 +56,7 @@ LLMFigures = {
 
 	async init(rootURI) {
 		// Still required -- render_crops.py needs PyMuPDF -- even though
-		// DETECTION itself (extract_figures_sdt.js, deployed separately by
+		// DETECTION itself (extract-figures-sdt.js, deployed separately by
 		// LLMReferences alongside its own sdt/ copy) no longer needs it.
 		let pythonPath = this._pythonPath();
 		if (!await IOUtils.exists(pythonPath)) {
@@ -349,7 +349,7 @@ LLMFigures = {
 		// predictable, self-documenting source taxonomy to work from rather
 		// than a bare "figure" that reads ambiguously once tables have two
 		// sources of their own. source_id is figure_id (already a stable,
-		// always-present per-figure identifier, see extract_figures_sdt.js's
+		// always-present per-figure identifier, see extract-figures-sdt.js's
 		// own header comment), not array position, since that's the same
 		// handle callers already use to look a figure back up in this cache
 		// file. Filtered to figures that actually got

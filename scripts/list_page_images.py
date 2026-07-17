@@ -3,18 +3,18 @@
 Lists every embedded raster image's bounding box, per page, using PyMuPDF's
 own page.get_image_info() -- ground truth read directly from the PDF's real
 image XObjects, not inferred from SDT's block classification (see
-scripts/extract_figures_sdt.js's own comment on why this exists: SDT's
+scripts/extract-figures-sdt.js's own comment on why this exists: SDT's
 block-seg classifier occasionally mistypes a genuine image region as
 'paragraph' -- observed on Pairoh et al., where a photo dominated by a tiny
 watermark stamp came back type: 'paragraph' with almost no extractable text
--- making it invisible to extract_figures_sdt.js's own `type: 'image'`
+-- making it invisible to extract-figures-sdt.js's own `type: 'image'`
 collection no matter how the caption-pairing logic is generalized). Rather
 than guessing from block size/text-density or rendering+analyzing pixels,
 this just asks PyMuPDF what images genuinely exist -- the same ground-truth
 API extract_figures.py/render_crops.py already rely on elsewhere in this
 codebase.
 
-extract_figures_sdt.js merges this script's output into its own `images`
+extract-figures-sdt.js merges this script's output into its own `images`
 candidate list (alongside whatever SDT itself classified as type: 'image')
 before pairing captions to bodies -- SDT still owns caption-finding (it's
 much better at that: recognizing "Fig. 3." as a caption even when
@@ -33,7 +33,7 @@ Usage: python3 list_page_images.py <pdf_path> <output_json_path>
 Output: JSON array of { page_num, bboxes }, one entry per page that has at
   least one image, page_num 1-indexed. Each bbox is [x0,y0,x1,y1] in
   PDF-native (bottom-left origin, y-up) space -- the same convention
-  extract_figures_sdt.js's own SDT-derived bboxes already use, so its own
+  extract-figures-sdt.js's own SDT-derived bboxes already use, so its own
   candidate-merging code can treat both sources uniformly with no
   conversion of its own.
 """
@@ -56,7 +56,7 @@ TILE_GAP_TOLERANCE = 2.0
 # on Pairoh et al.: a ~72x14pt journal logo and a ~132x11pt inline icon,
 # both ~1000-1400 sq pt) that get picked up by get_image_info() just like a
 # real figure would, but aren't one -- surfacing them as candidate figure
-# bodies in extract_figures_sdt.js produced spurious "figures" with no real
+# bodies in extract-figures-sdt.js produced spurious "figures" with no real
 # caption anywhere nearby. Real figures observed so far run 85,000+ sq pt
 # (roughly 250x340pt, a bit under half a page), so this threshold has wide
 # margin on both sides -- generous enough not to exclude a genuinely small

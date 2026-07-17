@@ -9,7 +9,7 @@
 // `table_id` -- a plain sequential integer assigned to EVERY table
 // regardless of whether it has a real printed number (an SDT-detected
 // appendix-lettered or uncaptioned table has no real `table_num` at all,
-// see document/tables.js/scripts/extract_tables_sdt.js).
+// see document/tables.js/scripts/extract-tables-sdt.js).
 //
 // UNLIKE a reference's own `index` (which the user reads directly off the
 // bibliography and can name outright, e.g. "download reference 5" -> just
@@ -554,7 +554,7 @@ LLMTableExport = {
 		// support skips rendering entirely, rather than paying for it and
 		// throwing the result away. image_data is never persisted to disk at
 		// all -- the SDT-only detection pipeline (see document/tables.js/
-		// scripts/extract_tables_sdt.js) only caches each table's bounding
+		// scripts/extract-tables-sdt.js) only caches each table's bounding
 		// box, not a rendering of it, so renderMissingImages lazily renders
 		// (in memory only, for the rest of THIS session -- see its own
 		// comment) whichever of `tables` don't have one yet, against that

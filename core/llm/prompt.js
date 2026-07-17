@@ -381,7 +381,7 @@ LLMPrompt = {
 	//
 	// Matched against figure_id -- a plain sequential integer assigned to
 	// EVERY figure regardless of whether it has a real printed number (see
-	// scripts/extract_figures_sdt.js) -- same reasoning as
+	// scripts/extract-figures-sdt.js) -- same reasoning as
 	// selectTablesWithLLM's own use of table_id: a figure's own `label`
 	// isn't always a short, comma-free number (an appendix-lettered caption
 	// like "Figure D.1", or a synthetic heading-derived label for an
@@ -436,7 +436,7 @@ LLMPrompt = {
 	// derive ref:figure:N on its own, but an unnumbered one (figure_num
 	// === null -- an appendix-lettered caption, or a synthetic
 	// heading-derived label for an uncaptioned figure, see
-	// scripts/extract_figures_sdt.js) has NO such visible number to read at
+	// scripts/extract-figures-sdt.js) has NO such visible number to read at
 	// all, so this is the only way it ever learns the right
 	// ref:figureExtra:N to use. Included for every attached figure
 	// uniformly (not just unnumbered ones) so the format is one predictable
@@ -454,7 +454,7 @@ LLMPrompt = {
 		let mdRows = rows.map(r => "| " + r.join(" | ") + " |").join("\n");
 		// Tables with no plain paper-printed number (table_num === null --
 		// see the experimental SDT-only detection in document/tables.js/
-		// scripts/extract_tables_sdt.js) get an explicit ref:tableExtra:N
+		// scripts/extract-tables-sdt.js) get an explicit ref:tableExtra:N
 		// hint here, the same way "Formula N" already bakes its own number
 		// directly into its label -- gives the model a reliable, directly-
 		// visible number to copy for the ref:tableExtra:N link format (see
@@ -664,7 +664,7 @@ LLMPrompt = {
 	//
 	// Matched against table_id -- a plain sequential integer assigned to
 	// EVERY table regardless of whether it has a real printed number (see
-	// scripts/extract_tables_sdt.js) -- same approach
+	// scripts/extract-tables-sdt.js) -- same approach
 	// tools/table-export.js's resolveTableSelection uses and for the same
 	// reason: a table's own `label` isn't always a short, comma-free
 	// number (an appendix-lettered caption like "Table D.1", or worse, a
@@ -804,7 +804,7 @@ LLMPrompt = {
 			// number at all -- an appendix-lettered caption like "Table D.1",
 			// or a synthetic heading-derived label for an uncaptioned one
 			// (see the experimental SDT-only detection in document/tables.js/
-			// scripts/extract_tables_sdt.js) -- key on table_extra_num under
+			// scripts/extract-tables-sdt.js) -- key on table_extra_num under
 			// a separate map instead (cited via ref:tableExtra:N), mirroring
 			// equation/formula below: merging them into one map would let
 			// every table_num===null entry collide on the same `null` key.
@@ -815,7 +815,7 @@ LLMPrompt = {
 				.filter(t => t.table_num === null && t.table_extra_num != null)
 				.map(t => [t.table_extra_num, { position: t.position, caption: t.caption }])),
 			// Same table_num/table_extra_num split as tables above, now that
-			// SDT-only detection (scripts/extract_figures_sdt.js) can find a
+			// SDT-only detection (scripts/extract-figures-sdt.js) can find a
 			// figure with no real printed number too (an appendix-lettered
 			// caption like "Figure D.1", or a synthetic heading-derived
 			// label for an uncaptioned one) -- the old caption-anchored
@@ -834,7 +834,7 @@ LLMPrompt = {
 			// on the same number or every ref:reference:N link would resolve
 			// to nothing for a paper with no printed bibliography numbers
 			// (see displayNumber's own comment). `position` (see
-			// extract_references.js's own buildPosition) routes a click
+			// extract-references.js's own buildPosition) routes a click
 			// through _renderMarkdown's entry.position branch straight to
 			// navigateToPosition, the same precise rects-based highlight
 			// table/figure/equation/note links already get, instead of

@@ -1,5 +1,5 @@
 // Shared geometric caption-matching toolkit, factored out of
-// extract_tables_sdt.js so extract_figures_sdt.js can reuse the exact same
+// extract-tables-sdt.js so extract-figures-sdt.js can reuse the exact same
 // pairing algorithm against `type: 'image'` SDT blocks instead of
 // `type: 'table'` ones -- the matching problem (pair a body block with its
 // nearest caption, merge split bodies, fall back to a nearest-heading label
@@ -84,7 +84,7 @@ export function getLastLineHeight(block) {
 //  - same page as the block just absorbed (or the caption itself, for the
 //    first hop);
 //  - type is `paragraph` or `heading` (SDT sometimes misclassifies a real
-//    caption's own opening line as `heading` too -- see extract_figures_sdt.js's
+//    caption's own opening line as `heading` too -- see extract-figures-sdt.js's
 //    own comment on this -- so a continuation immediately after one of
 //    those needs the same allowance) -- never `image`/`table`/etc., so a
 //    figure's own BODY (sitting right after a caption-above-figure layout)

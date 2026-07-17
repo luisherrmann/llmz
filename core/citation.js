@@ -362,36 +362,79 @@ LLMCitation = {
 		return { sentences: index.paragraphs, model: index.model, provider: index.provider, paperId: item.id, source: "paragraph" };
 	},
 
-	// Debug affordance ("Clear Cache" in Advanced, under the "Text"
-	// checkbox) -- drops the memory cache, the joint disk cache file, AND
-	// both embeddings sources for this item UNDER THE CURRENTLY SELECTED
-	// embedding model, so the next getTextIndex call actually re-embeds
-	// from scratch rather than reusing a possibly-stale result. Scoped to
-	// the current model only (one .sqlite file per model now, see
-	// embeddings-db.js's own header comment) -- a paper's embeddings under
-	// some PREVIOUSLY used model, if any, are simply left in that model's
-	// own file untouched; Clear Cache is about resetting what you're
-	// CURRENTLY working with, not hunting down every model ever used.
-	// Without the DB half of this, getTextIndex's own DB-count shortcut
-	// (see its comment) would find the current model's file still fully
-	// populated on the very next Index click and skip re-embedding
-	// entirely -- Clear Cache would only ever delete the JSON, never force
-	// an actual recompute (confirmed concretely: this is what left a
-	// paper's text/ disk cache permanently missing despite the DB already
-	// having full sentence/paragraph rows for it).
-	async clearCache(item) {
+	// "Embeddings" cache checkbox -- true if this item has ANY sentence OR
+	// paragraph embeddings in the DB under the CURRENTLY selected model. A
+	// disk check (like hasCache above) would be meaningless here -- the
+	// embeddings themselves live in embeddings-db.js's own per-model
+	// .sqlite file, not a JSON blob under this module's own _cacheDir.
+	async hasEmbeddingsCache(item) {
+		let model = await this.getEmbeddingModel();
+		let [sentenceCount, paragraphCount] = await Promise.all([
+			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "sentence" }).then(r => r.count).catch(() => 0),
+			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "paragraph" }).then(r => r.count).catch(() => 0),
+		]);
+		return sentenceCount > 0 || paragraphCount > 0;
+	},
+
+	// "Text" cache checkbox's own clear action -- drops the memory index
+	// cache and the joint disk cache file (sentences + paragraphs), but
+	// deliberately leaves this item's embeddings DB rows untouched (see
+	// clearEmbeddingsCache below, now the "Embeddings" checkbox's own
+	// action). Forces the next getTextIndex call to re-derive
+	// sentences/paragraphs from the SDT structure -- but since the
+	// structure itself hasn't changed, the re-derived text comes out
+	// byte-for-byte identical, so getTextIndex's own DB-count shortcut (see
+	// its own comment) finds the existing embeddings still valid and just
+	// rewrites the disk cache, paying no re-embedding API cost. Useful for
+	// recovering from a corrupted/deleted disk file without redoing the
+	// (expensive) embedding step.
+	async clearTextCache(item) {
 		this._indexCache.delete(item.id);
 		try {
 			let dir = await this._cacheDir();
 			await IOUtils.remove(PathUtils.join(dir, `${item.id}.json`), { ignoreAbsent: true });
+			this.log(`clearTextCache: cleared disk text cache for item ${item.id}`);
+		}
+		catch (e) {
+			this.log(`clearTextCache: failed: ${e.message}`);
+		}
+	},
+
+	// "Embeddings" cache checkbox's own clear action -- drops the memory
+	// index cache and this item's embeddings DB rows (sentence AND
+	// paragraph) UNDER THE CURRENTLY SELECTED embedding model only (a
+	// paper's embeddings under some PREVIOUSLY used model, if any, are
+	// simply left in that model's own file untouched -- same "current
+	// model only" scoping clearCache always used), but leaves disk
+	// text.json untouched. Forces the next getTextIndex call to re-embed
+	// from the still-cached sentences/paragraphs, without redoing
+	// SDT-derived sentence splitting.
+	async clearEmbeddingsCache(item) {
+		this._indexCache.delete(item.id);
+		try {
 			let model = await this.getEmbeddingModel();
 			await LLMEmbeddingsDB.deleteForPaper(item.id, model, { source: "sentence" });
 			await LLMEmbeddingsDB.deleteForPaper(item.id, model, { source: "paragraph" });
-			this.log(`clearCache: cleared for item ${item.id}`);
+			this.log(`clearEmbeddingsCache: cleared embeddings DB rows for item ${item.id}`);
 		}
 		catch (e) {
-			this.log(`clearCache: failed: ${e.message}`);
+			this.log(`clearEmbeddingsCache: failed: ${e.message}`);
 		}
+	},
+
+	// Debug affordance ("Clear All" in Advanced) -- both of the above
+	// together, so the next getTextIndex call actually re-embeds from
+	// scratch rather than reusing a possibly-stale result. Without the
+	// embeddings half of this, getTextIndex's own DB-count shortcut (see
+	// its comment) would find the current model's file still fully
+	// populated on the very next Index click and skip re-embedding
+	// entirely -- confirmed concretely once (see git history): a paper's
+	// text/ disk cache going missing while the DB still had full
+	// sentence/paragraph rows for it left every subsequent Index click
+	// taking this shortcut without ever restoring the JSON file.
+	async clearCache(item) {
+		await this.clearTextCache(item);
+		await this.clearEmbeddingsCache(item);
 	},
 
 	// Cheap existence check (file presence only, no content read or

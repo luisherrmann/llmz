@@ -690,22 +690,73 @@ LLMCitationPosition = {
 		return results.get(query) ?? null;
 	},
 
-	// Debug affordance ("Clear Cache" button) -- drops the structure cache
-	// (disk AND memory, forcing the next resolvePosition call to re-run the
-	// full ML classification), the text index memory cache, and the
-	// resolved-position cache (disk AND memory) for this item.
-	async clearCache(item) {
-		this._positionCache.delete(item.id);
+	// "Structure" cache checkbox (ui/advanced.js's Active Title Cache) --
+	// existence of structure.json specifically, same convention every other
+	// module's own hasCache(item) uses (a cheap disk check, no content
+	// read). Deliberately checks just the structure blob, not the
+	// (secondary, derived) position cache -- an item can have a structure
+	// but an empty/never-populated position cache simply because no
+	// citation has been clicked yet, which isn't "not indexed".
+	async hasCache(item) {
+		return IOUtils.exists(await this._structureCachePath(item));
+	},
+
+	// "Citations" cache checkbox -- existence of the resolved-position
+	// cache file specifically (query -> {pageIndex, rects} per citation
+	// link), same cheap disk-only convention as hasCache above.
+	async hasPositionCache(item) {
+		let path = PathUtils.join(await this._positionCacheDir(), `${item.id}.json`);
+		return IOUtils.exists(path);
+	},
+
+	// "Structure" cache checkbox's own clear action -- drops the structure
+	// cache (disk AND memory, forcing the next _getStructure call to re-run
+	// the full ML classification) AND the text-index memory cache derived
+	// from it (_getTextIndex -- rebuilt from the structure on next use, so
+	// leaving a stale one around after the structure itself is
+	// cleared/recomputed would silently keep resolving positions against
+	// content that's no longer there). Deliberately does NOT touch the
+	// resolved-position cache -- see clearPositionCache below, now the
+	// "Citations" checkbox's own action -- an already-resolved position is
+	// a final {pageIndex, rects} answer that stays correct regardless of
+	// whether the structure it was originally matched against is later
+	// cleared/recomputed.
+	async clearStructureCache(item) {
 		this._structureCache.delete(item.id);
 		this._textIndexCache.delete(item.id);
 		try {
 			await IOUtils.remove(await this._structureCachePath(item), { ignoreAbsent: true });
-			let path = PathUtils.join(await this._positionCacheDir(), `${item.id}.json`);
-			await IOUtils.remove(path, { ignoreAbsent: true });
-			this.log(`clearCache: cleared for item ${item.id}`);
+			this.log(`clearStructureCache: cleared for item ${item.id}`);
 		}
 		catch (e) {
-			this.log(`clearCache: failed: ${e.message}`);
+			this.log(`clearStructureCache: failed: ${e.message}`);
 		}
+	},
+
+	// "Citations" cache checkbox's own clear action -- drops the
+	// resolved-position cache (disk AND memory) for this item: every
+	// [CITE](<find:...>)/cross-library citation link's own previously-
+	// resolved {pageIndex, rects} answer, keyed by query text. Forces every
+	// citation link to be freshly re-matched against the (untouched, still
+	// cached) structure/text index the next time it's clicked, rather than
+	// reusing a possibly-stale resolved position.
+	async clearPositionCache(item) {
+		this._positionCache.delete(item.id);
+		try {
+			let path = PathUtils.join(await this._positionCacheDir(), `${item.id}.json`);
+			await IOUtils.remove(path, { ignoreAbsent: true });
+			this.log(`clearPositionCache: cleared for item ${item.id}`);
+		}
+		catch (e) {
+			this.log(`clearPositionCache: failed: ${e.message}`);
+		}
+	},
+
+	// Debug affordance ("Clear All" in Advanced) -- both of the above
+	// together, for when EVERY cache this module owns for this item should
+	// reset at once.
+	async clearCache(item) {
+		await this.clearStructureCache(item);
+		await this.clearPositionCache(item);
 	},
 };

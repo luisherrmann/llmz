@@ -10,6 +10,8 @@
 
 **LLMz** *(pronounced "el-el-em-zee", /ˌɛlˌɛlˌɛmˈziː/)* is an experimental Zotero 9 item-pane plugin that turns your Zotero into a research assistant by adding an LLM chat pane next to the reader. Ask a question about the paper you're reading and it automatically pulls in whichever paragraphs, tables, figures, equations, your own highlights/notes, and bibliography entries are actually relevant, then answers with clickable citations that jump straight to the right spot in the PDF.
 
+The goal of this personal project was to quickly develop a tool that could mimic some of the functions of NotebookLM, while integrating with Zotero and allowing for the possibility to be run fully locally.
+
 *Disclaimer: LLMz is an independent, community-built project. It is not affiliated with, endorsed by, or sponsored by Zotero or the Corporation for Digital Scholarship.*
 
 ## Trailer

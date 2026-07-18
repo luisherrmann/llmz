@@ -1,0 +1,14 @@
+{
+  "name": "llmz-document-worker-deps",
+  "private": true,
+  "type": "module",
+  "description": "Node.js runtime dependencies for the document-worker PDF structure classification pipeline used by LLMz, fetched at install time (see ../../README.md's Requirements section). Not published -- installed locally via `npm install` in this directory.",
+  "dependencies": {
+    "pako": "2.1.0",
+    "fastest-levenshtein": "1.0.16",
+    "@napi-rs/canvas": "0.1.100"
+  },
+  "scripts": {
+    "postinstall": "node fetch-sources.js && node postinstall.js"
+  }
+}

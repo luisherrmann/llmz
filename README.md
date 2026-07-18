@@ -10,24 +10,23 @@
 
 **LLMz** *(pronounced "el-el-em-zee", /ˌɛlˌɛlˌɛmˈziː/)* is an experimental Zotero 9 item-pane plugin that turns your Zotero into a research assistant by adding an LLM chat pane next to the reader. Ask a question about the paper you're reading and it automatically pulls in whichever paragraphs, tables, figures, equations, your own highlights/notes, and bibliography entries are actually relevant, then answers with clickable citations that jump straight to the right spot in the PDF.
 
+## Trailer
+
+<video src="https://github.com/user-attachments/assets/53dcf615-b90f-40a2-9341-030c454ba6f4"></video>
+
 ## Features
 
-- 🤝 **Multi-provider** — Ollama, LM Studio, and LiteLLM for local/self-hosted models, plus OpenAI and Anthropic directly. Switch providers and models at any time; vision support is detected per model. Additional model providers can be provided through a LiteLLM proxy.<p      align="center">
-  <img src="res/img/multi_provider.png" alt="Multi Provider" width="400px">
-</p>
+- 🤝 **Multi-provider** — Ollama, LM Studio, and LiteLLM for local/self-hosted models, plus OpenAI and Anthropic directly. Switch providers and models at any time; vision support is detected per model. Additional model providers can be provided through a LiteLLM proxy.
+  <p align="center"><img src="res/img/multi_provider.png" alt="Multi Provider" width="700px"></p>
 
-- 📄 **PDF-grounded chat + clickable citations** —  Text, tables, figures, equations, your own annotations, and the paper's bibliography are extracted automatically and offered to the model as context, with a single tool-calling round-trip deciding what's actually relevant to your question. The model's answer links back to text excerpts, tables, equations, notes, and page numbers; clicking one jumps the reader to that exact spot.<p 
-align="center">
-  <img src="res/img/grounded_references.png" alt="Grounded References" width="400px">
-</p>
+- 📄 **PDF-grounded chat + clickable cross-library citations** —  Text, tables, figures, equations, your own annotations, and the paper's bibliography are extracted automatically and offered to the model as context, with a single tool-calling round-trip deciding what's actually relevant to your question. The model's answer links back to text excerpts, tables, equations, notes, and page numbers; clicking one jumps the reader to that exact spot. When a question cannot be answered from the active PDF, LLMz pulls knowledge from other documents in your library and references those through clickable links as well.
+  <p align="center"><img src="res/img/grounded_references.png" alt="Grounded References" width="700px"></p>
 
-- ⏱️ **Conversation history** — every chat can be saved as markdown per PDF, browsable, exportable, and importable, allowing you to export conversations for sharing with colleagus, Obsidian, or for resuming conversations later.<p      align="center">
-  <img src="res/img/past_conversations.png" alt="Conversation History" width="400px">
-</p>
+- ⏱️ **Conversation history** — every chat can be saved as markdown per PDF, browsable, exportable, and importable, allowing you to export conversations for sharing with colleagus, Obsidian, or for resuming conversations later.
+  <p align="center"><img src="res/img/past_conversations.png" alt="Conversation History" width="700px"></p>
 
-- 🏞️ **Image paste** — attach a screenshot or clipping directly into a chat turn.<p      align="center">
-  <img src="res/img/image_paste.png" alt="Image Paste" width="400px">
-</p>
+- 🏞️ **Image paste** — attach a screenshot or clipping directly into a chat turn.
+  <p align="center"><img src="res/img/image_paste.png" alt="Image Paste" width="700px"></p>
 
 - 🎹 **Keyboard-driven** — shortcuts for submit, stop, and history navigation (see the in-pane "Keyboard Shortcuts" panel).
 
@@ -76,18 +75,15 @@ Click any text / table / figure / equation / reference / page-number link in a r
 1. Open **`Preferences` → `LLMz`** (or the pane's own **`Providers`** panel) and pick a provider.
    - For a local server (Ollama/LM Studio/LiteLLM), set its host/port if it isn't running on the default.
    - For OpenAI/Anthropic, enter an API key.
-2. Open **`Embeddings`** and select the provider and embedding model that you want to use. ⚠️ **Ideally, this will only be done ONCE.** Every time you switch the embedding model, you will still be able to answer questions about the active PDF, but you will have to re-index your library to support cross-library references. <p
-  align="center">
-  <img src="res/img/embeddings.png" alt="Library Index" width="400px">
-</p>
+2. Open **`Embeddings`** and select the provider and embedding model that you want to use. ⚠️ **Ideally, this will only be done ONCE.** Every time you switch the embedding model, you will still be able to answer questions about the active PDF, but you will have to re-index your library to support cross-library references.
+   <p align="center"><img src="res/img/embeddings.png" alt="Library Index" width="700px"></p>
 
 3. Open a PDF in the reader — the LLMz pane appears in the item pane alongside it.
+
 4. Pick a model from the dropdown and start asking questions.
 
-5. To support cross-library citations, open up the **`Library Index`** panel and click on the **`Index All`** button to mine and index all PDF documents in your library. Depending on the embeddings provider and the number of papers in your library, this could take a while. <p
-  align="center">
-  <img src="res/img/library_index.png" alt="Library Index" width="400px">
-</p>
+5. To support cross-library citations, open up the **`Library Index`** panel and click on the **`Index All`** button to mine and index all PDF documents in your library. Depending on the embeddings provider and the number of papers in your library, this could take a while.
+   <p align="center"><img src="res/img/library_index.png" alt="Library Index" width="700px"></p>
 
 Recommended settings: 
 The plugin has been mostly tested with **OpenAI GPT 5.4** as chat model, and using **OpenAI text-embedding-3-small** as embeddings model, ensuring high response and retrieval quality at an acceptable cost.

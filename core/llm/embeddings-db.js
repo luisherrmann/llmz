@@ -148,7 +148,11 @@ LLMEmbeddingsDB = {
 	// param rather than repeated per item. `model` routes to that model's
 	// own .sqlite file (see _dbPath) -- no longer stored per-row, since a
 	// file only ever holds one model's embeddings. Returns the assigned
-	// ids, same order as `items`.
+	// ids, same order as `items`. Deliberately carries NO pageIndex/rects --
+	// benchmarked storing those here (subprocess + sqlite insert) against
+	// each kind's own JSON disk cache for the same data, and JSON won by
+	// 60-100x on writes and (via its real per-invocation subprocess cost)
+	// on reads too, so position data lives ONLY in the JSON caches now.
 	async insert(paperId, model, items) {
 		let result = await this._run("insert", model, {
 			items: items.map(item => ({

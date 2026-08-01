@@ -27,9 +27,15 @@ Schema (per file):
     cache file actually holds the text/content itself (e.g. a citation
     sentence's position in LLMCitation's own chunk list) -- this table only
     ever stores the embedding + enough to look the real content back up,
-    never the content itself. `created_at`/`updated_at` are ISO 8601 UTC
-    strings, set automatically (see _connect's own comment) -- nothing in
-    this script sets them explicitly.
+    never the content itself. pageIndex/rects (a chunk's PDF location) live
+    ONLY in each kind's own JSON disk cache, not here -- benchmarked writing
+    them to this table (subprocess + sqlite insert) against a plain JSON
+    file write for the same data and JSON won -- 60-100x faster to write, and
+    even to read back (a `python3 db.py` subprocess's fixed per-invocation
+    cost dwarfs an indexed SQL lookup at this table's current size).
+    `created_at`/`updated_at` are ISO 8601 UTC strings, set automatically
+    (see _connect's own comment) -- nothing in this script sets them
+    explicitly.
   vec_embeddings(rowid, embedding) -- the one vec0 virtual table this file
     has. `rowid` is always the SAME value as the matching row's `id` in
     `embeddings` (set explicitly on insert, never left to autoincrement on
@@ -76,6 +82,24 @@ def _connect(db_path):
     # still matters for concurrent papers under the SAME model.
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA busy_timeout=5000')
+    # Some Python builds' sqlite3 module is compiled without loadable-
+    # extension support at all (both methods missing outright rather than
+    # raising) -- notably pyenv-built interpreters compiled against a
+    # SQLite without that API, and macOS's /usr/bin/python3. sqlite_vec.load
+    # below calls load_extension() unconditionally, so without this check
+    # the failure would surface as a bare "'Connection' object has no
+    # attribute 'load_extension'" with no indication of the actual cause or
+    # fix. python-setup.js's _findPython3 is supposed to screen candidates
+    # for this before a venv is ever built from them, so hitting this here
+    # means an existing venv predates that check.
+    if not (hasattr(db, 'enable_load_extension') and hasattr(db, 'load_extension')):
+        raise RuntimeError(
+            f'{sys.executable} was built without SQLite loadable-extension '
+            'support, so sqlite-vec cannot be loaded. Delete the venv '
+            '(rm -rf the "venv" folder next to this script\'s data '
+            'directory) and re-run setup so it picks a working Python '
+            '(e.g. Homebrew\'s python3), not this one.'
+        )
     db.enable_load_extension(True)
     sqlite_vec.load(db)
     db.enable_load_extension(False)

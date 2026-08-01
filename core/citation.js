@@ -12,7 +12,7 @@ LLMCitation = {
 	// instead -- so a stale cache from before that change would otherwise
 	// keep being treated as fresh forever. Bumped once, here, for exactly
 	// that switch.
-	_cacheVersion: 2,
+	_cacheVersion: 3,
 
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Citation]: " + msg);
@@ -47,6 +47,69 @@ LLMCitation = {
 		return "";
 	},
 
+	// Collapses whitespace runs to a single space and trims, same net
+	// effect as `.replace(/\s+/g, " ").trim()` -- but also returns `map`,
+	// where map[i] is the RAW-text index that collapsed `text[i]` came
+	// from, so a caller that computes sentence offsets against `text` (the
+	// same collapsed string splitIntoSentences/LLMPatterns.splitSentences
+	// itself works from) can translate those offsets back into the raw
+	// offsetMap buildBlockTextIndex() returns -- LLMCitationPosition's own
+	// _getRectsForNodeRange already skips literal space characters when
+	// building its per-node char map, so precision here only actually
+	// matters at non-whitespace boundaries (i.e. exactly where sentences
+	// start/end).
+	_collapseWhitespaceWithMap(rawText) {
+		let n = rawText.length;
+		let start = 0;
+		while (start < n && /\s/.test(rawText[start])) start++;
+		let end = n;
+		while (end > start && /\s/.test(rawText[end - 1])) end--;
+
+		let text = "";
+		let map = [];
+		let inWhitespace = false;
+		for (let i = start; i < end; i++) {
+			let ch = rawText[i];
+			if (/\s/.test(ch)) {
+				if (!inWhitespace) {
+					text += " ";
+					map.push(i);
+				}
+				inWhitespace = true;
+			}
+			else {
+				inWhitespace = false;
+				text += ch;
+				map.push(i);
+			}
+		}
+		return { text, map };
+	},
+
+	// Resolves a [start, end) range in a _collapseWhitespaceWithMap `text`
+	// back to a position via LLMCitationPosition.getPositionForRange -- the
+	// SAME per-character rect precision a citation click gets
+	// (_resolveQueryAgainstTextIndex), instead of one shared position for
+	// the whole block. Returns null (same as getPositionForRange itself)
+	// when nothing can be resolved -- e.g. a block whose textMap is
+	// missing/malformed -- rather than falling back to a coarser
+	// approximation; _textRecord already treats a null position as
+	// "unlocated" (pageIndex: null, rects: []).
+	_resolveRangePosition(map, offsetMap, start, end) {
+		if (!map.length) return null;
+		let rawStart = map[Math.max(0, Math.min(start, map.length - 1))];
+		let rawEnd = map[Math.max(0, Math.min(end, map.length) - 1)] + 1;
+		return LLMCitationPosition.getPositionForRange(offsetMap, rawStart, rawEnd);
+	},
+
+	_textRecord(text, position) {
+		return {
+			text,
+			pageIndex: position?.pageIndex ?? null,
+			rects: position?.rects || [],
+		};
+	},
+
 	// Builds `sentences`/`paragraphs` from the SDT structure's own
 	// 'paragraph'-type blocks, in document order -- the single source of
 	// truth for BOTH citation-index content AND LLMCitationPosition's own
@@ -79,9 +142,38 @@ LLMCitation = {
 			if (!text) continue;
 			let blockSentences = this.splitIntoSentences(text);
 			if (!blockSentences.length) continue;
-			sentences.push(...blockSentences);
+			// collapsedText should equal `text` above (same source, same
+			// collapse) -- searched independently rather than assumed equal,
+			// so a mismatch (e.g. a future divergence in either collapse
+			// step) just leaves the affected sentence unlocated instead of
+			// silently mis-locating it against the wrong offsets.
+			let { text: rawText, offsetMap } = LLMCitationPosition.buildBlockTextIndex(block);
+			let { text: collapsedText, map } = this._collapseWhitespaceWithMap(rawText);
+			let searchOffset = 0;
+			let sentenceRanges = blockSentences.map((sentence) => {
+				let start = collapsedText.indexOf(sentence, searchOffset);
+				if (start === -1) return null;
+				let end = start + sentence.length;
+				searchOffset = end;
+				return { sentence, start, end };
+			});
+			let sentenceRecords = sentenceRanges.map((range, i) => {
+				let position = range ? this._resolveRangePosition(map, offsetMap, range.start, range.end) : null;
+				return this._textRecord(blockSentences[i], position);
+			});
+			sentences.push(...sentenceRecords);
 			for (let i = 0; i < blockSentences.length; i += sentencesPerParagraph) {
-				paragraphs.push(blockSentences.slice(i, i + sentencesPerParagraph).join(" "));
+				let chunkRanges = sentenceRanges.slice(i, i + sentencesPerParagraph);
+				let chunkSentences = blockSentences.slice(i, i + sentencesPerParagraph);
+				let resolvedRanges = chunkRanges.filter(Boolean);
+				let position = resolvedRanges.length
+					? this._resolveRangePosition(
+						map, offsetMap,
+						resolvedRanges[0].start,
+						resolvedRanges[resolvedRanges.length - 1].end
+					)
+					: null;
+				paragraphs.push(this._textRecord(chunkSentences.join(" "), position));
 			}
 		}
 		sentences = sentences.slice(0, this.maxCitationChunks);
@@ -258,16 +350,18 @@ LLMCitation = {
 		}
 		if (!sentences.length) return null;
 
-		let [sentenceDbCount, paragraphDbCount] = await Promise.all([
-			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "sentence" }).then(r => r.count).catch((e) => {
+		let [sentenceDbStatus, paragraphDbStatus] = await Promise.all([
+			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "sentence" }).catch((e) => {
 				this.log(`getTextIndex: DB lookup failed (sentence) for item ${item.id}: ${e.message}`);
-				return 0;
+				return { count: 0 };
 			}),
-			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "paragraph" }).then(r => r.count).catch((e) => {
+			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "paragraph" }).catch((e) => {
 				this.log(`getTextIndex: DB lookup failed (paragraph) for item ${item.id}: ${e.message}`);
-				return 0;
+				return { count: 0 };
 			}),
 		]);
+		let sentenceDbCount = sentenceDbStatus.count;
+		let paragraphDbCount = paragraphDbStatus.count;
 
 		if (sentenceDbCount === sentences.length && paragraphDbCount === paragraphs.length) {
 			let index = { sentences, paragraphs, model, provider };
@@ -295,10 +389,10 @@ LLMCitation = {
 		// back together below, and `total`/the running offset here give a
 		// single combined 0..total progress readout across both phases
 		// rather than two separate bars.
-		let sentenceEmbeddings = await this.embedBatched(sentences, model, provider, {
+		let sentenceEmbeddings = await this.embedBatched(sentences.map(s => s.text), model, provider, {
 			onProgress: completed => progress?.setProgress?.(completed, total),
 		});
-		let paragraphEmbeddings = await this.embedBatched(paragraphs, model, provider, {
+		let paragraphEmbeddings = await this.embedBatched(paragraphs.map(p => p.text), model, provider, {
 			onProgress: completed => progress?.setProgress?.(sentences.length + completed, total),
 		});
 		let embeddedCount = sentenceEmbeddings.length + paragraphEmbeddings.length;
@@ -308,8 +402,10 @@ LLMCitation = {
 		this._indexCache.set(item.id, index);
 		await this._saveDiskCache(item, fingerprint, sentences, paragraphs);
 		try {
-			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "sentence", sentences.map((s, i) => ({ sourceId: i, embedding: sentenceEmbeddings[i] })));
-			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "paragraph", paragraphs.map((p, i) => ({ sourceId: i, embedding: paragraphEmbeddings[i] })));
+			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "sentence",
+				sentences.map((s, i) => ({ sourceId: i, embedding: sentenceEmbeddings[i] })));
+			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "paragraph",
+				paragraphs.map((p, i) => ({ sourceId: i, embedding: paragraphEmbeddings[i] })));
 			onMessage?.(`Synced ${sentenceEmbeddings.length} sentence and ${paragraphEmbeddings.length} paragraph embedding${embeddedCount === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
 		}
 		catch (e) {
@@ -449,7 +545,8 @@ LLMCitation = {
 		});
 		return results
 			.sort((a, b) => a.sourceId - b.sourceId)
-			.map(r => index.sentences[r.sourceId]);
+			.map(r => index.sentences[r.sourceId]?.text)
+			.filter(Boolean);
 	},
 
 	// Batched counterpart to getRelevantChunks above, for document/
@@ -484,7 +581,7 @@ LLMCitation = {
 		let results = await LLMEmbeddingsDB.queryBatch(index.model, queries);
 		results.forEach((rows, qi) => {
 			let best = rows[0];
-			if (best) sentences[validIndices[qi]] = { text: index.sentences[best.sourceId], distance: best.distance };
+			if (best) sentences[validIndices[qi]] = { text: index.sentences[best.sourceId]?.text, distance: best.distance };
 		});
 		return sentences;
 	},
@@ -503,7 +600,8 @@ LLMCitation = {
 			let path = PathUtils.join(await this._cacheDir(), `${paperId}.json`);
 			if (!await IOUtils.exists(path)) return null;
 			let raw = await IOUtils.readUTF8(path);
-			return JSON.parse(raw).paragraphs || null;
+			let paragraphs = JSON.parse(raw).paragraphs || null;
+			return paragraphs?.map(p => p.text) || null;
 		}
 		catch (e) {
 			this.log(`_loadParagraphs: failed for paper ${paperId}: ${e.message}`);

@@ -520,10 +520,20 @@ LLMRequest = {
 	// linkIndex's ref:note:KEY resolution.
 	async _buildNoteContext(notesPromise, prompt, recentHistory, readerContext, ctx) {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
-		let notes = await notesPromise;
+		// Only notes the user actually wrote something on (a non-empty
+		// `comment`) are offered to selectNotesWithLLM -- a bare highlight/
+		// underline with no comment carries no authorial intent of its own
+		// to select FOR (as opposed to _joinParagraphsWithNoteContext's
+		// separate inline injection in llm/prompt.js, which still surfaces
+		// every highlight/underline regardless of comment, since there the
+		// highlighted text itself is the signal, not a comment on it). A
+		// 'note' (sticky note) annotation always has a comment already --
+		// formatAnnotation drops one with neither comment nor highlighted
+		// text -- so this only ever narrows the highlight/underline side.
+		let notes = (await notesPromise).filter(n => n.comment);
 		if (isCancelled()) return { notes: [], addition: "" };
 		if (!notes.length) {
-			appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
+			appendMessage("System", "Notes: no annotated highlights, underlines, or notes found on this PDF.");
 			return { notes: [], addition: "" };
 		}
 		let selectedNotes = [];

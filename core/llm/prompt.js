@@ -252,6 +252,7 @@ LLMPrompt = {
 		"A <NOTE_CONTEXT> block, if present, contains one or more of the user's own annotations on this PDF -- each either a sticky note they wrote, or a passage they highlighted/underlined (quoted verbatim from the PDF) together with any comment they added on it. Any 'Note:' text in it is the user's own authoritative commentary, distinct from the paper's own claims -- don't confuse the two.",
 		"Each entry in <NOTE_CONTEXT> starts with 'Note N (...) [key: XXXXXXXX]:' -- when you mention it, wrap it in a link so the reader can jump to it: [Note N](<ref:note:XXXXXXXX>). Use 'Note N' (that entry's display number) as the visible label, but the link target itself must be the exact key shown in brackets, not N -- copy the key exactly, character for character; never use N or invent a key.",
 		"Example: for an entry 'Note 1 (Highlight, p. 4) [key: AB12CD34]: ...', write 'Your highlight on this point [Note 1](<ref:note:AB12CD34>) is directly relevant here.' -- 'Note 1' is the label, 'AB12CD34' (that note's own key) is the link target.",
+		"An <INLINE_NOTE_CONTEXT> block appearing right after a paragraph inside <PDF_CONTEXT> means the user highlighted or underlined that passage (and may have added a comment on it) -- unlike <NOTE_CONTEXT> above, this is NOT something to cite or link; treat it purely as a signal that the preceding paragraph, and specifically the highlighted/underlined text quoted inside the block, is noteworthy to the user, and weigh it accordingly when answering.",
 		"Whenever you mention a specific page of the PDF by number (e.g. 'on page 5', 'see page 12'), wrap the page number in a link so the reader can jump straight there: [page N](<ref:page:N>), where N is the page number -- this works for any page, not just ones with a table/figure/equation/note on them, and is separate from those ref: formats above.",
 		"Example: 'The methodology is described in more detail on [page 7](<ref:page:7>).'",
 		"NEVER put any of the link formats above -- [CITE](<find:...>), [CITE](<find:PAPER_ID:...>), [Table N](<ref:table:N>), [<label>](<ref:tableExtra:N>), [Figure N](<ref:figure:N>), [<label>](<ref:figureExtra:N>), [Equation N](<ref:equation:N>), [Formula N](<ref:formula:N>), [N](<ref:reference:N>), [Note N](<ref:note:...>), [page N](<ref:page:N>), [Title](<ref:library:paper_id>), or a cross-library [PAPER_ID Table N](<ref:PAPER_ID:table:N>)/[PAPER_ID Figure N](<ref:PAPER_ID:figure:N>)/[PAPER_ID Formula N](<ref:PAPER_ID:formula:N>)-style link -- inside a math environment ($<formula>$ or $$<formula>$$). Links only work in plain text; a $...$/$$...$$ formula must contain ONLY the formula itself, never a link. This does not apply to Markdown table cells (which are plain text, not math) -- links work normally there.",
@@ -919,17 +920,29 @@ LLMPrompt = {
 		});
 	},
 
-	// One <NOTE_CONTEXT> block per overlapping highlight/underline -- kept
-	// deliberately terse (not the prose _formatNoteContext above uses for
-	// the separate note-SELECTION feature) since this is injected inline,
-	// once per overlapping paragraph, and can repeat several times for one
-	// note that spans more than one paragraph.
+	// One <INLINE_NOTE_CONTEXT> block per overlapping highlight/underline --
+	// kept deliberately terse (not the prose _formatNoteContext above uses
+	// for the separate note-SELECTION feature) since this is injected
+	// inline, once per overlapping paragraph, and can repeat several times
+	// for one note that spans more than one paragraph. Deliberately a
+	// DIFFERENT tag than the top-level <NOTE_CONTEXT> block
+	// (_formatNoteContext/selectNotesWithLLM below, assembled by
+	// llm/request.js's _buildNoteContext) even though both ultimately come
+	// from the same LLMNotes annotation data -- that other block's own
+	// system-prompt instructions (see _systemPrompt above) tell the model
+	// to CITE/LINK it via a numbered "Note N (...) [key: ...]:" prefix this
+	// shape doesn't have at all (no key, no number -- see
+	// _systemPrompt's own <INLINE_NOTE_CONTEXT> line for what the model is
+	// told about THIS shape instead: context only, nothing to link). A
+	// later pass may consolidate the two into one shape; kept separate for
+	// now specifically to avoid the model trying to link one of these
+	// against instructions that don't apply to it.
 	_formatInlineNoteContext(note) {
 		return [
-			"<NOTE_CONTEXT>",
+			"<INLINE_NOTE_CONTEXT>",
 			`type: ${note.type} color: ${note.color || "none"}`,
 			`highlighted text: "${note.highlightedText}" annotation: ${note.comment || ""}`,
-			"</NOTE_CONTEXT>",
+			"</INLINE_NOTE_CONTEXT>",
 		].join("\n");
 	},
 
@@ -937,12 +950,13 @@ LLMPrompt = {
 	// the full-PDF case, or the top-K relevant ones from getRelevantChunks,
 	// already re-sorted into document order there) into the final
 	// <PDF_CONTEXT> body, injecting each overlapping note's own
-	// <NOTE_CONTEXT> block immediately after the paragraph it overlaps --
-	// repeated after EVERY paragraph a note overlaps, not just the first,
-	// on the theory that a note-context block placed right next to the
-	// paragraph it annotates is what actually lets the model connect the
-	// highlighted text to its surrounding context, wherever that paragraph
-	// happens to land in the (possibly retrieved-and-reordered) context.
+	// <INLINE_NOTE_CONTEXT> block immediately after the paragraph it
+	// overlaps -- repeated after EVERY paragraph a note overlaps, not just
+	// the first, on the theory that a note-context block placed right next
+	// to the paragraph it annotates is what actually lets the model connect
+	// the highlighted text to its surrounding context, wherever that
+	// paragraph happens to land in the (possibly retrieved-and-reordered)
+	// context.
 	_joinParagraphsWithNoteContext(paragraphs, notes) {
 		return paragraphs.map((p) => {
 			let lines = [p.text];

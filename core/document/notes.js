@@ -28,9 +28,10 @@ LLMNotes = {
 	},
 
 	// Converts a single 'note'/'highlight'/'underline' annotation Item into
-	// { item, annotationKey, title, text, caption, position }, or null for an
-	// annotation type/content we don't use as context (e.g. 'image'/'ink', or a
-	// highlight with neither underlying text nor a comment). Shared by
+	// { item, annotationKey, type, title, text, highlightedText, comment,
+	// caption, position, color }, or null for an annotation type/content we
+	// don't use as context (e.g. 'image'/'ink', or a highlight with neither
+	// underlying text nor a comment). Shared by
 	// getNotes() (bulk, over every annotation on the PDF) and
 	// LLMChatPane.getSelectedAnnotation() (the one currently selected/
 	// highlighted in the reader, if any) so both produce identically-shaped
@@ -39,6 +40,11 @@ LLMNotes = {
 	//   - 'highlight'/'underline' annotations: text = "Highlighted/Underlined
 	//     text: \"<annotationText>\"" plus "Note: <comment>" if a comment was
 	//     also added
+	// `highlightedText`/`comment` are the same two pieces BEFORE being
+	// combined into `text` -- kept as their own fields for a caller that
+	// needs to lay them out differently (e.g. llm/prompt.js's own
+	// <NOTE_CONTEXT> block, injected inline next to the PDF paragraph a
+	// highlight/underline overlaps rather than in a combined prose line).
 	// `caption` is a short fallback for makeMessageClickable's text-search
 	// navigation, in the rare case `position` fails to parse.
 	formatAnnotation(annotation) {
@@ -76,16 +82,20 @@ LLMNotes = {
 		return {
 			item: annotation,
 			annotationKey: annotation.key,
+			type,
 			title,
 			text: textParts.join("\n"),
+			highlightedText: highlighted,
+			comment,
 			caption: (highlighted || comment).split(/\s+/).slice(0, 8).join(" "),
 			position,
+			color: annotation.annotationColor || null,
 		};
 	},
 
-	// Returns [{ item, annotationKey, title, text, caption, position }] for
-	// every note/highlight/underline annotation on the PDF -- see
-	// formatAnnotation().
+	// Returns [{ item, annotationKey, type, title, text, highlightedText,
+	// comment, caption, position, color }] for every note/highlight/
+	// underline annotation on the PDF -- see formatAnnotation().
 	async getNotes(item) {
 		if (!item.isFileAttachment()) return [];
 

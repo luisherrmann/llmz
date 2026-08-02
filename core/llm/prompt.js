@@ -892,6 +892,67 @@ LLMPrompt = {
 		};
 	},
 
+	// Axis-aligned bounding box intersection -- both `a`/`b` are
+	// [x0, y0, x1, y1] with x0<=x1, y0<=y1 already (both this codebase's own
+	// rect producers -- LLMCitationPosition._getRectsForNodeRange and
+	// Zotero's own annotationPosition -- always normalize min/max before
+	// storing), so a plain overlap test suffices with no extra sorting.
+	_rectsOverlap(a, b) {
+		let [ax0, ay0, ax1, ay1] = a;
+		let [bx0, by0, bx1, by1] = b;
+		return ax0 < bx1 && ax1 > bx0 && ay0 < by1 && ay1 > by0;
+	},
+
+	// Returns the subset of `notes` (already filtered to highlight/underline
+	// with a position, see buildPromptWithActivePDFContext) whose own rects
+	// overlap `paragraph`'s -- same page, and at least one rect pair
+	// intersects. `paragraph` carries its OWN pageIndex/rects directly (see
+	// LLMCitation._textRecord), while a note's position is nested under
+	// `.position` (see LLMNotes.formatAnnotation) -- different shapes, same
+	// underlying {pageIndex, rects} convention either way.
+	_findOverlappingNotes(paragraph, notes) {
+		if (paragraph.pageIndex == null || !paragraph.rects?.length) return [];
+		return notes.filter((note) => {
+			let pos = note.position;
+			if (!pos || pos.pageIndex !== paragraph.pageIndex || !pos.rects?.length) return false;
+			return paragraph.rects.some(pRect => pos.rects.some(nRect => this._rectsOverlap(pRect, nRect)));
+		});
+	},
+
+	// One <NOTE_CONTEXT> block per overlapping highlight/underline -- kept
+	// deliberately terse (not the prose _formatNoteContext above uses for
+	// the separate note-SELECTION feature) since this is injected inline,
+	// once per overlapping paragraph, and can repeat several times for one
+	// note that spans more than one paragraph.
+	_formatInlineNoteContext(note) {
+		return [
+			"<NOTE_CONTEXT>",
+			`type: ${note.type} color: ${note.color || "none"}`,
+			`highlighted text: "${note.highlightedText}" annotation: ${note.comment || ""}`,
+			"</NOTE_CONTEXT>",
+		].join("\n");
+	},
+
+	// Joins `paragraphs` (in document order -- either every paragraph, for
+	// the full-PDF case, or the top-K relevant ones from getRelevantChunks,
+	// already re-sorted into document order there) into the final
+	// <PDF_CONTEXT> body, injecting each overlapping note's own
+	// <NOTE_CONTEXT> block immediately after the paragraph it overlaps --
+	// repeated after EVERY paragraph a note overlaps, not just the first,
+	// on the theory that a note-context block placed right next to the
+	// paragraph it annotates is what actually lets the model connect the
+	// highlighted text to its surrounding context, wherever that paragraph
+	// happens to land in the (possibly retrieved-and-reordered) context.
+	_joinParagraphsWithNoteContext(paragraphs, notes) {
+		return paragraphs.map((p) => {
+			let lines = [p.text];
+			for (let note of this._findOverlappingNotes(p, notes)) {
+				lines.push(this._formatInlineNoteContext(note));
+			}
+			return lines.join("\n");
+		}).join("\n\n");
+	},
+
 	async getAttachmentFullText(item) {
 		let cacheFile = Zotero.Fulltext.getItemCacheFile(item).path;
 		if (await IOUtils.exists(cacheFile)) {
@@ -954,27 +1015,72 @@ LLMPrompt = {
 
 		let title = item.getField("title") || item.libraryKey;
 
-		let context, retrieved = false, truncated = false, chunkCount = 0;
-		if (text.length <= this.maxPDFContextChars) {
-			// Full PDF fits within budget — use it as-is, no chunking needed.
-			context = text;
+		// Only highlight/underline notes participate in overlap injection
+		// (see _joinParagraphsWithNoteContext) -- a sticky 'note' has no
+		// highlighted span of its own to connect to a paragraph, and
+		// selectNotesWithLLM's separate note-selection feature already
+		// covers those. `position?.rects?.length` also drops any note whose
+		// annotationPosition failed to parse (see formatAnnotation) --
+		// nothing to overlap against without real rects.
+		let notes = [];
+		try {
+			notes = (await LLMNotes.getNotes(item))
+				.filter(n => (n.type === "highlight" || n.type === "underline") && n.position?.rects?.length);
 		}
-		else {
-			try {
-				let paragraphIndex = await LLMCitation.getParagraphIndex(item, text, onEmbeddingStart, onMessage);
-				if (paragraphIndex) {
+		catch (e) {
+			this.log(`getNotes failed while building PDF context: ${e.message}`);
+		}
+
+		let context, retrieved = false, truncated = false, chunkCount = 0;
+		// Fetched unconditionally (not just on the "too large" path, unlike
+		// before) -- both the full-PDF and chunked cases now read from the
+		// SAME SDT paragraph list, since only that carries the per-paragraph
+		// pageIndex/rects overlap injection needs. Falls through to the raw-
+		// text path below (same as before this change) for a PDF the layout
+		// classifier couldn't produce paragraph blocks for at all.
+		let paragraphIndex = null;
+		try {
+			paragraphIndex = await LLMCitation.getParagraphIndex(item, text, onEmbeddingStart, onMessage);
+		}
+		catch (e) {
+			this.log(`getParagraphIndex failed: ${e.message}`);
+		}
+
+		if (paragraphIndex?.sentences?.length) {
+			// `.sentences` here is actually the PARAGRAPH list (see
+			// getParagraphIndex's own comment) -- already in document order,
+			// built by walking structure.content block-by-block.
+			let allParagraphs = paragraphIndex.sentences;
+			let fullText = allParagraphs.map(p => p.text).join("\n\n");
+			if (fullText.length <= this.maxPDFContextChars) {
+				// Full PDF fits within budget — every paragraph, in order.
+				context = this._joinParagraphsWithNoteContext(allParagraphs, notes);
+			}
+			else {
+				try {
 					let chunks = await LLMCitation.getRelevantChunks(paragraphIndex, userPrompt, this.chunkContextTopK);
 					if (chunks.length) {
-						context = chunks.join("\n\n");
+						context = this._joinParagraphsWithNoteContext(chunks, notes);
 						retrieved = true;
 						chunkCount = chunks.length;
 					}
 				}
+				catch (e) {
+					this.log(`getRelevantChunks failed: ${e.message}`);
+				}
 			}
-			catch (e) {
-				this.log(`getParagraphIndex/getRelevantChunks failed: ${e.message}`);
+		}
+
+		if (context === undefined) {
+			// No usable SDT paragraph structure (getParagraphIndex/
+			// getRelevantChunks failed or came back empty) -- fall back to
+			// Zotero's own raw linear extraction, same behavior as before
+			// this change. No note-overlap injection here: without per-
+			// paragraph position data there's nothing to overlap against.
+			if (text.length <= this.maxPDFContextChars) {
+				context = text;
 			}
-			if (!retrieved) {
+			else {
 				truncated = true;
 				context = text.slice(0, this.maxPDFContextChars);
 			}

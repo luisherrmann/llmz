@@ -136,19 +136,42 @@ LLMCitation = {
 	async _buildSentencesAndParagraphsFromStructure(structure, sentencesPerParagraph = 5) {
 		let sentences = [];
 		let paragraphs = [];
+		// 'list' blocks are expanded into their OWN 'listitem' children here
+		// rather than processed as one unit -- tried combining them into one
+		// unit first, but that both blends together items that happen to
+		// share one SDT list block even when they're not really related
+		// (e.g. this plugin's own test paper merges a page's footnotes and
+		// its "protocols are emerging" bullets into ONE list block) AND can
+		// silently DROP content outright: listitems, unlike a paragraph's
+		// own internal text flow, often lack the trailing punctuation
+		// splitIntoSentences' boundary regex needs to split at all (e.g. a
+		// footnote ending "...position at Intuit" with no period) -- several
+		// such items then merge into one oversized "sentence" that fails the
+		// 20-500 char length filter and gets dropped entirely, confirmed
+		// concretely on this plugin's own test paper. Per-item processing
+		// below avoids both problems: each listitem gets its own
+		// independent sentence split and position, identical to how a
+		// top-level 'paragraph' block already works. 'preformatted' blocks
+		// are indexed as a single unit, same as 'paragraph' -- no
+		// separator/length-cap issue there, since each is already one
+		// contiguous node rather than several sibling items joined together.
+		let blocks = [];
 		for (let block of structure.content) {
-			if (block.type !== "paragraph") continue;
-			let text = this._flattenBlockText(block).replace(/\s+/g, " ").trim();
-			if (!text) continue;
-			let blockSentences = this.splitIntoSentences(text);
-			if (!blockSentences.length) continue;
-			// collapsedText should equal `text` above (same source, same
-			// collapse) -- searched independently rather than assumed equal,
-			// so a mismatch (e.g. a future divergence in either collapse
-			// step) just leaves the affected sentence unlocated instead of
-			// silently mis-locating it against the wrong offsets.
+			if (block.type === "paragraph" || block.type === "preformatted") {
+				blocks.push(block);
+			}
+			else if (block.type === "list") {
+				for (let item of block.content) {
+					if (item.type === "listitem") blocks.push(item);
+				}
+			}
+		}
+		for (let block of blocks) {
 			let { text: rawText, offsetMap } = LLMCitationPosition.buildBlockTextIndex(block);
 			let { text: collapsedText, map } = this._collapseWhitespaceWithMap(rawText);
+			if (!collapsedText) continue;
+			let blockSentences = this.splitIntoSentences(collapsedText);
+			if (!blockSentences.length) continue;
 			let searchOffset = 0;
 			let sentenceRanges = blockSentences.map((sentence) => {
 				let start = collapsedText.indexOf(sentence, searchOffset);
@@ -536,7 +559,11 @@ LLMCitation = {
 	// own precisely so this is the only ranking path. `query()` returns
 	// nearest-first; re-sorted back to original paragraph order (`sourceId`
 	// ascending) here so the joined chunks read in document order, same as
-	// the old JS-side top.sort((a, b) => a.i - b.i) did.
+	// the old JS-side top.sort((a, b) => a.i - b.i) did. Returns the full
+	// paragraph objects ({text, pageIndex, rects}), not just bare text --
+	// llm/prompt.js's buildPromptWithActivePDFContext needs each chunk's own
+	// position to find overlapping highlight/underline notes, the same way
+	// it already can for the full-PDF (unchunked) paragraph list.
 	async getRelevantChunks(index, query, topK) {
 		let queryEmbedding = await this.getEmbedding(query, index.model, index.provider);
 		let results = await LLMEmbeddingsDB.query(index.model, queryEmbedding, topK, {
@@ -545,7 +572,7 @@ LLMCitation = {
 		});
 		return results
 			.sort((a, b) => a.sourceId - b.sourceId)
-			.map(r => index.sentences[r.sourceId]?.text)
+			.map(r => index.sentences[r.sourceId])
 			.filter(Boolean);
 	},
 

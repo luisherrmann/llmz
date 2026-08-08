@@ -57,19 +57,20 @@
 // is the region's own minimum constituent block index (see step 5 below),
 // kept (unlike table_id/figure_id) since core/document/preformatted.js needs
 // it for document-order interleaving against paragraphs/headings. caption is
-// a best-effort matched nearby label's text, or '' if none was found (see
-// findNearbyCaption below); when matched on the same page, `bbox`/`position`
-// already reflect the union of the region's own extent with the caption's,
-// same body+caption union convention extract-tables-sdt.js/
-// extract-figures-sdt.js apply via match-captions.js's pairWithCaptions.
-// position is { pageIndex: page_num - 1, rects: [bbox] }, matching every
-// other extraction script's own convention.
+// a best-effort matched label's text, or '' if none was found (see
+// pairWithCaptions below, the SAME shared caption-matching toolkit
+// extract-tables-sdt.js/extract-figures-sdt.js use, via match-captions.js);
+// when matched on the same page, `bbox`/`position` already reflect the
+// union of the region's own extent with the caption's, same convention
+// those two scripts already apply. position is { pageIndex: page_num - 1,
+// rects: [bbox] }, matching every other extraction script's own
+// convention.
 
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
-import { flattenText, unionRect } from './match-captions.js';
+import { flattenText, unionRect, pairWithCaptions } from './match-captions.js';
 import { loadOrComputeStructure } from './structure-sdt.js';
 
 // Two rects are merged (unioned) whenever extending EACH by this many points
@@ -156,74 +157,70 @@ function isCaptionForOtherContent(text) {
 	return /^(fig(ure)?|table)\b/i.test(text);
 }
 
-// A REAL caption label -- "Listing 6.", "Algorithm 1:", "3) Verification
-// Rules:" -- starts with an optional word, then a required integer
-// (optionally wrapped in brackets/one-sided punctuation: "1)", "(1)",
-// "[1]"), immediately followed by a real word (or the end of the string).
-// That trailing condition is the actual discriminator, not the leading
-// number alone: confirmed concretely (this plugin's own test paper) that a
-// bare numbered-prefix check isn't enough on its own -- "44 4.ReturnMatch"
-// (a numbered algorithm STEP line, misclassified by SDT as a
-// 'heading'/'caption'-typed block, leaking through as if it were a real
-// label) also starts with a number, but is followed by ANOTHER number, not
-// a word -- exactly what a genuine label's own trailing text never does.
+// A REAL caption label -- "Listing 6.", "Algorithm 1:" -- starts with a
+// REQUIRED leading word, then a required integer (optionally wrapped in
+// brackets/one-sided punctuation: "1)", "(1)", "[1]"), immediately followed
+// by a real word. Both the leading word and the trailing word are required,
+// not optional -- confirmed concretely (this plugin's own test paper) that
+// a bare "<number>) <word>..." shape with NO leading word is NOT a safe
+// signal on its own, in two different ways:
+//   - "44 4.ReturnMatch" (a numbered algorithm STEP line, misclassified by
+//     SDT as a 'heading'/'caption'-typed block, leaking through as if it
+//     were a real label) starts with a number but is followed by ANOTHER
+//     number, not a word -- the trailing-word requirement alone catches
+//     this one.
+//   - "3) Formal Resolution Algorithm: The ANS resolution algorithm takes
+//     an ANSName as input and returns a resolvable Endpoint or an error."
+//     (a genuine subsection intro, correctly typed 'paragraph' by SDT, but
+//     NOT captioning the nearby listing it happened to sit near) DOES have
+//     a real trailing word, so the trailing-word check alone doesn't catch
+//     it -- but requiring a LEADING word too does, since real listing
+//     labels in this document are always "Listing N."/"Algorithm N:"
+//     style (a leading word), never a bare "N) ...". This does mean a bare
+//     numbered subsection heading ("3) Verification Rules: ...") no longer
+//     qualifies as a caption candidate EITHER, even though it was
+//     previously accepted -- confirmed an acceptable tradeoff: the region
+//     it used to caption has its own real "Listing N." label sitting on
+//     its OTHER side (see pairWithCaptions below, which -- unlike the old
+//     findNearbyCaption's own arbitrary "check before, then after" order --
+//     actually prefers whichever candidate is genuinely closer/more
+//     reading-order-correct instead of just whichever side happens to be
+//     checked first).
+// "20" (a bare leaked line-number fragment) is rejected by the trailing-
+// word requirement alone (nothing follows it).
 // Deliberately does NOT accept a plain section header/title with no number
 // at all ("D. Protocol-Agnostic Communication Schema", "AgentCapabilityRequest
 // Schema:") -- confirmed these are NOT genuine captions for the listing
-// they happened to sit nearest to, just the closest heading/caption-typed
-// block within the search window; better to report no caption at all
-// (empty string, see findNearbyCaption below) than a plausible-looking but
-// wrong one, especially since a wrong caption also gets unioned into the
-// region's own bounding rect (see the caller's own comment), pulling in
-// whatever unrelated text sits between the code and that unrelated header.
+// they happened to sit nearest to; better to report no caption at all than
+// a plausible-looking but wrong one, especially since a wrong caption also
+// gets unioned into the region's own bounding rect (see pairWithCaptions'
+// own body+caption union), pulling in whatever unrelated text sits between
+// the code and that unrelated header.
+// Deliberately does NOT cap overall length -- this pattern alone can't
+// distinguish a genuinely long caption from a short label bundled with a
+// following sentence (see the "Formal Resolution Algorithm" example
+// above), but the leading-word requirement already rules that specific
+// case out on its own; adding a length cutoff on top would just as easily
+// reject a real long caption.
 function looksLikeCaptionLabel(text) {
-	return /^\s*(?:[A-Za-z]+\.?\s+)?[(\[{<]?\d+[)\]}>.:]?(?=\s*(?:[A-Za-z]|$))/.test(text);
+	return /^\s*[A-Za-z]+\.?\s+[(\[{<]?\d+[)\]}>.:]?(?=\s*[A-Za-z])/.test(text);
 }
 
 // A block's own position from its TOP-LEVEL anchor.pageRects (first page
 // only, "first page wins") -- same block-level (not per-character)
 // resolution core/citation.js used for a preformatted block's own position,
 // ported here for the same reason as isCaptionForOtherContent above.
-function blockPageRectPosition(block) {
+// Collapsed to a SINGLE bbox (via unionRect) rather than the multi-rect
+// array citation.js's own version returns -- pairWithCaptions' own
+// bodies/captions shape (see main() below) expects one bbox per candidate,
+// same as extract-tables-sdt.js/extract-figures-sdt.js already give it.
+function blockPageRectBbox(block) {
 	let pageRects = block.anchor?.pageRects;
 	if (!pageRects?.length) return null;
 	let pageIndex = pageRects[0][0];
 	let rects = pageRects.filter(pr => pr[0] === pageIndex).map(pr => pr.slice(1));
-	return { pageIndex, rects };
-}
-
-// Best-effort match of a region (spanning constituent blocks
-// [minBlockIndex, maxBlockIndex], NOT a single block the way core/
-// citation.js's own predecessor of this function anchored on one SDT
-// 'preformatted' block's own contentIndex) to a nearby label -- SDT has no
-// explicit link tying a caption to what it captions, and a listing's own
-// label can land as EITHER a 'heading' or a 'caption' type block, on EITHER
-// side of the code, so this searches outward by distance from BOTH edges of
-// the region's own span, alternating before/after at each step, and returns
-// the FIRST heading/caption text (plus that neighbor's own block-level
-// position, so the caller can union it into the region's own bounding rect)
-// found within `window` positions of either edge, or { text: '',
-// position: null } for no match. Searching from both edges (not just
-// minBlockIndex) matters concretely: a region recovering a misclassified
-// 'paragraph'/'table' fragment can extend several blocks past whichever
-// single block SDT itself tagged 'preformatted', pushing a caption that
-// sits just past the region's own FAR edge outside a window measured from
-// the NEAR edge alone -- confirmed on this plugin's own test paper (Listing
-// 1's own region spans blocks 37-41, with its caption at block 42 -- 5 away
-// from minBlockIndex=37, outside window=4, but only 1 away from
-// maxBlockIndex=41).
-function findNearbyCaption(content, minBlockIndex, maxBlockIndex, window = 4) {
-	for (let distance = 1; distance <= window; distance++) {
-		for (let neighborIndex of [minBlockIndex - distance, maxBlockIndex + distance]) {
-			let neighbor = content[neighborIndex];
-			if (!neighbor || (neighbor.type !== 'heading' && neighbor.type !== 'caption')) continue;
-			let text = flattenText(neighbor).replace(/\s+/g, ' ').trim();
-			if (text && !isCaptionForOtherContent(text) && looksLikeCaptionLabel(text)) {
-				return { text, position: blockPageRectPosition(neighbor) };
-			}
-		}
-	}
-	return { text: '', position: null };
+	if (!rects.length) return null;
+	return { pageIndex, bbox: rects.reduce((acc, r) => acc ? unionRect(acc, r) : r, null) };
 }
 
 async function main() {
@@ -265,8 +262,9 @@ async function main() {
 	// SDT-gated design since the ONE block that would have satisfied the
 	// gate had an unusable rect). SDT is still used for TEXT recovery (step
 	// 4 below, unchanged -- any block type, not just 'preformatted') and for
-	// caption matching (findNearbyCaption, matches against 'heading'/
-	// 'caption'-typed blocks, unrelated to 'preformatted' typing).
+	// caption matching (pairWithCaptions, matched against 'heading'/
+	// 'caption'/'paragraph'-typed blocks, unrelated to 'preformatted'
+	// typing).
 	let byPage = new Map(); // page_num -> [rect, ...]
 	function addRect(pageNum, rect) {
 		if (!isRectPlausible(rect)) return;
@@ -362,7 +360,7 @@ async function main() {
 	// guarantee -- a real table with NO caption-style opening text
 	// ("TABLE I", "Table 1:") could still pass through undetected by this
 	// check alone.
-	let output = [];
+	let bodies = [];
 	for (let [pageNum, regions] of regionsByPage) {
 		for (let r = 0; r < regions.length; r++) {
 			let key = `${pageNum}:${r}`;
@@ -376,37 +374,66 @@ async function main() {
 				text += b.text;
 			}
 			if (!text.trim()) continue;
-			let bbox = regions[r];
 			let blockIndex = Math.min(...blocks.map(b => b.blockIndex));
-			let maxBlockIndex = Math.max(...blocks.map(b => b.blockIndex));
-
-			// Caption matching, same window-search as core/citation.js used
-			// to do per SDT 'preformatted' block, now applied once per
-			// merged region instead (searching outward from BOTH edges of
-			// the region's own block span -- see findNearbyCaption's own
-			// comment for why that matters here). A same-page match
-			// collapses `bbox` to the SMALLEST single rect covering both the
-			// region's own bbox and the caption's -- same body+caption union
-			// convention extract-tables-sdt.js/extract-figures-sdt.js
-			// already apply via match-captions.js's pairWithCaptions. A
-			// different-page match (or no match) leaves `bbox` as the
-			// region's own extent alone.
-			let { text: caption, position: captionPosition } = findNearbyCaption(structure.content, blockIndex, maxBlockIndex);
-			if (caption && captionPosition?.pageIndex === pageNum - 1 && captionPosition.rects.length) {
-				let captionBbox = captionPosition.rects.reduce((acc, r) => acc ? unionRect(acc, r) : r, null);
-				bbox = unionRect(bbox, captionBbox);
-			}
-
-			output.push({
-				page_num: pageNum,
-				bbox,
-				text,
-				caption,
-				position: { pageIndex: pageNum - 1, rects: [bbox] },
-				blockIndex,
-			});
+			bodies.push({ blockIndex, page_num: pageNum, bbox: regions[r], text });
 		}
 	}
+
+	// Caption matching -- same shared toolkit extract-tables-sdt.js/
+	// extract-figures-sdt.js already use (match-captions.js's
+	// pairWithCaptions), instead of this script's own previous ad-hoc
+	// "search outward by block-index distance, take whichever side is
+	// checked first" approach. That approach had a real, confirmed failure
+	// mode beyond just accepting badly-shaped candidates (see
+	// looksLikeCaptionLabel's own comment for that half): even among
+	// perfectly plausible candidates, checking minBlockIndex-distance
+	// before maxBlockIndex+distance at every distance level meant an
+	// arbitrary DIRECTIONAL tie-break, not "pick the better match" --
+	// confirmed concretely on this plugin's own test paper: a
+	// VerifyCertChain listing's own genuine caption ("Listing 2.
+	// Certificate Chain Verification Algorithm") sits one block AFTER it,
+	// while an unrelated subsection heading ("3) Verification Rules:
+	// Certificate Chain Verification") sits one block BEFORE it -- equally
+	// close, but the old search always checked "before" first, so it
+	// always won regardless of which one actually captions the listing.
+	// pairWithCaptions instead uses real geometric distance (equal-per-page
+	// reading-order pairing first, then nearest-actual-PDF-point-distance
+	// for the rest, then cross-page adjacency) -- the same algorithm
+	// already validated across every table/figure this plugin extracts.
+	//
+	// `captions`: every block (any type -- 'heading', 'caption', AND
+	// 'paragraph', see looksLikeCaptionLabel's own comment on why
+	// 'paragraph' needs to be included at all) whose own text passes the
+	// same shape+exclusion checks the old search used. blockIndex here is
+	// the candidate's own raw structure.content index (pairWithCaptions
+	// only needs it for its own cross-page block-adjacency pass).
+	let captions = [];
+	for (let i = 0; i < structure.content.length; i++) {
+		let block = structure.content[i];
+		if (block.type !== 'heading' && block.type !== 'caption' && block.type !== 'paragraph') continue;
+		let text = flattenText(block).replace(/\s+/g, ' ').trim();
+		if (!text || isCaptionForOtherContent(text) || !looksLikeCaptionLabel(text)) continue;
+		let position = blockPageRectBbox(block);
+		if (!position) continue;
+		captions.push({ blockIndex: i, page_num: position.pageIndex + 1, bbox: position.bbox, text });
+	}
+
+	let { matched } = pairWithCaptions(bodies, captions);
+	let matchedByBlockIndex = new Map(matched.map(m => [m.blockIndex, m]));
+
+	let output = bodies.map((body) => {
+		let m = matchedByBlockIndex.get(body.blockIndex);
+		let bbox = m ? m.bbox : body.bbox;
+		let caption = m ? m.caption : '';
+		return {
+			page_num: body.page_num,
+			bbox,
+			text: body.text,
+			caption,
+			position: { pageIndex: body.page_num - 1, rects: [bbox] },
+			blockIndex: body.blockIndex,
+		};
+	});
 
 	// preformatted_id: plain 1..N sequential id in document (block) order --
 	// same convention table_id/figure_id already use (see

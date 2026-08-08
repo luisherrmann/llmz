@@ -19,6 +19,7 @@ var LLMCitation;
 var LLMSemanticHistory;
 var LLMFigures;
 var LLMTables;
+var LLMPreformatted;
 var LLMReferences;
 var LLMEquations;
 var LLMNotes;
@@ -64,6 +65,13 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "core/document/tables.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/references.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/structure-sdt.js");
+	// Combines SDT structure (LLMStructureSDT) with an independent PyMuPDF
+	// detection pass -- see its own header comment. References
+	// LLMPythonSetup/LLMInterfaces inside method bodies only (resolved at
+	// CALL time against this shared global scope, same as every other
+	// core/*.js module here), so load order relative to those two doesn't
+	// matter the way it does for LLMPatterns/core/citation.js above.
+	Services.scriptloader.loadSubScript(rootURI + "core/document/preformatted.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/equations.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/notes.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/citations.js");

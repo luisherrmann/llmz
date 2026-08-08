@@ -203,6 +203,7 @@ LLMChatPane = {
 		this._configureMarkdown();
 		await LLMFigures.init(this.rootURI);
 		await LLMTables.init(this.rootURI);
+		await LLMPreformatted.init(this.rootURI);
 		try {
 			let hljsCss = await Zotero.File.getContentsFromURL(this.rootURI + "vendor/atom-one-dark.min.css");
 			let markdownCss = await Zotero.File.getContentsFromURL(this.rootURI + "styles/style.css");

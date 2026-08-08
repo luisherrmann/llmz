@@ -415,9 +415,9 @@ LLMUIAdvanced = {
 		// represents every paper in "My Library". Two grow inward from the
 		// LEFT: green (fully indexed, indexed/total, anchored at 0%) then
 		// cyan immediately to ITS right (partially indexed -- some, but not
-		// all, of the six caches -- text/structure/equations/figures/
-		// references/tables, see getIndexStatus below -- are present; left
-		// = the green bar's own width, not a fixed anchor). Two grow inward
+		// all, of the seven caches -- text/structure/equations/figures/
+		// references/tables/preformatted, see getIndexStatus below -- are
+		// present; left = the green bar's own width, not a fixed anchor). Two grow inward
 		// from the RIGHT: gray (no PDF attachment at all, anchored at 100%)
 		// then red immediately to ITS left (a PDF attachment IS recorded,
 		// but the file itself is missing on disk -- a broken link, see
@@ -568,17 +568,17 @@ LLMUIAdvanced = {
 			return { total: papers.length, pdfItems, noPDFCount, brokenCount };
 		};
 
-		// "Fully indexed" = every one of the six caches this paper's PDF
+		// "Fully indexed" = every one of the seven caches this paper's PDF
 		// can have is present (text, structure, equations, figures,
-		// references, tables -- six of the seven checkboxes listed further
-		// down under Active Title Cache, everything except Citations and
-		// Embeddings). "Partial" = some but not all -- a very real state
-		// in practice (e.g. an embedding-provider quota error leaves text
-		// missing while tables/figures/etc. still built fine, or vice
-		// versa; see the ENOENT/429 cases already observed). "None" =
+		// references, tables, preformatted -- seven of the nine checkboxes
+		// listed further down under Active Title Cache, everything except
+		// Citations and Embeddings). "Partial" = some but not all -- a very
+		// real state in practice (e.g. an embedding-provider quota error
+		// leaves text missing while tables/figures/etc. still built fine, or
+		// vice versa; see the ENOENT/429 cases already observed). "None" =
 		// zero. Each module's own hasCache(item) is a cheap disk existence
 		// check, no content read. Citation-position is deliberately
-		// excluded here -- unlike the other six, it's NEVER populated by
+		// excluded here -- unlike the other seven, it's NEVER populated by
 		// Index/Index All itself (LLMUIIndexAll's own _indexItem never
 		// touches LLMCitationPosition at all), only by actually clicking/
 		// resolving a citation link during chat, so requiring it would mean
@@ -596,6 +596,7 @@ LLMUIAdvanced = {
 				LLMFigures.hasCache(item),
 				LLMReferences.hasCache(item),
 				LLMTables.hasCache(item),
+				LLMPreformatted.hasCache(item),
 			]);
 			let count = present.filter(Boolean).length;
 			if (count === present.length) return "full";
@@ -646,12 +647,12 @@ LLMUIAdvanced = {
 		};
 
 		// Library-wide replacement for calling getIndexStatus(item) once
-		// per pdfItem, i.e. 6*N individual IOUtils.exists() disk checks for
-		// an N-paper library -- lists each of the six cache dirs exactly
-		// ONCE (6 IOUtils.getChildren() calls total, regardless of library
+		// per pdfItem, i.e. 7*N individual IOUtils.exists() disk checks for
+		// an N-paper library -- lists each of the seven cache dirs exactly
+		// ONCE (7 IOUtils.getChildren() calls total, regardless of library
 		// size) instead, then classifies every paper via in-memory Set
-		// membership: fully indexed = intersection of all six id sets,
-		// partially indexed = (union of all six) minus that intersection,
+		// membership: fully indexed = intersection of all seven id sets,
+		// partially indexed = (union of all seven) minus that intersection,
 		// unindexed = pdfItems minus the union. Both fully/partially are
 		// additionally intersected with pdfItems' own id set -- a cache dir
 		// can hold stale .json files for items getLibraryPapers has already
@@ -669,6 +670,7 @@ LLMUIAdvanced = {
 				LLMCitationPosition._structureCacheDir(),
 				LLMEquations._cacheDir(), LLMFigures._cacheDir(),
 				LLMReferences._cacheDir(), LLMTables._cacheDir(),
+				LLMPreformatted._cacheDir(),
 			]);
 			let cacheSets = await Promise.all(cacheDirs.map(listCachedIds));
 			let pdfIdSet = new Set(pdfItems.map(item => item.id));
@@ -775,13 +777,13 @@ LLMUIAdvanced = {
 
 		// Indexes every paper that ISN'T fully indexed yet (status
 		// "partial" or "none", per getIndexStatus -- a partial paper is
-		// included since _indexItem's five extraction steps already only
+		// included since _indexItem's six extraction steps already only
 		// (re)compute whatever's actually missing, each stage reading its
 		// own cache first, so re-running it on an already-partial paper
 		// just fills the gaps rather than redoing completed work). Runs via
 		// LLMUIIndexAll._indexItem -- the same per-paper extraction logic
-		// (tables/figures/references/equations/citation embeddings),
-		// reporting progress through this panel's own bar. Worker-pool
+		// (tables/figures/references/equations/preformatted/citation
+		// embeddings), reporting progress through this panel's own bar. Worker-pool
 		// concurrency, level from LLMUIIndexAll.CONCURRENCY_LEVEL --
 		// several papers' extraction pipelines running at once lets their
 		// network-bound embedding calls overlap instead of sitting fully
@@ -961,9 +963,9 @@ LLMUIAdvanced = {
 			}
 		});
 
-		// Drops all eight cache directories (text, structure,
+		// Drops all nine cache directories (text, structure,
 		// citation-position, equations, figures, references, tables,
-		// embeddings -- the six getIndexStatus checks, plus
+		// preformatted, embeddings -- the seven getIndexStatus checks, plus
 		// citation-position and embeddings, neither of which count toward
 		// "fully indexed" but should still be wiped by a full reset) for
 		// EVERY paper in the library at once, via whole-directory wipes
@@ -991,7 +993,7 @@ LLMUIAdvanced = {
 				// each one paying full interpreter startup + venv
 				// resolution + sqlite-vec extension load, then serializing
 				// against every other paper's own spawn on the SAME
-				// per-model .sqlite file's write lock) with 8
+				// per-model .sqlite file's write lock) with 9
 				// directory-level operations total, regardless of library
 				// size. The embeddings dir (LLMEmbeddingsDB._dbDir(),
 				// holding every per-model .sqlite file) is wiped the exact
@@ -1007,6 +1009,7 @@ LLMUIAdvanced = {
 					LLMFigures._cacheDir(),
 					LLMReferences._cacheDir(),
 					LLMTables._cacheDir(),
+					LLMPreformatted._cacheDir(),
 					LLMEmbeddingsDB._dbDir(),
 				]);
 				await Promise.all(dirs.map(async (dir) => {
@@ -1026,6 +1029,7 @@ LLMUIAdvanced = {
 				LLMFigures._indexCache.clear();
 				LLMReferences._indexCache.clear();
 				LLMTables._indexCache.clear();
+				LLMPreformatted._indexCache.clear();
 				onMessage?.(`Clear All: cleared the index for ${pdfItems.length} paper${pdfItems.length === 1 ? "" : "s"}.`);
 			}
 			catch (e) {
@@ -1099,6 +1103,7 @@ LLMUIAdvanced = {
 			{ label: "Figures", hasCache: item => LLMFigures.hasCache(item), clear: item => LLMFigures.clearCache(item) },
 			{ label: "References", hasCache: item => LLMReferences.hasCache(item), clear: item => LLMReferences.clearCache(item) },
 			{ label: "Tables", hasCache: item => LLMTables.hasCache(item), clear: item => LLMTables.clearCache(item) },
+			{ label: "Preformatted", hasCache: item => LLMPreformatted.hasCache(item), clear: item => LLMPreformatted.clearCache(item) },
 		];
 
 		// Header for the per-active-paper checkbox list + Clear Cache
@@ -1157,7 +1162,7 @@ LLMUIAdvanced = {
 
 		// Runs the exact same per-paper extraction pipeline as "Index All"
 		// (LLMUIIndexAll._indexItem -- text (sentences/paragraphs), tables,
-		// figures, references, equations), just for the single currently-active PDF,
+		// figures, references, equations, preformatted), just for the single currently-active PDF,
 		// so a specific paper (e.g. one a cross-library question needs, see
 		// LLMCitation.getCrossLibraryChunks) can be pre-warmed on demand
 		// without waiting for/running a full-library Index All pass. Doesn't

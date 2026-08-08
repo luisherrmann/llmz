@@ -1,0 +1,397 @@
+// Detects preformatted/code-listing regions -- combines PyMuPDF background-
+// fill+font-mismatch detection with SDT's own structure (see
+// scripts/extract-preformatted-sdt.js/scripts/extract_preformatted.py's own
+// header comments for the full two-signal rationale and the concrete
+// failure modes that motivated combining both sources rather than trusting
+// either alone). Wired the same way document/figures.js/document/tables.js
+// are: SDT-only structural detection reuses LLMReferences's deployed sdt/
+// copy and Node-running infra (_extensionRoot/_nodePath), while the
+// PyMuPDF half needs its own script deployed into the writable LLMz/scripts/
+// dir (see init() below), same as figures.js's own list_page_images.py.
+//
+// Previously, preformatted-block extraction lived directly inside
+// core/citation.js's own _buildTextElementsFromStructure, using ONLY SDT's
+// own `type: 'preformatted'` blocks with no PyMuPDF cross-check -- moved
+// here once the combined pipeline (built and validated separately, see
+// extract-preformatted-sdt.js's own header comment) proved to recover
+// listing content SDT alone silently dropped or corrupted. Regions from SDT
+// alone are NOT persisted anywhere on their own -- extract-preformatted-
+// sdt.js always merges them with PyMuPDF's own regions FIRST, and it's only
+// that merged, unioned, caption-matched result that ever reaches this
+// module's own cache/embeddings.
+LLMPreformatted = {
+	_sdtScriptName: "extract-preformatted-sdt.js",
+	// PyMuPDF background-fill+font detection (see its own header comment) --
+	// deployed into the writable LLMz/scripts/ dir by this module's own
+	// init() below, same as document/figures.js's own list_page_images.py/
+	// render_crops.py, since extract-preformatted-sdt.js (a plain Node
+	// script) needs a real filesystem path to invoke it with, not something
+	// resolvable from inside a packed .xpi's jar: URI.
+	_pyScriptName: "extract_preformatted.py",
+	_cacheVersion: 1, // bump when the cached index schema changes (JS-side, not just Python/Node scripts)
+	_venvMissing: false,
+	_indexCache: new Map(),
+
+	log(msg) {
+		Zotero.debug("LLM Chat Pane [Preformatted]: " + msg);
+	},
+
+	// Delegates to LLMPythonSetup (core/python-setup.js), which owns the
+	// venv's actual layout convention -- this must always resolve to the
+	// SAME path that module's own setup() creates, so it's the single
+	// source of truth rather than a second hardcoded copy.
+	_pythonPath() {
+		return LLMPythonSetup._venvPythonPath(LLMPythonSetup.venvDir());
+	},
+
+	_scriptPath(name) {
+		return PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", name);
+	},
+
+	// Unlike document/tables.js (SDT-only detection, venv only ever needed
+	// lazily for on-demand image rendering), detection ITSELF needs the
+	// venv here -- extract-preformatted-sdt.js calls extract_preformatted.py
+	// as a real subprocess as its very first step -- so this checks/flags
+	// venv presence the same way document/figures.js already does for its
+	// own list_page_images.py, and getPreformattedIndex below refuses to run
+	// at all (with a clear message) rather than letting the Node script fail
+	// with a much less diagnostic underlying error.
+	async init(rootURI) {
+		let pythonPath = this._pythonPath();
+		if (!await IOUtils.exists(pythonPath)) {
+			this._venvMissing = true;
+			this.log(`init: venv not found at ${pythonPath}`);
+			this.log("init: set it up with the \"venv\" button, or manually:");
+			this.log("  python3 -m venv ~/Zotero/LLMz/venv");
+			this.log("  ~/Zotero/LLMz/venv/bin/pip install -r requirements.txt");
+		}
+		else {
+			this._venvMissing = false;
+			this.log(`init: venv found at ${pythonPath}`);
+		}
+
+		try {
+			let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts");
+			await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
+			let src = await Zotero.File.getContentsFromURL(rootURI + "scripts/" + this._pyScriptName);
+			let destPath = this._scriptPath(this._pyScriptName);
+			// Skipped when unchanged -- an unconditional rewrite here bumps the
+			// file's mtime on every single plugin startup even when its content
+			// is identical, which invalidates _scriptFingerprint() (and
+			// therefore the disk cache built on getPreformattedIndex below) on
+			// the first prompt after every restart, forcing a needless
+			// re-extraction.
+			let existing = null;
+			try {
+				existing = await IOUtils.readUTF8(destPath);
+			}
+			catch (e) {} // doesn't exist yet -- fall through to write
+			if (existing === src) {
+				this.log(`init: ${this._pyScriptName} already up to date, skipping rewrite`);
+			}
+			else {
+				await IOUtils.writeUTF8(destPath, src);
+				this.log(`init: deployed ${this._pyScriptName}`);
+			}
+		}
+		catch (e) {
+			this.log(`init: failed to deploy ${this._pyScriptName}: ${e.message}`);
+		}
+	},
+
+	_nodeScriptPath(name) {
+		return PathUtils.join(LLMReferences._extensionRoot, "scripts", name);
+	},
+
+	async _cacheDir() {
+		let dir = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "cache", "preformatted");
+		await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
+		return dir;
+	},
+
+	// Both scripts directly affect detection output here (unlike
+	// figures.js's own render_crops.py, deliberately excluded from ITS
+	// fingerprint since it only ever fills in image_data lazily, AFTER
+	// detection) -- extract_preformatted.py's own fill/font signals feed
+	// directly into extract-preformatted-sdt.js's merge, so either one
+	// changing can change the result.
+	async _scriptFingerprint() {
+		try {
+			let parts = [`v${this._cacheVersion}`];
+			let sdtStat = await IOUtils.stat(this._nodeScriptPath(this._sdtScriptName));
+			parts.push(`${sdtStat.size}:${sdtStat.lastModified}`);
+			let pyStat = await IOUtils.stat(this._scriptPath(this._pyScriptName));
+			parts.push(`${pyStat.size}:${pyStat.lastModified}`);
+			return parts.join("|");
+		}
+		catch (e) {
+			return null;
+		}
+	},
+
+	// `embeddingProvider`/`embeddingModel` are resolved ONCE by the caller
+	// (getPreformattedIndex), not re-resolved here -- see its own comment
+	// for why (the same values are also needed for the memory-cache check,
+	// which happens before this is ever called).
+	async _loadDiskCache(item, embeddingProvider, embeddingModel) {
+		try {
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			if (!await IOUtils.exists(path)) return null;
+			let index = JSON.parse(await IOUtils.readUTF8(path));
+			if (index.scriptFingerprint !== await this._scriptFingerprint()) {
+				this.log(`_loadDiskCache: stale (extraction script(s) changed) for item ${item.id}`);
+				return null;
+			}
+			// contentEmbedding/captionEmbedding were computed via
+			// LLMCitation.embedBatched, which routes through whichever
+			// embedding provider/model was selected AT THAT TIME -- a cache
+			// built under a different provider/model is silently incompatible
+			// (not comparable via cosine similarity, even if the vector
+			// happens to be the same length), so it must invalidate here too,
+			// same as document/figures.js's/document/tables.js's own
+			// _loadDiskCache.
+			if (index.embeddingProvider !== embeddingProvider || index.embeddingModel !== embeddingModel) {
+				this.log(`_loadDiskCache: stale (embedding provider/model changed) for item ${item.id}`);
+				return null;
+			}
+			this.log(`_loadDiskCache: loaded ${index.preformatted.length} preformatted region(s) for item ${item.id}`);
+			return index;
+		}
+		catch (e) {
+			this.log(`_loadDiskCache: failed: ${e.message}`);
+			return null;
+		}
+	},
+
+	async _saveDiskCache(item, index) {
+		try {
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			// contentEmbedding/captionEmbedding stripped before writing -- the
+			// embeddings DB (see getPreformattedIndex's own sync right after
+			// this call) is the sole store for the actual vectors now, same
+			// reasoning as citation.js's/figures.js's/tables.js's own disk
+			// caches. A shallow per-region copy, not a mutation of
+			// `index.preformatted` itself -- the caller keeps holding (and
+			// memory-caching) that same object, embeddings and all, unrelated
+			// to what actually lands on disk.
+			let diskIndex = {
+				...index,
+				preformatted: index.preformatted.map(({ contentEmbedding, captionEmbedding, ...rest }) => rest),
+			};
+			await IOUtils.writeUTF8(path, JSON.stringify(diskIndex, null, 2));
+			this.log(`_saveDiskCache: saved ${index.preformatted.length} preformatted region(s) for item ${item.id}`);
+		}
+		catch (e) {
+			this.log(`_saveDiskCache: failed: ${e.message}`);
+		}
+	},
+
+	async _extractRaw(item, onMessage) {
+		let pdfPath = item.getFilePath();
+		if (!pdfPath) throw new Error("Item has no attached file path");
+		let outputPath = PathUtils.join(Zotero.DataDirectory.dir, "LLMz", "scripts", `preformatted_${item.id}.json`);
+		let structureCachePath = await LLMStructureSDT.ensureStructureCache(item, onMessage);
+		// python_path/extract_preformatted_script_path are resolved here and
+		// passed in as plain CLI args -- extract-preformatted-sdt.js is a
+		// plain Node script with no access to LLMPythonSetup's own venv-
+		// resolution logic (see its own header comment).
+		await LLMReferences._runNode(
+			this._nodeScriptPath(this._sdtScriptName), this._sdtScriptName,
+			pdfPath, outputPath, this._pythonPath(), this._scriptPath(this._pyScriptName), structureCachePath
+		);
+		let preformatted = JSON.parse(await IOUtils.readUTF8(outputPath));
+		IOUtils.remove(outputPath).catch(() => {});
+		this.log(`_extractRaw: extracted ${preformatted.length} preformatted region(s)`);
+		return preformatted;
+	},
+
+	// Embeds each region's own CONTENT (its raw, uncollapsed text -- always)
+	// and its matched CAPTION (only for the subset with a non-empty
+	// `.caption`, see extract-preformatted-sdt.js's own findNearbyCaption)
+	// as two independent vectors -- same "separate content/caption sources"
+	// convention document/tables.js's own _addTextEmbeddings already uses,
+	// for the same reason (different-quality signals; a future retrieval
+	// step can query both independently and union the results, see
+	// citation.js's own getRelevantChunks' `sources` handling). Filtering to
+	// non-empty captions here (unlike tables.js, whose captions are always
+	// present by construction of its own caption-anchored detection) mirrors
+	// this module's predecessor logic in citation.js -- a listing with no
+	// matched label simply has no caption row at all, not an embedding of
+	// empty text. `progress`, if given, has its setProgress(current, total)
+	// called as batches complete, same in-place progress reporting
+	// citation.js's/figures.js's/tables.js's own embedding loops use.
+	async _addTextEmbeddings(preformatted, textModel, progress, provider) {
+		if (!preformatted.length) return preformatted;
+		if (!textModel) textModel = await LLMCitation.getEmbeddingModel();
+		try {
+			let captioned = preformatted.filter(pf => pf.caption);
+			let total = preformatted.length + captioned.length;
+			let contentEmbeddings = await LLMCitation.embedBatched(preformatted.map(pf => pf.text), textModel, provider, {
+				onProgress: completed => progress?.setProgress?.(completed, total),
+			});
+			let captionEmbeddings = await LLMCitation.embedBatched(captioned.map(pf => pf.caption), textModel, provider, {
+				onProgress: completed => progress?.setProgress?.(preformatted.length + completed, total),
+			});
+			for (let i = 0; i < preformatted.length; i++) {
+				preformatted[i].contentEmbedding = contentEmbeddings[i];
+			}
+			// `captioned` holds the SAME object references as `preformatted`
+			// (Array.prototype.filter doesn't copy elements) -- mutating them
+			// here is mutating the matching entries in `preformatted` too.
+			for (let i = 0; i < captioned.length; i++) {
+				captioned[i].captionEmbedding = captionEmbeddings[i];
+			}
+		}
+		catch (e) {
+			this.log(`_addTextEmbeddings: failed: ${e.message}`);
+		}
+		return preformatted;
+	},
+
+	// Builds (or returns an already-cached) internal index -- memory/disk
+	// cache lookups exactly mirror document/figures.js's/document/tables.js's
+	// own getFigureIndex/getTableIndex. Internal shape:
+	// { preformatted: [...], scriptFingerprint, embeddingProvider,
+	//   embeddingModel } -- getPreformattedIndex below reshapes this into
+	// the { sentences, model, provider, paperId, sources } view
+	// llm/prompt.js's buildPromptWithActivePDFContext/citation.js's
+	// getRelevantChunks actually expect, same split citation.js's own
+	// getTextIndex/getParagraphIndex used to have.
+	async _getRawIndex(item, onEmbeddingStart, onMessage) {
+		if (this._venvMissing) {
+			throw new Error(
+				"Python venv not found. Set it up with the \"venv\" button, or manually:\n"
+				+ "  python3 -m venv ~/Zotero/LLMz/venv\n"
+				+ "  ~/Zotero/LLMz/venv/bin/pip install -r requirements.txt"
+			);
+		}
+
+		// Resolved BEFORE the memory-cache check below (not just threaded
+		// through to _loadDiskCache further down) -- switching provider/model
+		// mid-session must invalidate an already-loaded memory-cached index
+		// too, since _loadDiskCache's own check would otherwise never even
+		// run (only consulted on a memory-cache MISS).
+		let embeddingProvider = LLMInterfaces._embeddingProvider;
+		let embeddingModel = await LLMCitation.getEmbeddingModel();
+
+		let memoryCached = this._indexCache.get(item.id);
+		if (memoryCached && memoryCached.embeddingProvider === embeddingProvider && memoryCached.embeddingModel === embeddingModel) {
+			this.log(`_getRawIndex: memory cache hit for item ${item.id}`);
+			return memoryCached;
+		}
+
+		let cached = await this._loadDiskCache(item, embeddingProvider, embeddingModel);
+		if (cached) {
+			this._indexCache.set(item.id, cached);
+			return cached;
+		}
+
+		let preformatted = await this._extractRaw(item, onMessage);
+		let progress = preformatted.length ? onEmbeddingStart?.(embeddingProvider, embeddingModel) : null;
+		let embedded = await this._addTextEmbeddings(preformatted, embeddingModel, progress, embeddingProvider);
+		let captionedCount = embedded.filter(pf => pf.captionEmbedding).length;
+		if (progress) {
+			progress.textContent = `Recomputed ${embedded.length} preformatted content and ${captionedCount} preformatted caption embedding${(embedded.length + captionedCount) === 1 ? "" : "s"} using ${embeddingProvider} ${embeddingModel}.`;
+		}
+		let index = { preformatted: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
+		this._indexCache.set(item.id, index);
+		await this._saveDiskCache(item, index);
+		// Mirrors the disk-cache write into the embeddings DB (one .sqlite
+		// file per model, see core/llm/embeddings-db.js) -- source_id here is
+		// each region's own ARRAY POSITION in `embedded` (0-indexed), NOT
+		// preformatted_id (1-indexed) -- deliberately unlike table_id/
+		// figure_id, which tables.js/figures.js use as their own sourceId
+		// since neither ever goes through LLMCitation.getRelevantChunks.
+		// This module's own getPreformattedIndex DOES (see its own comment),
+		// and getRelevantChunks looks a hit back up via a direct array index
+		// (`index.sentences[r.sourceId]`) -- a 1-indexed id there would be
+		// off by one against the 0-indexed `sentences` array
+		// getPreformattedIndex returns (built via a straight `.map()` over
+		// this SAME `embedded` array, so index positions line up exactly).
+		// Best-effort, same reasoning as citation.js's/figures.js's/
+		// tables.js's own sync -- the disk cache above is already the
+		// source of truth this module itself reads from; this DB is an
+		// additional, non-authoritative mirror.
+		try {
+			let contentEntries = embedded
+				.map((pf, i) => ({ sourceId: i, embedding: pf.contentEmbedding }))
+				.filter(e => e.embedding);
+			let captionEntries = embedded
+				.map((pf, i) => ({ sourceId: i, embedding: pf.captionEmbedding }))
+				.filter(e => e.embedding);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "preformatted_content", contentEntries);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "preformatted_caption", captionEntries);
+			onMessage?.(`Synced ${contentEntries.length} preformatted content and ${captionEntries.length} preformatted caption embedding${(contentEntries.length + captionEntries.length) === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
+		}
+		catch (e) {
+			this.log(`_getRawIndex: failed to sync to embeddings DB: ${e.message}`);
+			onMessage?.(`Failed to sync preformatted embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
+		}
+		return index;
+	},
+
+	// Public entry point, used by llm/prompt.js's buildPromptWithActivePDFContext
+	// the same way LLMCitation.getParagraphIndex is -- getRelevantChunks
+	// against BOTH `preformatted_content` and `preformatted_caption` (via
+	// `sources`, not the singular `source` getParagraphIndex/getCitationIndex
+	// use -- see getRelevantChunks' own comment on how it dedupes a region
+	// matched via either or both of its own two rows) picks the top-K most
+	// relevant code/JSON/listing regions when the full PDF doesn't fit the
+	// context budget, same retrieval mechanism as paragraphs, just against
+	// two separate DB sources so a preformatted region never competes with
+	// (or gets rendered as) an ordinary paragraph. `order` on each returned
+	// entry is `blockIndex` (see extract-preformatted-sdt.js's own header
+	// comment) -- the SAME raw structure.content-index scale
+	// core/citation.js's own paragraph/heading `order` values use, so
+	// llm/prompt.js's _interleaveHeadingsAndParagraphs can correctly
+	// interleave a region among headings/paragraphs in true document order.
+	// `pageIndex`/`rects` are flattened up from extract-preformatted-sdt.js's
+	// own nested `position` field -- same flat shape citation.js's own
+	// _textRecord already gives paragraphs/headings, in case a future
+	// citation-link mechanism (there's no `<ref:preformatted:N>` yet) needs
+	// to navigate to a region the same way it already can for a paragraph.
+	async getPreformattedIndex(item, onEmbeddingStart, onMessage) {
+		let raw = await this._getRawIndex(item, onEmbeddingStart, onMessage);
+		if (!raw) return null;
+		return {
+			sentences: raw.preformatted.map(pf => ({
+				...pf,
+				order: pf.blockIndex,
+				pageIndex: pf.position?.pageIndex ?? null,
+				rects: pf.position?.rects || [],
+			})),
+			model: raw.embeddingModel,
+			provider: raw.embeddingProvider,
+			paperId: item.id,
+			sources: ["preformatted_content", "preformatted_caption"],
+		};
+	},
+
+	// Debug affordance ("Clear Cache" button) -- drops both the memory and
+	// disk cache for this item, so the next getPreformattedIndex() call
+	// re-runs extraction from scratch rather than reusing a possibly-stale
+	// result. Deliberately leaves this item's embeddings DB rows untouched
+	// -- same single combined action document/figures.js's/document/
+	// tables.js's own clearCache already is (unlike citation.js's own split
+	// clearTextCache/clearEmbeddingsCache), consistent with how ui/advanced.js
+	// wires every OTHER per-type cache-status row.
+	async clearCache(item) {
+		this._indexCache.delete(item.id);
+		try {
+			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
+			await IOUtils.remove(path, { ignoreAbsent: true });
+			this.log(`clearCache: cleared for item ${item.id}`);
+		}
+		catch (e) {
+			this.log(`clearCache: failed: ${e.message}`);
+		}
+	},
+
+	// Cheap disk existence check (no content read) -- used by ui/advanced.js's
+	// "Library index status" bar the same way document/figures.js's/
+	// document/tables.js's own hasCache is.
+	async hasCache(item) {
+		let dir = await this._cacheDir();
+		return IOUtils.exists(PathUtils.join(dir, `${item.id}.json`));
+	},
+};

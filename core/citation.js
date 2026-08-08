@@ -7,12 +7,18 @@ LLMCitation = {
 	// _cacheVersion, same convention). _loadDiskCache's own fingerprint
 	// check alone can't detect this: the fingerprint is still based on
 	// Zotero's own linear text (see _textFingerprint), which hasn't
-	// changed, even though _buildSentencesAndParagraphsFromStructure now
+	// changed, even though _buildTextElementsFromStructure now
 	// derives the actual sentences/paragraphs from the SDT structure
 	// instead -- so a stale cache from before that change would otherwise
-	// keep being treated as fresh forever. Bumped once, here, for exactly
-	// that switch.
-	_cacheVersion: 3,
+	// keep being treated as fresh forever. Most recently bumped when
+	// `preformatted` extraction moved OUT of this module entirely (see
+	// core/document/preformatted.js) -- this module's own disk cache no
+	// longer carries a `preformatted` field at all, and heading/paragraph
+	// `order` values switched from a separately-incremented compact counter
+	// to the block's own raw structure.content index (so they're directly
+	// comparable to LLMPreformatted's own `order`, which is a region's
+	// `blockIndex` -- see llm/prompt.js's _interleaveHeadingsAndParagraphs).
+	_cacheVersion: 7,
 
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [Citation]: " + msg);
@@ -133,7 +139,7 @@ LLMCitation = {
 	// `maxCitationChunks` is applied ONCE, to the final combined sentence
 	// list, not per block, which would let a single pathological block
 	// alone reach the cap.
-	async _buildSentencesAndParagraphsFromStructure(structure, sentencesPerParagraph = 5) {
+	async _buildTextElementsFromStructure(structure, sentencesPerParagraph = 5) {
 		let sentences = [];
 		let paragraphs = [];
 		// 'list' blocks are expanded into their OWN 'listitem' children here
@@ -151,27 +157,57 @@ LLMCitation = {
 		// concretely on this plugin's own test paper. Per-item processing
 		// below avoids both problems: each listitem gets its own
 		// independent sentence split and position, identical to how a
-		// top-level 'paragraph' block already works. 'preformatted' blocks
-		// are indexed as a single unit, same as 'paragraph' -- no
-		// separator/length-cap issue there, since each is already one
-		// contiguous node rather than several sibling items joined together.
-		let blocks = [];
-		for (let block of structure.content) {
-			if (block.type === "paragraph" || block.type === "preformatted") {
-				blocks.push(block);
+		// top-level 'paragraph' block already works.
+		//
+		// 'heading' blocks are recorded here too, as their own ordered
+		// PLACEHOLDER (kind: "heading") interleaved with the sentence-
+		// bearing units (kind: "content") -- not processed for
+		// sentences/paragraphs itself. This one ordered pass is what lets
+		// the second pass below find each heading's nearest preceding/
+		// following SENTENCE (for embedding context, see getTextIndex) by
+		// walking outward from the heading's own position in this same
+		// list, rather than needing a separate walk of structure.content.
+		// 'preformatted' blocks are NOT built here at all -- see
+		// core/document/preformatted.js instead, which combines SDT's own
+		// 'preformatted' blocks with an independent PyMuPDF detection pass
+		// (see that module's own header comment for why SDT alone isn't
+		// enough), entirely decoupled from this structure walk.
+		//
+		// Every unit's `order` is its own RAW structure.content index `i`
+		// (not a separately incremented counter, despite `units` being a
+		// subset of structure.content -- deliberately non-contiguous) --
+		// this is what lets llm/prompt.js's buildPromptWithActivePDFContext
+		// later re-interleave headings, paragraphs, and
+		// LLMPreformatted.getPreformattedIndex's own regions back into their
+		// real relative document order: a preformatted region's own `order`
+		// (see that module's own comment) is ALSO a raw structure.content
+		// index (its minimum constituent block's own index), so both sides
+		// only compare correctly on the SAME index scale -- a compacted
+		// per-kind counter here would silently misorder against that.
+		let units = [];
+		for (let i = 0; i < structure.content.length; i++) {
+			let block = structure.content[i];
+			if (block.type === "paragraph") {
+				units.push({ kind: "content", block, order: i });
 			}
 			else if (block.type === "list") {
 				for (let item of block.content) {
-					if (item.type === "listitem") blocks.push(item);
+					if (item.type === "listitem") units.push({ kind: "content", block: item, order: i });
 				}
 			}
+			else if (block.type === "heading") {
+				units.push({ kind: "heading", block, order: i });
+			}
 		}
-		for (let block of blocks) {
+
+		for (let unit of units) {
+			if (unit.kind !== "content") continue;
+			let block = unit.block;
 			let { text: rawText, offsetMap } = LLMCitationPosition.buildBlockTextIndex(block);
 			let { text: collapsedText, map } = this._collapseWhitespaceWithMap(rawText);
-			if (!collapsedText) continue;
+			if (!collapsedText) { unit.sentenceRecords = []; continue; }
 			let blockSentences = this.splitIntoSentences(collapsedText);
-			if (!blockSentences.length) continue;
+			if (!blockSentences.length) { unit.sentenceRecords = []; continue; }
 			let searchOffset = 0;
 			let sentenceRanges = blockSentences.map((sentence) => {
 				let start = collapsedText.indexOf(sentence, searchOffset);
@@ -184,6 +220,7 @@ LLMCitation = {
 				let position = range ? this._resolveRangePosition(map, offsetMap, range.start, range.end) : null;
 				return this._textRecord(blockSentences[i], position);
 			});
+			unit.sentenceRecords = sentenceRecords;
 			sentences.push(...sentenceRecords);
 			for (let i = 0; i < blockSentences.length; i += sentencesPerParagraph) {
 				let chunkRanges = sentenceRanges.slice(i, i + sentencesPerParagraph);
@@ -196,11 +233,53 @@ LLMCitation = {
 						resolvedRanges[resolvedRanges.length - 1].end
 					)
 					: null;
-				paragraphs.push(this._textRecord(chunkSentences.join(" "), position));
+				paragraphs.push({ ...this._textRecord(chunkSentences.join(" "), position), order: unit.order });
 			}
 		}
 		sentences = sentences.slice(0, this.maxCitationChunks);
-		return { sentences, paragraphs };
+
+		// Second pass: each heading looks outward through `units` (skipping
+		// past any OTHER heading, or a content unit that happened to
+		// contribute no sentences of its own -- e.g. empty after collapse)
+		// for the nearest real preceding/following sentence -- these aren't
+		// used as the heading's own stored text, only as extra context for
+		// its EMBEDDING input (see getTextIndex), the same way a citation
+		// sentence's own text is never touched by neighboring context.
+		let headings = [];
+		for (let i = 0; i < units.length; i++) {
+			let unit = units[i];
+			if (unit.kind !== "heading") continue;
+			let headingText = this._flattenBlockText(unit.block).replace(/\s+/g, " ").trim();
+			if (!headingText) continue;
+
+			let precedingSentence = "";
+			for (let j = i - 1; j >= 0; j--) {
+				if (units[j].kind === "content" && units[j].sentenceRecords.length) {
+					precedingSentence = units[j].sentenceRecords[units[j].sentenceRecords.length - 1].text;
+					break;
+				}
+			}
+			let followingSentence = "";
+			for (let j = i + 1; j < units.length; j++) {
+				if (units[j].kind === "content" && units[j].sentenceRecords.length) {
+					followingSentence = units[j].sentenceRecords[0].text;
+					break;
+				}
+			}
+
+			let { text: rawText, offsetMap } = LLMCitationPosition.buildBlockTextIndex(unit.block);
+			let { text: collapsedText, map } = this._collapseWhitespaceWithMap(rawText);
+			let position = collapsedText ? this._resolveRangePosition(map, offsetMap, 0, collapsedText.length) : null;
+
+			headings.push({
+				...this._textRecord(headingText, position),
+				precedingSentence,
+				followingSentence,
+				order: unit.order,
+			});
+		}
+
+		return { sentences, paragraphs, headings };
 	},
 
 	// Plain-text progress bar for a Logs entry (see llm/request.js's
@@ -276,8 +355,14 @@ LLMCitation = {
 				return null;
 			}
 			if (cached.fingerprint !== fingerprint) return null;
-			this.log(`_loadDiskCache: loaded ${cached.sentences.length} sentences, ${cached.paragraphs.length} paragraphs for item ${item.id}`);
-			return { sentences: cached.sentences, paragraphs: cached.paragraphs };
+			// `headings` defaults to [] defensively -- any cache file old
+			// enough to predate it is already caught by the cacheVersion check
+			// above (introduced alongside a bump), so this is just a safety
+			// net against a malformed or partially-written file, not a real
+			// migration path.
+			let headings = cached.headings || [];
+			this.log(`_loadDiskCache: loaded ${cached.sentences.length} sentences, ${cached.paragraphs.length} paragraphs, ${headings.length} headings for item ${item.id}`);
+			return { sentences: cached.sentences, paragraphs: cached.paragraphs, headings };
 		}
 		catch (e) {
 			this.log(`_loadDiskCache: failed for item ${item.id}: ${e.message}`);
@@ -285,11 +370,11 @@ LLMCitation = {
 		}
 	},
 
-	async _saveDiskCache(item, fingerprint, sentences, paragraphs) {
+	async _saveDiskCache(item, fingerprint, sentences, paragraphs, headings) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
-			await IOUtils.writeUTF8(path, JSON.stringify({ cacheVersion: this._cacheVersion, fingerprint, sentences, paragraphs }, null, 2));
-			this.log(`_saveDiskCache: saved ${sentences.length} sentences, ${paragraphs.length} paragraphs for item ${item.id}`);
+			await IOUtils.writeUTF8(path, JSON.stringify({ cacheVersion: this._cacheVersion, fingerprint, sentences, paragraphs, headings }, null, 2));
+			this.log(`_saveDiskCache: saved ${sentences.length} sentences, ${paragraphs.length} paragraphs, ${headings.length} headings for item ${item.id}`);
 		}
 		catch (e) {
 			this.log(`_saveDiskCache: failed for item ${item.id}: ${e.message}`);
@@ -351,14 +436,14 @@ LLMCitation = {
 		let fingerprint = this._textFingerprint(text);
 
 		let diskCached = await this._loadDiskCache(item, fingerprint);
-		let sentences, paragraphs;
+		let sentences, paragraphs, headings;
 		if (diskCached) {
-			({ sentences, paragraphs } = diskCached);
+			({ sentences, paragraphs, headings } = diskCached);
 		}
 		else {
 			// SDT structure is the single source of truth for the actual
 			// sentence/paragraph TEXT now (see
-			// _buildSentencesAndParagraphsFromStructure's own comment) --
+			// _buildTextElementsFromStructure's own comment) --
 			// `text`/`fingerprint` above are still used only for the disk
 			// cache's own staleness check, same as before. Returns null
 			// (same as the `!sentences.length` guard below already does for
@@ -369,11 +454,11 @@ LLMCitation = {
 			// exists to stop depending on.
 			let structure = await LLMCitationPosition._getStructure(item);
 			if (!structure) return null;
-			({ sentences, paragraphs } = await this._buildSentencesAndParagraphsFromStructure(structure));
+			({ sentences, paragraphs, headings } = await this._buildTextElementsFromStructure(structure));
 		}
 		if (!sentences.length) return null;
 
-		let [sentenceDbStatus, paragraphDbStatus] = await Promise.all([
+		let [sentenceDbStatus, paragraphDbStatus, headingDbStatus] = await Promise.all([
 			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "sentence" }).catch((e) => {
 				this.log(`getTextIndex: DB lookup failed (sentence) for item ${item.id}: ${e.message}`);
 				return { count: 0 };
@@ -382,12 +467,17 @@ LLMCitation = {
 				this.log(`getTextIndex: DB lookup failed (paragraph) for item ${item.id}: ${e.message}`);
 				return { count: 0 };
 			}),
+			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "heading" }).catch((e) => {
+				this.log(`getTextIndex: DB lookup failed (heading) for item ${item.id}: ${e.message}`);
+				return { count: 0 };
+			}),
 		]);
 		let sentenceDbCount = sentenceDbStatus.count;
 		let paragraphDbCount = paragraphDbStatus.count;
+		let headingDbCount = headingDbStatus.count;
 
-		if (sentenceDbCount === sentences.length && paragraphDbCount === paragraphs.length) {
-			let index = { sentences, paragraphs, model, provider };
+		if (sentenceDbCount === sentences.length && paragraphDbCount === paragraphs.length && headingDbCount === headings.length) {
+			let index = { sentences, paragraphs, headings, model, provider };
 			this._indexCache.set(item.id, index);
 			// The DB already has everything needed for retrieval, but if the
 			// disk cache is what's actually MISSING here (e.g. a failed prior
@@ -398,42 +488,58 @@ LLMCitation = {
 			// treating this paper as unindexed forever, even with full
 			// embeddings already in the DB.
 			if (!diskCached) {
-				await this._saveDiskCache(item, fingerprint, sentences, paragraphs);
+				await this._saveDiskCache(item, fingerprint, sentences, paragraphs, headings);
 			}
-			this.log(`getTextIndex: found ${sentenceDbCount} sentence / ${paragraphDbCount} paragraph embeddings in the embeddings DB for item ${item.id}`);
+			this.log(`getTextIndex: found ${sentenceDbCount} sentence / ${paragraphDbCount} paragraph / ${headingDbCount} heading embeddings in the embeddings DB for item ${item.id}`);
 			return index;
 		}
 
 		let progress = onEmbeddingStart?.(provider, model);
-		let total = sentences.length + paragraphs.length;
-		this.log(`getTextIndex: embedding ${sentences.length} sentences + ${paragraphs.length} paragraphs with ${provider}/${model}`);
-		// Two sequential embedBatched calls (not one merged array) -- keeps
-		// each kind's own chunk-to-embedding correspondence trivial to zip
-		// back together below, and `total`/the running offset here give a
-		// single combined 0..total progress readout across both phases
-		// rather than two separate bars.
+		let total = sentences.length + paragraphs.length + headings.length;
+		this.log(`getTextIndex: embedding ${sentences.length} sentences + ${paragraphs.length} paragraphs + ${headings.length} headings with ${provider}/${model}`);
+		// Sequential embedBatched calls (not one merged array) -- keeps each
+		// kind's own chunk-to-embedding correspondence trivial to zip back
+		// together below, and `total`/the running offset here give a single
+		// combined 0..total progress readout across every phase rather than
+		// separate bars. A heading's own embedding INPUT is its surrounding
+		// context (precedingSentence + heading text + followingSentence,
+		// see _buildTextElementsFromStructure's own comment on why
+		// -- a bare heading like "III. Related Work" carries almost no
+		// semantic signal on its own for similarity search) -- but the
+		// STORED text/position (in `headings` itself, both here and on
+		// disk) stays just the heading's own text, never the surrounding
+		// sentences.
 		let sentenceEmbeddings = await this.embedBatched(sentences.map(s => s.text), model, provider, {
 			onProgress: completed => progress?.setProgress?.(completed, total),
 		});
 		let paragraphEmbeddings = await this.embedBatched(paragraphs.map(p => p.text), model, provider, {
 			onProgress: completed => progress?.setProgress?.(sentences.length + completed, total),
 		});
-		let embeddedCount = sentenceEmbeddings.length + paragraphEmbeddings.length;
-		if (progress) progress.textContent = `Recomputed ${sentenceEmbeddings.length} sentence and ${paragraphEmbeddings.length} paragraph embedding${embeddedCount === 1 ? "" : "s"} using ${provider} ${model}.`;
+		let headingEmbeddings = await this.embedBatched(
+			headings.map(h => [h.precedingSentence, h.text, h.followingSentence].filter(Boolean).join(" ")),
+			model, provider,
+			{ onProgress: completed => progress?.setProgress?.(sentences.length + paragraphs.length + completed, total) }
+		);
+		let embeddedCount = sentenceEmbeddings.length + paragraphEmbeddings.length + headingEmbeddings.length;
+		if (progress) {
+			progress.textContent = `Recomputed ${sentenceEmbeddings.length} sentence, ${paragraphEmbeddings.length} paragraph, and ${headingEmbeddings.length} heading embedding${embeddedCount === 1 ? "" : "s"} using ${provider} ${model}.`;
+		}
 
-		let index = { sentences, paragraphs, model, provider };
+		let index = { sentences, paragraphs, headings, model, provider };
 		this._indexCache.set(item.id, index);
-		await this._saveDiskCache(item, fingerprint, sentences, paragraphs);
+		await this._saveDiskCache(item, fingerprint, sentences, paragraphs, headings);
 		try {
 			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "sentence",
 				sentences.map((s, i) => ({ sourceId: i, embedding: sentenceEmbeddings[i] })));
 			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "paragraph",
 				paragraphs.map((p, i) => ({ sourceId: i, embedding: paragraphEmbeddings[i] })));
-			onMessage?.(`Synced ${sentenceEmbeddings.length} sentence and ${paragraphEmbeddings.length} paragraph embedding${embeddedCount === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "heading",
+				headings.map((h, i) => ({ sourceId: i, embedding: headingEmbeddings[i] })));
+			onMessage?.(`Synced ${sentenceEmbeddings.length} sentence, ${paragraphEmbeddings.length} paragraph, and ${headingEmbeddings.length} heading embedding${embeddedCount === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
 		}
 		catch (e) {
 			this.log(`getTextIndex: failed to sync to embeddings DB: ${e.message}`);
-			onMessage?.(`Failed to sync sentence/paragraph embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
+			onMessage?.(`Failed to sync sentence/paragraph/heading embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
 		}
 		return index;
 	},
@@ -455,25 +561,32 @@ LLMCitation = {
 	},
 
 	// Paragraph-level view over getTextIndex, used by llm/prompt.js's
-	// buildPromptWithActivePDFContext for a PDF too long to fit whole.
+	// buildPromptWithActivePDFContext both for a PDF too long to fit whole,
+	// and (via its own `headings`, passed through unchanged here) to
+	// interleave the paper's full heading outline alongside whichever
+	// paragraphs actually get shown -- see that function's own comment.
 	async getParagraphIndex(item, text, onEmbeddingStart, onMessage) {
 		let index = await this.getTextIndex(item, text, onEmbeddingStart, onMessage);
 		if (!index) return null;
-		return { sentences: index.paragraphs, model: index.model, provider: index.provider, paperId: item.id, source: "paragraph" };
+		return { sentences: index.paragraphs, headings: index.headings, model: index.model, provider: index.provider, paperId: item.id, source: "paragraph" };
 	},
 
-	// "Embeddings" cache checkbox -- true if this item has ANY sentence OR
-	// paragraph embeddings in the DB under the CURRENTLY selected model. A
-	// disk check (like hasCache above) would be meaningless here -- the
-	// embeddings themselves live in embeddings-db.js's own per-model
-	// .sqlite file, not a JSON blob under this module's own _cacheDir.
+	// "Embeddings" cache checkbox -- true if this item has ANY sentence,
+	// paragraph, OR heading embeddings in the DB under the CURRENTLY
+	// selected model. A disk check (like hasCache above) would be
+	// meaningless here -- the embeddings themselves live in
+	// embeddings-db.js's own per-model .sqlite file, not a JSON blob under
+	// this module's own _cacheDir. Preformatted embeddings are NOT checked
+	// here anymore -- see core/document/preformatted.js's own hasCache
+	// instead, wired as its own separate row in ui/advanced.js.
 	async hasEmbeddingsCache(item) {
 		let model = await this.getEmbeddingModel();
-		let [sentenceCount, paragraphCount] = await Promise.all([
+		let [sentenceCount, paragraphCount, headingCount] = await Promise.all([
 			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "sentence" }).then(r => r.count).catch(() => 0),
 			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "paragraph" }).then(r => r.count).catch(() => 0),
+			LLMEmbeddingsDB.hasEmbeddings(item.id, model, { source: "heading" }).then(r => r.count).catch(() => 0),
 		]);
-		return sentenceCount > 0 || paragraphCount > 0;
+		return sentenceCount > 0 || paragraphCount > 0 || headingCount > 0;
 	},
 
 	// "Text" cache checkbox's own clear action -- drops the memory index
@@ -501,20 +614,22 @@ LLMCitation = {
 	},
 
 	// "Embeddings" cache checkbox's own clear action -- drops the memory
-	// index cache and this item's embeddings DB rows (sentence AND
-	// paragraph) UNDER THE CURRENTLY SELECTED embedding model only (a
-	// paper's embeddings under some PREVIOUSLY used model, if any, are
-	// simply left in that model's own file untouched -- same "current
-	// model only" scoping clearCache always used), but leaves disk
-	// text.json untouched. Forces the next getTextIndex call to re-embed
-	// from the still-cached sentences/paragraphs, without redoing
-	// SDT-derived sentence splitting.
+	// index cache and this item's embeddings DB rows (sentence, paragraph,
+	// heading) UNDER THE CURRENTLY SELECTED embedding model only (a paper's
+	// embeddings under some PREVIOUSLY used model, if any, are simply left
+	// in that model's own file untouched -- same "current model only"
+	// scoping clearCache always used), but leaves disk text.json untouched.
+	// Forces the next getTextIndex call to re-embed from the still-cached
+	// sentences/paragraphs/headings, without redoing SDT-derived sentence
+	// splitting. Preformatted embeddings are NOT cleared here anymore --
+	// see core/document/preformatted.js's own clearCache instead.
 	async clearEmbeddingsCache(item) {
 		this._indexCache.delete(item.id);
 		try {
 			let model = await this.getEmbeddingModel();
 			await LLMEmbeddingsDB.deleteForPaper(item.id, model, { source: "sentence" });
 			await LLMEmbeddingsDB.deleteForPaper(item.id, model, { source: "paragraph" });
+			await LLMEmbeddingsDB.deleteForPaper(item.id, model, { source: "heading" });
 			this.log(`clearEmbeddingsCache: cleared embeddings DB rows for item ${item.id}`);
 		}
 		catch (e) {
@@ -564,14 +679,33 @@ LLMCitation = {
 	// llm/prompt.js's buildPromptWithActivePDFContext needs each chunk's own
 	// position to find overlapping highlight/underline notes, the same way
 	// it already can for the full-PDF (unchunked) paragraph list.
+	//
+	// `index.sources` (plural, an array -- e.g. LLMPreformatted.
+	// getPreformattedIndex's own ["preformatted_content",
+	// "preformatted_caption"]) is used instead of the singular
+	// `index.source` when present -- lets ONE preformatted region's two
+	// independently-embedded rows (its content and, if matched, its own
+	// caption -- see extract-preformatted-sdt.js's own findNearbyCaption)
+	// both compete in the same top-K ranking, without a caller needing two
+	// separate queries. Deduped by sourceId afterward (keeping the first, i.e.
+	// nearest-ranked, hit) since the SAME block matching via BOTH its
+	// content and caption rows should still only appear once in the
+	// result -- rendering it twice would just duplicate the block in
+	// <PDF_CONTEXT> for no benefit.
 	async getRelevantChunks(index, query, topK) {
 		let queryEmbedding = await this.getEmbedding(query, index.model, index.provider);
 		let results = await LLMEmbeddingsDB.query(index.model, queryEmbedding, topK, {
 			paperId: index.paperId,
-			source: index.source,
+			...(index.sources !== undefined ? { sources: index.sources } : { source: index.source }),
 		});
+		let seenSourceIds = new Set();
 		return results
 			.sort((a, b) => a.sourceId - b.sourceId)
+			.filter((r) => {
+				if (seenSourceIds.has(r.sourceId)) return false;
+				seenSourceIds.add(r.sourceId);
+				return true;
+			})
 			.map(r => index.sentences[r.sourceId])
 			.filter(Boolean);
 	},

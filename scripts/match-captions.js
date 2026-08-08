@@ -8,6 +8,18 @@
 // is table- or figure-specific; see each call site's own comments for that
 // part.
 
+import { createRequire } from 'module';
+
+// core/geometry.js is a plain CommonJS module (module.exports, no
+// import/export syntax) -- require()'d via Node's ESM-to-CommonJS bridge
+// rather than imported. Re-exported below so this module's own existing
+// importers (extract-tables-sdt.js, extract-figures-sdt.js,
+// extract-preformatted-sdt.js) don't need to know unionRect actually lives
+// in core/geometry.js.
+const require = createRequire(import.meta.url);
+const { unionRect } = require('../core/geometry.js');
+export { unionRect };
+
 // Flattens a structure node's nested `content` array (text spans, possibly
 // nested inside further content-bearing nodes) into a single plain string.
 export function flattenText(node) {
@@ -152,10 +164,6 @@ export function rectDistance(a, b) {
 	let dx = Math.max(a[0] - b[2], b[0] - a[2], 0);
 	let dy = Math.max(a[1] - b[3], b[1] - a[3], 0);
 	return Math.sqrt(dx * dx + dy * dy);
-}
-
-export function unionRect(a, b) {
-	return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
 }
 
 export function extendRect(a, m) {

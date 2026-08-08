@@ -1,7 +1,8 @@
 // "Index All" -- runs the full extraction pipeline (tables, figures,
-// references, equations, citation/paragraph embeddings) for a PDF
-// attachment, so a user can pre-warm a paper's caches in one go instead of
-// paying the extraction cost the first time they ask a question about it.
+// references, equations, preformatted/listings, citation/paragraph
+// embeddings) for a PDF attachment, so a user can pre-warm a paper's caches
+// in one go instead of paying the extraction cost the first time they ask a
+// question about it.
 //
 // _indexItem (the actual per-paper extraction work) is reused directly by
 // ui/advanced.js's Cache section "Index All" button, which runs it over
@@ -85,6 +86,7 @@ LLMUIIndexAll = {
 				LLMFigures.getFigureIndex(item, undefined, onMessage).catch((e) => this.log(`getFigureIndex failed for ${item.libraryKey}: ${e.message}`)),
 				LLMReferences.getReferenceIndex(item).catch((e) => this.log(`getReferenceIndex failed for ${item.libraryKey}: ${e.message}`)),
 				LLMEquations.getEquationIndex(item, undefined, onMessage).catch((e) => this.log(`getEquationIndex failed for ${item.libraryKey}: ${e.message}`)),
+				LLMPreformatted.getPreformattedIndex(item, undefined, onMessage).catch((e) => this.log(`getPreformattedIndex failed for ${item.libraryKey}: ${e.message}`)),
 			]);
 			return { ok: true };
 		}

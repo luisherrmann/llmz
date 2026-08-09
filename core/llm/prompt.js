@@ -972,10 +972,53 @@ LLMPrompt = {
 	// tell "nothing shown here" apart from "this section is a single
 	// heading with no body text at all".
 	_interleaveHeadingsAndParagraphs(headings, paragraphs, preformatted, notes) {
+		// Several `preformatted` entries can share ONE preformatted_id --
+		// that's how a single logical listing split across a page break is
+		// represented (see extract-preformatted-sdt.js's own grouping pass:
+		// each fragment stays its own entry, keeping its own page/rects for
+		// highlighting, and they're tied together by a shared id). For
+		// PROMPT purposes that split is pure noise -- worse, actively
+		// misleading, since only ONE fragment per group carries the
+		// matched caption, so the others would render as unlabeled orphans
+		// while their own label sits on a different block entirely.
+		// Collapsed back into one entry per group here: texts concatenated
+		// in document (`order`) order, the group's own caption taken from
+		// whichever single fragment actually has one, and `order` taken
+		// from the EARLIEST fragment so the combined block still lands in
+		// the right place relative to surrounding headings/paragraphs.
+		let groups = new Map();
+		for (let pf of preformatted) {
+			// A missing/undefined id (older cache, or a caller passing
+			// something else through) falls back to a per-entry unique key,
+			// preserving the old one-entry-per-block behavior rather than
+			// wrongly collapsing every such entry into a single group.
+			let key = pf.preformatted_id ?? `__ungrouped_${pf.order}`;
+			let group = groups.get(key);
+			if (!group) groups.set(key, { caption: pf.caption || "", parts: [pf] });
+			else {
+				if (!group.caption && pf.caption) group.caption = pf.caption;
+				group.parts.push(pf);
+			}
+		}
+		// Parts are re-sorted by their own `order` before joining rather
+		// than relying on the incoming array's order -- the full-PDF path
+		// does pass them in document order, but getRelevantChunks' own
+		// top-K retrieval is free to return a group's fragments in any
+		// order (and may return only SOME of them), so a listing's own
+		// pieces would otherwise risk being concatenated scrambled.
+		let groupedPreformatted = [...groups.values()].map((g) => {
+			let parts = [...g.parts].sort((a, b) => a.order - b.order);
+			return {
+				order: parts[0].order,
+				caption: g.caption,
+				text: parts.map(p => p.text).join("\n"),
+			};
+		});
+
 		let items = [
 			...headings.map(h => ({ order: h.order, kind: "heading", heading: h })),
 			...paragraphs.map(p => ({ order: p.order, kind: "paragraph", paragraph: p })),
-			...preformatted.map(pf => ({ order: pf.order, kind: "preformatted", preformatted: pf })),
+			...groupedPreformatted.map(pf => ({ order: pf.order, kind: "preformatted", preformatted: pf })),
 		].sort((a, b) => a.order - b.order);
 
 		let lines = [];

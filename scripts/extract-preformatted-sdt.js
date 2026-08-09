@@ -51,27 +51,44 @@
 // through here too.
 // Output: JSON array of
 //   { preformatted_id, blockIndex, page_num, bbox, text, caption, position }.
-// preformatted_id is a plain 1..N sequential id in document (block) order --
-// same "always-unambiguous integer identifier" convention table_id/figure_id
-// already use (see extract-tables-sdt.js's own comment on why). blockIndex
+// preformatted_id is a sequential id in document (block) order, same
+// "always-unambiguous integer identifier" convention table_id/figure_id
+// already use (see extract-tables-sdt.js's own comment on why) -- EXCEPT
+// it's not necessarily unique per entry: several array entries can share
+// the SAME id when a single logical listing was detected as multiple
+// separate regions (most commonly because it spans a page break -- see
+// the grouping pass in main() below), one entry per page/fragment, each
+// keeping its OWN text/bbox/position. A caller that wants one logical
+// listing's full combined text/position groups entries by shared
+// preformatted_id and reads them in ARRAY order (already sorted by
+// blockIndex, which doubles as within-group ordering); one that just
+// wants "what's on this page" already has everything per-entry. blockIndex
 // is the region's own minimum constituent block index (see step 5 below),
 // kept (unlike table_id/figure_id) since core/document/preformatted.js needs
 // it for document-order interleaving against paragraphs/headings. caption is
 // a best-effort matched label's text, or '' if none was found (see
 // pairWithCaptions below, the SAME shared caption-matching toolkit
-// extract-tables-sdt.js/extract-figures-sdt.js use, via match-captions.js);
-// when matched on the same page, `bbox`/`position` already reflect the
-// union of the region's own extent with the caption's, same convention
-// those two scripts already apply. position is { pageIndex: page_num - 1,
-// rects: [bbox] }, matching every other extraction script's own
-// convention.
+// extract-tables-sdt.js/extract-figures-sdt.js use, via match-captions.js) --
+// only ever set on the ONE entry (per group) it was actually matched
+// against, never propagated to its groupmates. When matched on the same
+// page, `bbox`/`position` already reflect the union of the region's own
+// extent with the caption's, same convention those two scripts already
+// apply. position is { pageIndex: page_num - 1, rects: [bbox] }, matching
+// every other extraction script's own convention.
 
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { createRequire } from 'module';
 import { execFileSync } from 'child_process';
 import { flattenText, unionRect, pairWithCaptions } from './match-captions.js';
 import { loadOrComputeStructure } from './structure-sdt.js';
+
+// See shared-patterns.js's own header comment for why this is require()'d
+// (via Node's ESM-to-CommonJS bridge) rather than imported -- same as
+// extract-equations.js's own use of splitSentences.
+const require = createRequire(import.meta.url);
+const { splitSentences } = require('./shared-patterns.js');
 
 // Two rects are merged (unioned) whenever extending EACH by this many points
 // on every side would make them overlap -- absorbs tiny sub-point gaps
@@ -221,6 +238,35 @@ function blockPageRectBbox(block) {
 	let rects = pageRects.filter(pr => pr[0] === pageIndex).map(pr => pr.slice(1));
 	if (!rects.length) return null;
 	return { pageIndex, bbox: rects.reduce((acc, r) => acc ? unionRect(acc, r) : r, null) };
+}
+
+// A region with NO caption of its own is very often not a distinct
+// listing at all, but a CONTINUATION of the next captioned one -- a
+// single logical listing PyMuPDF's own background-fill detection (or a
+// page break) happened to split into multiple separate regions (see the
+// merge pass in main() below). This decides whether two ADJACENT regions
+// (in document/block order) are safe to merge back into one, by checking
+// whether any block strictly BETWEEN their own block-index range contains
+// a real sentence -- reuses LLMPatterns.splitSentences (shared-patterns.js,
+// the SAME sentence-boundary split core/citation.js's own
+// splitIntoSentences applies its own 20-500 char length filter on top of
+// -- applied here too, so "genuine sentence" means the same thing here it
+// already does everywhere else in this plugin) rather than a bespoke
+// check. A 'heading'/'caption'-typed block is skipped regardless of its
+// own text length -- it's a label (e.g. a listing's own caption, or an
+// unrelated section heading the two fragments happen to straddle), never
+// prose, even a long-titled one that would otherwise pass the length
+// filter.
+function hasInterveningProse(content, afterBlockIndex, beforeBlockIndex) {
+	for (let i = afterBlockIndex + 1; i < beforeBlockIndex; i++) {
+		let block = content[i];
+		if (!block || block.type === 'heading' || block.type === 'caption') continue;
+		let text = flattenText(block).replace(/\s+/g, ' ').trim();
+		if (!text) continue;
+		let sentences = splitSentences(text).filter(s => s.length >= 20 && s.length <= 500);
+		if (sentences.length) return true;
+	}
+	return false;
 }
 
 async function main() {
@@ -375,7 +421,8 @@ async function main() {
 			}
 			if (!text.trim()) continue;
 			let blockIndex = Math.min(...blocks.map(b => b.blockIndex));
-			bodies.push({ blockIndex, page_num: pageNum, bbox: regions[r], text });
+			let maxBlockIndex = Math.max(...blocks.map(b => b.blockIndex));
+			bodies.push({ blockIndex, maxBlockIndex, page_num: pageNum, bbox: regions[r], text });
 		}
 	}
 
@@ -432,25 +479,83 @@ async function main() {
 			caption,
 			position: { pageIndex: body.page_num - 1, rects: [bbox] },
 			blockIndex: body.blockIndex,
+			maxBlockIndex: body.maxBlockIndex,
 		};
 	});
+	output.sort((a, b) => a.blockIndex - b.blockIndex);
+
+	// Grouping pass: an UNCAPTIONED region is very often not a separate
+	// listing at all, just a fragment of the NEXT captioned one --
+	// confirmed concretely (this plugin's own test paper): a
+	// `Resolve(ANSName, RequestedVersionRange):` algorithm spanning pages
+	// 7-8 came back as three SEPARATE regions (PyMuPDF's own per-page
+	// background-fill detection naturally breaks at a page boundary), with
+	// only the LAST one landing next to the paper's own real "Listing 5."
+	// label -- the other two, with no caption of their own, are really
+	// just earlier PARTS of that same listing.
+	//
+	// Deliberately does NOT physically combine these into one entry
+	// (an earlier version of this pass did, splicing the earlier
+	// fragment's own text into the later one's and DISCARDING the earlier
+	// fragment's own page/bbox/position entirely) -- that loses real
+	// information: the earlier page's own fragment no longer has anything
+	// to highlight, and a single `position` can't represent "this one
+	// logical listing has its own box on page 5 AND a separate one on page
+	// 6" anyway. Instead, every region stays its OWN separate entry (own
+	// page_num/bbox/text/position, own place in document order for
+	// llm/prompt.js's own interleaving), and fragments belonging to the
+	// SAME logical listing simply SHARE a `preformatted_id` -- a caller
+	// that wants the full combined text/position can group entries by
+	// `preformatted_id` and read them in ARRAY order (already sorted by
+	// blockIndex) itself; one that just wants "what's on this page, right
+	// here" already has everything it needs per-entry, unlike before.
+	//
+	// Walked in REVERSE document order (last region to first) so a chain
+	// of several consecutive uncaptioned fragments groups correctly in one
+	// pass. `output[i]` is grouped with `output[i - 1]` (its own immediate
+	// predecessor in document order) only if BOTH:
+	//   - prev has NO caption of its own -- a captioned prev is its own
+	//     distinct, already-labeled listing, never a fragment of a LATER
+	//     one; stops this chain here.
+	//   - hasInterveningProse finds no real sentence of body text between
+	//     prev's own end and current's own start -- a caption/heading
+	//     label (or nothing) sitting between them doesn't count, but a
+	//     genuine explanatory paragraph does, and means the two are
+	//     actually separate content that merely happen to sit near each
+	//     other.
+	let sameGroupAsNext = new Array(output.length).fill(false);
+	for (let i = output.length - 1; i >= 1; i--) {
+		let current = output[i];
+		let prev = output[i - 1];
+		if (!prev.caption && !hasInterveningProse(structure.content, prev.maxBlockIndex, current.blockIndex)) {
+			sameGroupAsNext[i - 1] = true;
+		}
+	}
 
 	// preformatted_id: plain 1..N sequential id in document (block) order --
 	// same convention table_id/figure_id already use (see
-	// extract-tables-sdt.js's own comment). blockIndex is kept in the final
-	// output (unlike table_id/figure_id's own analogous field, which strips
-	// it) -- core/document/preformatted.js needs a value directly comparable
+	// extract-tables-sdt.js's own comment), EXCEPT an id is no longer
+	// necessarily unique -- every entry in one grouping-pass group (see
+	// sameGroupAsNext above) shares the SAME id, only incrementing when a
+	// group boundary is crossed. blockIndex is kept in the final output
+	// (unlike table_id/figure_id's own analogous field, which strips it)
+	// -- core/document/preformatted.js needs a value directly comparable
 	// to core/citation.js's own paragraph/heading `order` (both are raw
 	// structure.content indices) so llm/prompt.js's
 	// _interleaveHeadingsAndParagraphs can correctly interleave a
 	// preformatted region among headings/paragraphs in true document order.
-	output.sort((a, b) => a.blockIndex - b.blockIndex);
+	let nextId = 1;
 	output.forEach((entry, i) => {
-		entry.preformatted_id = i + 1;
+		entry.preformatted_id = nextId;
+		if (!sameGroupAsNext[i]) nextId++;
 	});
 
-	fs.writeFileSync(outputPath, JSON.stringify(output));
-	console.error(`Extracted ${output.length} preformatted region(s)`);
+	// maxBlockIndex was only ever needed internally, for the merge pass
+	// above -- stripped here so it doesn't leak into the documented output
+	// schema (see this file's own header comment).
+	let finalOutput = output.map(({ maxBlockIndex, ...rest }) => rest);
+	fs.writeFileSync(outputPath, JSON.stringify(finalOutput));
+	console.error(`Extracted ${finalOutput.length} preformatted region(s)`);
 }
 
 main().catch((e) => {

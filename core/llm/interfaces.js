@@ -74,6 +74,10 @@ LLMInterfaces = {
 	saveServerSetting(providerKey, field, value) {
 		if (!this._serverSettings[providerKey]) return;
 		this._serverSettings[providerKey][field] = value;
+		// host/port feed the base URLs every cached listing is keyed by
+		// (see _cachedModelList) -- a stale entry would otherwise keep
+		// answering for the OLD server after the user repoints it.
+		this.clearModelListCache();
 		try {
 			Zotero.Prefs.set(this._serverSettingsPref, JSON.stringify(this._serverSettings), true);
 		}
@@ -110,6 +114,66 @@ LLMInterfaces = {
 			promise,
 			new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
 		]);
+	},
+
+	// Cached model listings, keyed by "<what>|<endpoint>|<apiKey>" (see each
+	// list* caller below for the exact key it builds).
+	//
+	// Every chat request resolves its model through get<Provider>Model(),
+	// which listed the provider's models FRESH each time purely to check the
+	// configured model still exists (falling back to models[0] if not) --
+	// one extra HTTP round trip per message, for an answer that essentially
+	// never changes between messages. That was a real failure source, not
+	// just waste: confirmed concretely that a chat request died outright
+	// with "Tool lookup failed: Request timed out after 10000 ms" because
+	// this listing GET queued behind embedBatched's own 8 concurrent
+	// embedding POSTs to the SAME host (see llm/embeddings.js's own
+	// `concurrency`) and blew its 10s cap -- while the actual chat call it
+	// was preparing for would have been fine.
+	//
+	// The PROMISE is cached, not the resolved array, so concurrent callers
+	// (e.g. a chat request and an embedding request resolving their models
+	// at the same moment) collapse onto ONE in-flight request instead of
+	// racing separate ones -- which is exactly the pile-up above.
+	//
+	// Failures are deliberately NOT cached (the entry is dropped on
+	// rejection): a transient timeout must not poison model resolution for
+	// the whole TTL, and a key/host the user is actively fixing should be
+	// retried on the next attempt, not after a five-minute wait.
+	_modelListCache: new Map(),
+	// Five minutes -- long enough that a burst of messages (and their
+	// embedding calls) all reuse one listing, short enough that a model
+	// pulled/added server-side (Ollama/LM Studio, where the user really
+	// does add models mid-session) shows up without restarting Zotero. The
+	// provider/model dropdown doesn't wait for it either way: it forces a
+	// refresh explicitly (see listModels' own `force` parameter).
+	_modelListTTLMs: 5 * 60 * 1000,
+
+	async _cachedModelList(key, fetchFn, force = false) {
+		let now = Date.now();
+		let entry = this._modelListCache.get(key);
+		if (!force && entry && entry.expires > now) return entry.promise;
+		let promise = fetchFn().catch((e) => {
+			// Only drop the entry if it's still OURS -- a newer forced
+			// refresh may have replaced it while this one was in flight.
+			if (this._modelListCache.get(key)?.promise === promise) {
+				this._modelListCache.delete(key);
+			}
+			throw e;
+		});
+		this._modelListCache.set(key, { expires: now + this._modelListTTLMs, promise });
+		return promise;
+	},
+
+	// Called whenever something that would change what a listing returns is
+	// edited -- an API key (setApiKey) or a self-hosted host/port
+	// (saveServerSetting). Clears everything rather than just the affected
+	// provider's entries: this runs on an explicit user settings edit (not
+	// per request), so the cost is one extra listing per provider at most,
+	// and precise per-provider key matching would have to duplicate each
+	// caller's own key-building logic here.
+	clearModelListCache() {
+		this._modelListCache.clear();
 	},
 
 	// Persisted provider/model selection, so switching providers or picking a
@@ -305,6 +369,10 @@ LLMInterfaces = {
 		let realm = this._loginManagerRealms[providerKey];
 		if (!realm) throw new Error(`Unknown API key provider "${providerKey}"`);
 		let oldLogin = this._findApiKeyLogin(providerKey);
+		// The key is part of every cached listing's own key (see
+		// _cachedModelList) -- drop the cache so the next listing actually
+		// re-authenticates rather than serving what the OLD key returned.
+		this.clearModelListCache();
 
 		if (!value) {
 			if (oldLogin) Services.logins.removeLogin(oldLogin);
@@ -328,12 +396,14 @@ LLMInterfaces = {
 		this._apiKeys[providerKey] = value;
 	},
 
-	async listOllamaModels() {
-		let response = await Zotero.HTTP.request("GET", `${this.ollamaBaseURL}/api/tags`, {
-			timeout: 10000,
-		});
-		let data = JSON.parse(response.responseText);
-		return (data.models || []).filter(m => !/embed/i.test(m.name)).map(m => m.name);
+	async listOllamaModels(force = false) {
+		return this._cachedModelList(`ollama-chat|${this.ollamaBaseURL}|`, async () => {
+			let response = await Zotero.HTTP.request("GET", `${this.ollamaBaseURL}/api/tags`, {
+				timeout: 10000,
+			});
+			let data = JSON.parse(response.responseText);
+			return (data.models || []).filter(m => !/embed/i.test(m.name)).map(m => m.name);
+		}, force);
 	},
 
 	async getOllamaModel() {
@@ -350,12 +420,14 @@ LLMInterfaces = {
 	// /embed/i (Ollama has no separate "type" field to key off of either, so
 	// this is the same naming-convention heuristic LLMCitation.getEmbeddingModel
 	// used before this module owned embedding-model listing).
-	async listOllamaEmbeddingModels() {
-		let response = await Zotero.HTTP.request("GET", `${this.ollamaBaseURL}/api/tags`, {
-			timeout: 10000,
-		});
-		let data = JSON.parse(response.responseText);
-		return (data.models || []).filter(m => /embed/i.test(m.name)).map(m => m.name);
+	async listOllamaEmbeddingModels(force = false) {
+		return this._cachedModelList(`ollama-embedding|${this.ollamaBaseURL}|`, async () => {
+			let response = await Zotero.HTTP.request("GET", `${this.ollamaBaseURL}/api/tags`, {
+				timeout: 10000,
+			});
+			let data = JSON.parse(response.responseText);
+			return (data.models || []).filter(m => /embed/i.test(m.name)).map(m => m.name);
+		}, force);
 	},
 
 	async getOllamaEmbeddingModel() {
@@ -525,15 +597,17 @@ LLMInterfaces = {
 		};
 	},
 
-	async listOpenAICompatibleModels(baseURL, apiKey) {
-		let headers = {};
-		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-		let response = await Zotero.HTTP.request("GET", `${baseURL}/models`, {
-			headers,
-			timeout: 10000,
-		});
-		let data = JSON.parse(response.responseText);
-		return (data.data || []).filter(m => !/embed/i.test(m.id)).map(m => m.id);
+	async listOpenAICompatibleModels(baseURL, apiKey, force = false) {
+		return this._cachedModelList(`openai-compatible-chat|${baseURL}|${apiKey || ""}`, async () => {
+			let headers = {};
+			if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+			let response = await Zotero.HTTP.request("GET", `${baseURL}/models`, {
+				headers,
+				timeout: 10000,
+			});
+			let data = JSON.parse(response.responseText);
+			return (data.data || []).filter(m => !/embed/i.test(m.id)).map(m => m.id);
+		}, force);
 	},
 
 	// Inverse of listOpenAICompatibleModels' own filter -- INCLUDES only
@@ -541,15 +615,17 @@ LLMInterfaces = {
 	// listXEmbeddingModels below the same way listOpenAICompatibleModels
 	// is already shared by their chat-model listing. Same /v1/models
 	// listing endpoint either way -- only the filter direction differs.
-	async listOpenAICompatibleEmbeddingModels(baseURL, apiKey) {
-		let headers = {};
-		if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-		let response = await Zotero.HTTP.request("GET", `${baseURL}/models`, {
-			headers,
-			timeout: 10000,
-		});
-		let data = JSON.parse(response.responseText);
-		return (data.data || []).filter(m => /embed/i.test(m.id)).map(m => m.id);
+	async listOpenAICompatibleEmbeddingModels(baseURL, apiKey, force = false) {
+		return this._cachedModelList(`openai-compatible-embedding|${baseURL}|${apiKey || ""}`, async () => {
+			let headers = {};
+			if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+			let response = await Zotero.HTTP.request("GET", `${baseURL}/models`, {
+				headers,
+				timeout: 10000,
+			});
+			let data = JSON.parse(response.responseText);
+			return (data.data || []).filter(m => /embed/i.test(m.id)).map(m => m.id);
+		}, force);
 	},
 
 	// `messages` is [{role: "user"|"assistant", content: string}, ...] --
@@ -716,8 +792,8 @@ LLMInterfaces = {
 			});
 	},
 
-	async listLMStudioModels() {
-		return this.listOpenAICompatibleModels(this.lmStudioBaseURL, null);
+	async listLMStudioModels(force = false) {
+		return this.listOpenAICompatibleModels(this.lmStudioBaseURL, null, force);
 	},
 
 	async getLMStudioModel() {
@@ -730,8 +806,8 @@ LLMInterfaces = {
 		return model;
 	},
 
-	async listLMStudioEmbeddingModels() {
-		return this.listOpenAICompatibleEmbeddingModels(this.lmStudioBaseURL, null);
+	async listLMStudioEmbeddingModels(force = false) {
+		return this.listOpenAICompatibleEmbeddingModels(this.lmStudioBaseURL, null, force);
 	},
 
 	async getLMStudioEmbeddingModel() {
@@ -749,8 +825,8 @@ LLMInterfaces = {
 		return this.streamOpenAICompatible(this.lmStudioBaseURL, null, model, messages, onToken, opts, images);
 	},
 
-	async listLiteLLMModels() {
-		return this.listOpenAICompatibleModels(this.liteLLMBaseURL, this._apiKeys.litellm || null);
+	async listLiteLLMModels(force = false) {
+		return this.listOpenAICompatibleModels(this.liteLLMBaseURL, this._apiKeys.litellm || null, force);
 	},
 
 	async getLiteLLMModel() {
@@ -763,8 +839,8 @@ LLMInterfaces = {
 		return model;
 	},
 
-	async listLiteLLMEmbeddingModels() {
-		return this.listOpenAICompatibleEmbeddingModels(this.liteLLMBaseURL, this._apiKeys.litellm || null);
+	async listLiteLLMEmbeddingModels(force = false) {
+		return this.listOpenAICompatibleEmbeddingModels(this.liteLLMBaseURL, this._apiKeys.litellm || null, force);
 	},
 
 	async getLiteLLMEmbeddingModel() {
@@ -811,8 +887,8 @@ LLMInterfaces = {
 	// completions endpoint this plugin uses, so this filters those out too.
 	// There's no "type" field to key off of, so this is necessarily a
 	// denylist -- new non-chat model families may need to be added here.
-	async listOpenAIModels() {
-		let models = await this.listOpenAICompatibleModels(this.openaiBaseURL, this._apiKeys.openai || null);
+	async listOpenAIModels(force = false) {
+		let models = await this.listOpenAICompatibleModels(this.openaiBaseURL, this._apiKeys.openai || null, force);
 		let nonChatPattern = /whisper|tts|dall-e|gpt-image|image-gen|moderation|davinci|babbage|-instruct$|realtime|transcribe|computer-use/i;
 		return models.filter(m => !nonChatPattern.test(m));
 	},
@@ -832,8 +908,8 @@ LLMInterfaces = {
 	// text-embedding-ada-002) all match /embed/i cleanly, and the INCLUDE-
 	// only filter already excludes every non-embedding model family (image
 	// generation, TTS, etc.) on its own.
-	async listOpenAIEmbeddingModels() {
-		return this.listOpenAICompatibleEmbeddingModels(this.openaiBaseURL, this._apiKeys.openai || null);
+	async listOpenAIEmbeddingModels(force = false) {
+		return this.listOpenAICompatibleEmbeddingModels(this.openaiBaseURL, this._apiKeys.openai || null, force);
 	},
 
 	async getOpenAIEmbeddingModel() {
@@ -864,16 +940,18 @@ LLMInterfaces = {
 	_anthropicVersion: "2023-06-01",
 	_anthropicMaxTokens: 8192,
 
-	async listAnthropicModels() {
-		let response = await Zotero.HTTP.request("GET", `${this.anthropicBaseURL}/models`, {
-			headers: {
-				"x-api-key": this._apiKeys.anthropic || "",
-				"anthropic-version": this._anthropicVersion,
-			},
-			timeout: 10000,
-		});
-		let data = JSON.parse(response.responseText);
-		return (data.data || []).map(m => m.id);
+	async listAnthropicModels(force = false) {
+		return this._cachedModelList(`anthropic-chat|${this.anthropicBaseURL}|${this._apiKeys.anthropic || ""}`, async () => {
+			let response = await Zotero.HTTP.request("GET", `${this.anthropicBaseURL}/models`, {
+				headers: {
+					"x-api-key": this._apiKeys.anthropic || "",
+					"anthropic-version": this._anthropicVersion,
+				},
+				timeout: 10000,
+			});
+			let data = JSON.parse(response.responseText);
+			return (data.data || []).map(m => m.id);
+		}, force);
 	},
 
 	async getAnthropicModel() {
@@ -1129,20 +1207,25 @@ LLMInterfaces = {
 		return this._visionModelNamePattern.test(model);
 	},
 
-	async listModels() {
+	// `force` bypasses the model-list cache (see _cachedModelList) -- passed
+	// by the provider/model dropdown, which is exactly the moment the user
+	// expects to see models added server-side since the cache was filled.
+	// Every other caller (the per-request get<Provider>Model resolvers) uses
+	// the cached path.
+	async listModels(force = false) {
 		if (this._provider === "lmstudio") {
-			return this.listLMStudioModels();
+			return this.listLMStudioModels(force);
 		}
 		if (this._provider === "litellm") {
-			return this.listLiteLLMModels();
+			return this.listLiteLLMModels(force);
 		}
 		if (this._provider === "openai") {
-			return this.listOpenAIModels();
+			return this.listOpenAIModels(force);
 		}
 		if (this._provider === "anthropic") {
-			return this.listAnthropicModels();
+			return this.listAnthropicModels(force);
 		}
-		return this.listOllamaModels();
+		return this.listOllamaModels(force);
 	},
 
 	// Same four-provider dispatch as listModels/getCurrentModel above, but
@@ -1154,17 +1237,17 @@ LLMInterfaces = {
 	// just a missing case here). ui/advanced.js's Embeddings provider
 	// dropdown only ever offers the other four, so _embeddingProvider should
 	// never actually BE "anthropic" in practice.
-	async listEmbeddingModels() {
+	async listEmbeddingModels(force = false) {
 		if (this._embeddingProvider === "lmstudio") {
-			return this.listLMStudioEmbeddingModels();
+			return this.listLMStudioEmbeddingModels(force);
 		}
 		if (this._embeddingProvider === "litellm") {
-			return this.listLiteLLMEmbeddingModels();
+			return this.listLiteLLMEmbeddingModels(force);
 		}
 		if (this._embeddingProvider === "openai") {
-			return this.listOpenAIEmbeddingModels();
+			return this.listOpenAIEmbeddingModels(force);
 		}
-		return this.listOllamaEmbeddingModels();
+		return this.listOllamaEmbeddingModels(force);
 	},
 
 	async getCurrentEmbeddingModel() {

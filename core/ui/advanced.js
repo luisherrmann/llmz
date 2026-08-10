@@ -335,7 +335,7 @@ LLMUIAdvanced = {
 			saveProvider: provider => LLMInterfaces.saveEmbeddingProvider(provider),
 			getSelectedModel: provider => LLMInterfaces._selectedEmbeddingModel[provider],
 			saveSelectedModel: (provider, model) => LLMInterfaces.saveSelectedEmbeddingModel(provider, model),
-			listModels: () => LLMInterfaces.listEmbeddingModels(),
+			listModels: force => LLMInterfaces.listEmbeddingModels(force),
 			// Keeps LLMEmbeddings' per-(embedding provider,embedding model)
 			// "Batch size" in sync with whichever pair is actually selected --
 			// same rationale/pattern as the chat Settings row's own onChange

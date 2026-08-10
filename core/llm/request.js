@@ -1033,6 +1033,22 @@ LLMRequest = {
 				figureIndex: imageResult.index,
 				referenceIndex: referenceResult.index,
 				equationIndex: equationResult.index,
+				// Read straight from LLMPreformatted's own cache rather than
+				// threaded down from the prompt-building step -- unlike the
+				// four above (each already fetched here for their own
+				// context blocks), preformatted regions are fetched inside
+				// buildPromptWithActivePDFContext itself, which doesn't hand
+				// its index back out. Cheap: this is a memory/disk cache hit
+				// by the time this runs, never a re-extraction. Best-effort
+				// -- a failure here just leaves ref:preformatted links
+				// unresolved, exactly as before this existed, rather than
+				// taking down the whole reply.
+				preformattedIndex: pdfItem
+					? await LLMPreformatted.getPreformattedIndex(pdfItem).catch((e) => {
+						this.log(`getPreformattedIndex failed while building link index: ${e.message}`);
+						return null;
+					})
+					: null,
 				notes: noteResult.notes,
 			});
 

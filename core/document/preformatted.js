@@ -330,6 +330,60 @@ LLMPreformatted = {
 		return index;
 	},
 
+	// The short, citable LABEL for a region's own matched caption -- the
+	// leading "<Word> <number>" of it ("Listing 1", "Algorithm 3"), NOT the
+	// whole caption text ("Listing 1. Example MCP Extension Data"), so a
+	// model citing it writes a short label the way it already does for
+	// "Table 1"/"Figure 2" rather than pasting a full sentence into a link.
+	// Deliberately NOT hardcoded to "Listing" -- a paper is free to label a
+	// code block "Algorithm N", "Snippet N", "Program N" etc., and the
+	// caption-shape check that let this caption through in the first place
+	// (extract-preformatted-sdt.js's own looksLikeCaptionLabel) already
+	// accepts any leading word, so this mirrors it rather than assuming one
+	// vocabulary. Returns "" when the caption doesn't actually open with
+	// that shape, letting the caller fall back to its own synthetic
+	// numbering.
+	_captionLabel(caption) {
+		let m = /^\s*([A-Za-z]+)\.?\s+[(\[{<]?(\d+)[)\]}>.:]?/.exec(caption || "");
+		return m ? `${m[1]} ${m[2]}` : "";
+	},
+
+	// Assigns each GROUP (see extract-preformatted-sdt.js's own grouping
+	// pass -- fragments of one page-split listing share a preformatted_id)
+	// a single citable label, then stamps it onto every fragment of that
+	// group so a caller holding any one fragment can cite the whole thing.
+	// A group with a usable caption label uses it ("Listing 1"); one
+	// without gets a synthetic "Preformatted N" instead, N counting ONLY
+	// the unlabeled groups, in document order -- same "separate counter for
+	// the ones with no real paper-printed number" convention
+	// extract-figures-sdt.js's own figure_extra_num / extract-tables-sdt.js's
+	// own table_extra_num already use, rather than reusing preformatted_id
+	// (which would produce visibly gappy labels like "Preformatted 5",
+	// "Preformatted 9" whenever captioned listings sit between them).
+	// `regions` must already be in document order (getPreformattedIndex's
+	// own source array is, sorted by blockIndex) so that counter is stable
+	// across runs.
+	_assignLabels(regions) {
+		let labelByGroup = new Map();
+		let unlabeledCount = 0;
+		for (let pf of regions) {
+			let key = pf.preformatted_id ?? `__ungrouped_${pf.blockIndex}`;
+			if (labelByGroup.has(key)) continue;
+			// A group's caption sits on exactly ONE of its fragments (the
+			// grouping pass only ever extends an UNcaptioned region
+			// forward), but which one isn't fixed -- scan the whole group
+			// rather than assuming it's this first-seen fragment.
+			let caption = regions.find(r => (r.preformatted_id ?? `__ungrouped_${r.blockIndex}`) === key && r.caption)?.caption;
+			let label = this._captionLabel(caption);
+			if (!label) label = `Preformatted ${++unlabeledCount}`;
+			labelByGroup.set(key, label);
+		}
+		return regions.map(pf => ({
+			...pf,
+			label: labelByGroup.get(pf.preformatted_id ?? `__ungrouped_${pf.blockIndex}`),
+		}));
+	},
+
 	// Public entry point, used by llm/prompt.js's buildPromptWithActivePDFContext
 	// the same way LLMCitation.getParagraphIndex is -- getRelevantChunks
 	// against BOTH `preformatted_content` and `preformatted_caption` (via
@@ -354,7 +408,7 @@ LLMPreformatted = {
 		let raw = await this._getRawIndex(item, onEmbeddingStart, onMessage);
 		if (!raw) return null;
 		return {
-			sentences: raw.preformatted.map(pf => ({
+			sentences: this._assignLabels(raw.preformatted).map(pf => ({
 				...pf,
 				order: pf.blockIndex,
 				pageIndex: pf.position?.pageIndex ?? null,
@@ -365,6 +419,35 @@ LLMPreformatted = {
 			paperId: item.id,
 			sources: ["preformatted_content", "preformatted_caption"],
 		};
+	},
+
+	// Expands a RETRIEVED subset of regions (getRelevantChunks' own top-K
+	// result) back into every region sharing a `preformatted_id` with any
+	// hit, in document (`order`) order.
+	//
+	// Needed because embedding is per-FRAGMENT, not per-listing (see
+	// _addTextEmbeddings): a listing split across a page break has one
+	// independent content vector per fragment, each covering only its own
+	// arbitrary, page-break-determined slice of the code. Retrieval can
+	// therefore match just the MIDDLE of a listing (or just the fragment
+	// that happens to carry the caption) and return that piece alone --
+	// handing the model a listing that starts or stops mid-structure, with
+	// no indication anything is missing. Since a group's fragments are one
+	// contiguous listing by construction (see extract-preformatted-sdt.js's
+	// own grouping pass), a hit on ANY fragment means the whole listing is
+	// relevant, so this pulls in its siblings.
+	//
+	// `allRegions` is getPreformattedIndex's own full `sentences` array;
+	// `retrieved` is whatever getRelevantChunks returned from it. An entry
+	// with no `preformatted_id` (older cache) is passed through as its own
+	// group of one, same defensive fallback llm/prompt.js's own grouping
+	// applies.
+	expandToFullGroups(allRegions, retrieved) {
+		if (!retrieved.length) return retrieved;
+		let hitIds = new Set(retrieved.map(pf => pf.preformatted_id ?? `__ungrouped_${pf.order}`));
+		return allRegions
+			.filter(pf => hitIds.has(pf.preformatted_id ?? `__ungrouped_${pf.order}`))
+			.sort((a, b) => a.order - b.order);
 	},
 
 	// Debug affordance ("Clear Cache" button) -- drops both the memory and

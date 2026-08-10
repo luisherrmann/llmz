@@ -427,6 +427,14 @@ export function pairWithCaptions(bodies, captions) {
 			: p.body.bbox,
 		label: p.caption.text,
 		caption: p.caption.text,
+		// The matched caption's OWN block index, alongside the body's
+		// `blockIndex` above -- lets a caller tell whether this paper puts
+		// captions BEFORE or AFTER what they caption, which the bboxes
+		// alone can no longer answer here (they've been unioned together by
+		// this point). Purely additive: extract-tables-sdt.js/
+		// extract-figures-sdt.js ignore it; extract-preformatted-sdt.js
+		// uses it to pick a merge direction for split listings.
+		captionBlockIndex: p.caption.blockIndex,
 		content: p.body.content,
 	}));
 	let leftoverBodies = unmatchedBodies.filter(b => !takenB.has(b._i));

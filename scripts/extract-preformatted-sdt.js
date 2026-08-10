@@ -468,6 +468,32 @@ async function main() {
 	let { matched } = pairWithCaptions(bodies, captions);
 	let matchedByBlockIndex = new Map(matched.map(m => [m.blockIndex, m]));
 
+	// Does this paper put a listing's label BEFORE the listing ("Listing 4.
+	// ...", then the code) or AFTER it (code, then "Listing 4. ...")? Both
+	// conventions are common, and the answer decides which of two adjacent
+	// regions is the CONTINUATION when a listing gets split across a page
+	// break (see the grouping pass below) -- guessing wrong groups nothing,
+	// leaving every fragment its own separate "listing".
+	//
+	// Decided by majority over the pairs pairWithCaptions actually matched,
+	// comparing each caption's own block index against the body it was
+	// matched to -- deliberately not by geometry: the matched `bbox` has
+	// already been unioned with the caption's by that point, so the two are
+	// no longer separable there, and block order answers "before or after"
+	// directly anyway. Ties (or no captioned regions at all) fall back to
+	// captions-after, the convention this plugin's own test paper uses and
+	// the behavior this pass had before it handled both.
+	let captionsPrecedeListings = (() => {
+		let precede = 0;
+		let follow = 0;
+		for (let m of matched) {
+			if (m.captionBlockIndex == null) continue;
+			if (m.captionBlockIndex < m.blockIndex) precede++;
+			else follow++;
+		}
+		return precede > follow;
+	})();
+
 	let output = bodies.map((body) => {
 		let m = matchedByBlockIndex.get(body.blockIndex);
 		let bbox = m ? m.bbox : body.bbox;
@@ -510,25 +536,37 @@ async function main() {
 	// blockIndex) itself; one that just wants "what's on this page, right
 	// here" already has everything it needs per-entry, unlike before.
 	//
-	// Walked in REVERSE document order (last region to first) so a chain
-	// of several consecutive uncaptioned fragments groups correctly in one
-	// pass. `output[i]` is grouped with `output[i - 1]` (its own immediate
-	// predecessor in document order) only if BOTH:
-	//   - prev has NO caption of its own -- a captioned prev is its own
-	//     distinct, already-labeled listing, never a fragment of a LATER
-	//     one; stops this chain here.
+	// WHICH of two adjacent regions has to be the uncaptioned one depends
+	// on where this paper puts its captions, so that's established first
+	// (see captionsPrecedeListings below) rather than assumed. Papers are
+	// essentially always internally consistent about this -- the same
+	// assumption match-captions.js's own pairWithCaptions already makes for
+	// its `dominantArrangement` -- so one document-wide decision is enough.
+	//
+	// Two adjacent regions join the same group only if BOTH:
+	//   - the CONTINUATION one has no caption of its own. Which side that
+	//     is flips with the convention: for captions AFTER a listing the
+	//     continuation is the EARLIER region (its label only shows up
+	//     later, on the final fragment); for captions BEFORE a listing it's
+	//     the LATER region (the label was already consumed by the first
+	//     fragment). A captioned region on the continuation side is its own
+	//     distinct, already-labeled listing, and ends the chain.
 	//   - hasInterveningProse finds no real sentence of body text between
-	//     prev's own end and current's own start -- a caption/heading
-	//     label (or nothing) sitting between them doesn't count, but a
+	//     the earlier region's end and the later one's start -- a caption/
+	//     heading label (or nothing) between them doesn't count, but a
 	//     genuine explanatory paragraph does, and means the two are
-	//     actually separate content that merely happen to sit near each
-	//     other.
+	//     separate content that merely happens to sit adjacently.
+	//
+	// Each decision is purely pairwise, so a single pass in document order
+	// suffices and a chain of several consecutive uncaptioned fragments
+	// still groups correctly regardless of direction.
 	let sameGroupAsNext = new Array(output.length).fill(false);
-	for (let i = output.length - 1; i >= 1; i--) {
-		let current = output[i];
-		let prev = output[i - 1];
-		if (!prev.caption && !hasInterveningProse(structure.content, prev.maxBlockIndex, current.blockIndex)) {
-			sameGroupAsNext[i - 1] = true;
+	for (let i = 0; i < output.length - 1; i++) {
+		let earlier = output[i];
+		let later = output[i + 1];
+		let continuation = captionsPrecedeListings ? later : earlier;
+		if (!continuation.caption && !hasInterveningProse(structure.content, earlier.maxBlockIndex, later.blockIndex)) {
+			sameGroupAsNext[i] = true;
 		}
 	}
 

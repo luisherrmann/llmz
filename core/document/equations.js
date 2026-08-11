@@ -165,7 +165,7 @@ LLMEquations = {
 	// Logs entry's content element) is updated in place with a completion
 	// line once recomputation finishes, rather than logging start/done as
 	// two separate messages.
-	async getEquationIndex(item, onEmbeddingStart, onMessage) {
+	async getEquationIndex(item, onEmbeddingStart, onMessage, { defer = false } = {}) {
 		// Resolved BEFORE the memory-cache check below (not just threaded
 		// through to _loadDiskCache further down) -- switching provider/
 		// model mid-session must invalidate an already-loaded memory-cached
@@ -192,34 +192,51 @@ LLMEquations = {
 		if (progress) progress.textContent = `Recomputed ${embedded.length} equation context embedding${embedded.length === 1 ? "" : "s"} using ${embeddingProvider} ${embeddingModel}.`;
 		let index = { equations: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);
+		if (defer) {
+			// See tables.js's own `defer` comment -- the index pipeline
+			// persists once, after cross-index deduplication has run.
+			index.pendingPersist = true;
+			return index;
+		}
+		await this.persistIndex(item, index, onMessage);
+		return index;
+	},
+
+	// Writes `index` to its disk cache and mirrors its embeddings into the
+	// embeddings DB. Split out of getEquationIndex so the index pipeline
+	// can defer both until after deduplication (see `defer` above);
+	// calling it twice is harmless, since both writes replace wholesale.
+	//
+	// source_id is equation_id (a stable, always-present per-equation
+	// identifier regardless of which of the equation_num/formula_num series
+	// it landed in, see extract-equations.js's own header comment), not
+	// array position, so removing an equation during deduplication leaves
+	// the survivors addressable exactly as before. Filtered to equations
+	// that actually got an embedding -- _addContextEmbeddings' own
+	// try/catch means a total embedding-call failure leaves EVERY equation
+	// without one, not a partial set, but this stays defensive rather than
+	// assuming that. Best-effort, same reasoning as citation.js's/
+	// tables.js's own sync -- the disk cache is already the source of truth
+	// LLMEquations itself reads from; this DB is an additional,
+	// non-authoritative mirror.
+	async persistIndex(item, index, onMessage) {
+		delete index.pendingPersist;
 		await this._saveDiskCache(item, index);
-		// Mirrors the disk-cache write into the embeddings DB (one .sqlite
-		// file per model, see core/llm/embeddings-db.js) under source
-		// "equation_context" -- matching document/tables.js's/figures.js's
-		// own "table_caption"/"table_content"/"figure_caption" naming
-		// convention. source_id is equation_id (already a stable,
-		// always-present per-equation identifier regardless of which of the
-		// equation_num/formula_num series it landed in, see
-		// extract-equations.js's own header comment), not array position.
-		// Filtered to equations that actually got an embedding --
-		// _addContextEmbeddings' own try/catch means a total embedding-call
-		// failure leaves EVERY equation without one, not a partial set, but
-		// this stays defensive rather than assuming that. Best-effort, same
-		// reasoning as citation.js's/tables.js's/figures.js's own sync -- the
-		// disk cache above is already the source of truth LLMEquations
-		// itself reads from; this DB is an additional, non-authoritative
-		// mirror for now.
 		try {
-			let withEmbeddings = embedded.filter(eq => eq.embedding);
-			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "equation_context",
+			let equations = index.equations || [];
+			// See tables.js's own guard here -- a cache-hit index carries no
+			// vectors, and replaceForPaper deletes before inserting, so
+			// syncing one would wipe rows that are already correct.
+			if (equations.length && !equations.some(eq => eq.embedding)) return;
+			let withEmbeddings = equations.filter(eq => eq.embedding);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, index.embeddingModel, "equation_context",
 				withEmbeddings.map(eq => ({ sourceId: eq.equation_id, embedding: eq.embedding })));
 			onMessage?.(`Synced ${withEmbeddings.length} equation context embedding${withEmbeddings.length === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
 		}
 		catch (e) {
-			this.log(`getEquationIndex: failed to sync to embeddings DB: ${e.message}`);
+			this.log(`persistIndex: failed to sync to embeddings DB: ${e.message}`);
 			onMessage?.(`Failed to sync equation context embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
 		}
-		return index;
 	},
 
 	// Debug affordance ("Clear Cache" button) -- drops both the memory and

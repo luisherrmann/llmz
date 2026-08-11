@@ -366,12 +366,77 @@ def _cmd_has(db, data):
     return {'has': count > 0, 'count': count}
 
 
+# Input: { paper_id, sources: { "<source>": {"delete": [source_id, ...]}
+#                             | {"keep":   [source_id, ...]} } }
+# Output: { deleted: int, remapped: int }
+#
+# Drops specific rows for a paper, and (for `keep`) renumbers whatever
+# survives. Exists because two different source_id conventions coexist in
+# this table (see core/document/preformatted.js's own deduplication):
+#   - "delete": the source_id is a STABLE id (table_id, equation_id), so
+#     removing some rows leaves the rest addressable exactly as before --
+#     just drop the listed ones.
+#   - "keep": the source_id is an ARRAY INDEX into the caller's own cached
+#     array (sentence/paragraph/heading/preformatted_*), so removing an
+#     entry shifts every later one. `keep` is the surviving source_ids IN
+#     THEIR NEW ORDER: anything absent is deleted, and each survivor is
+#     renumbered to its POSITION in that list. That re-keys the existing
+#     vectors in place rather than re-embedding them -- the vectors live in
+#     the vec0 virtual table keyed by rowid, untouched here; only the plain
+#     table's own source_id column moves.
+#
+# Renumbering updates by primary key rather than by (paper_id, source,
+# source_id): mapping e.g. 5 -> 4 while row 4 still holds source_id 4 would
+# otherwise leave two rows briefly sharing a source_id (there is no unique
+# constraint to catch it), and the next update for 4 would then match BOTH.
+# Reading the rows up front and writing back by `id` avoids that entirely.
+def _cmd_compact(db, data):
+    paper_id = data['paper_id']
+    deleted = 0
+    remapped = 0
+
+    def drop(row_ids):
+        if not row_ids:
+            return 0
+        placeholders = ','.join('?' * len(row_ids))
+        db.execute(f'DELETE FROM {VEC_TABLE} WHERE rowid IN ({placeholders})', row_ids)
+        db.execute(f'DELETE FROM embeddings WHERE id IN ({placeholders})', row_ids)
+        return len(row_ids)
+
+    for source, spec in (data.get('sources') or {}).items():
+        rows = db.execute(
+            'SELECT id, source_id FROM embeddings WHERE paper_id = ? AND source = ?',
+            [paper_id, source],
+        ).fetchall()
+        if not rows:
+            continue
+
+        if 'delete' in spec:
+            doomed = set(spec['delete'])
+            deleted += drop([row_id for (row_id, source_id) in rows if source_id in doomed])
+            continue
+
+        if 'keep' in spec:
+            keep = spec['keep']
+            new_index = {source_id: position for position, source_id in enumerate(keep)}
+            deleted += drop([row_id for (row_id, source_id) in rows if source_id not in new_index])
+            for row_id, source_id in rows:
+                target = new_index.get(source_id)
+                if target is not None and target != source_id:
+                    db.execute('UPDATE embeddings SET source_id = ? WHERE id = ?', [target, row_id])
+                    remapped += 1
+
+    db.commit()
+    return {'deleted': deleted, 'remapped': remapped}
+
+
 COMMANDS = {
     'insert': _cmd_insert,
     'query': _cmd_query,
     'query_batch': _cmd_query_batch,
     'delete': _cmd_delete,
     'has': _cmd_has,
+    'compact': _cmd_compact,
 }
 
 

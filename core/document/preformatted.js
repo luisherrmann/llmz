@@ -257,7 +257,7 @@ LLMPreformatted = {
 	// llm/prompt.js's buildPromptWithActivePDFContext/citation.js's
 	// getRelevantChunks actually expect, same split citation.js's own
 	// getTextIndex/getParagraphIndex used to have.
-	async _getRawIndex(item, onEmbeddingStart, onMessage) {
+	async _getRawIndex(item, onEmbeddingStart, onMessage, { defer = false } = {}) {
 		if (this._venvMissing) {
 			throw new Error(
 				"Python venv not found. Set it up with the \"venv\" button, or manually:\n"
@@ -295,39 +295,59 @@ LLMPreformatted = {
 		}
 		let index = { preformatted: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);
+		if (defer) {
+			// See tables.js's own `defer` comment -- the index pipeline
+			// persists once, after cross-index deduplication has run. That
+			// matters most here: this module's own sourceIds are ARRAY
+			// POSITIONS, so persisting before dedup means writing rows that
+			// dedup then has to renumber (see scripts/db.py's `compact`),
+			// whereas persisting after assigns them correctly first time.
+			index.pendingPersist = true;
+			return index;
+		}
+		await this.persistIndex(item, index, onMessage);
+		return index;
+	},
+
+	// Writes `index` to its disk cache and mirrors its embeddings into the
+	// embeddings DB. Split out of _getRawIndex so the index pipeline can
+	// defer both until after deduplication (see `defer` above); calling it
+	// twice is harmless, since both writes replace wholesale.
+	//
+	// source_id here is each region's own ARRAY POSITION (0-indexed), NOT
+	// preformatted_id -- deliberately unlike table_id/figure_id, which
+	// tables.js/figures.js use, since neither goes through
+	// LLMCitation.getRelevantChunks. This module's own getPreformattedIndex
+	// DOES, and getRelevantChunks resolves a hit via a direct array index
+	// (`index.sentences[r.sourceId]`), so a 1-indexed id would be off by
+	// one -- and, critically, removing an entry shifts every later one,
+	// which is why deduplication has to happen BEFORE this runs.
+	// Best-effort, same reasoning as citation.js's/tables.js's own sync --
+	// the disk cache is already the source of truth this module reads from;
+	// this DB is an additional, non-authoritative mirror.
+	async persistIndex(item, index, onMessage) {
+		delete index.pendingPersist;
 		await this._saveDiskCache(item, index);
-		// Mirrors the disk-cache write into the embeddings DB (one .sqlite
-		// file per model, see core/llm/embeddings-db.js) -- source_id here is
-		// each region's own ARRAY POSITION in `embedded` (0-indexed), NOT
-		// preformatted_id (1-indexed) -- deliberately unlike table_id/
-		// figure_id, which tables.js/figures.js use as their own sourceId
-		// since neither ever goes through LLMCitation.getRelevantChunks.
-		// This module's own getPreformattedIndex DOES (see its own comment),
-		// and getRelevantChunks looks a hit back up via a direct array index
-		// (`index.sentences[r.sourceId]`) -- a 1-indexed id there would be
-		// off by one against the 0-indexed `sentences` array
-		// getPreformattedIndex returns (built via a straight `.map()` over
-		// this SAME `embedded` array, so index positions line up exactly).
-		// Best-effort, same reasoning as citation.js's/figures.js's/
-		// tables.js's own sync -- the disk cache above is already the
-		// source of truth this module itself reads from; this DB is an
-		// additional, non-authoritative mirror.
 		try {
+			let embedded = index.preformatted || [];
+			// See tables.js's own guard here -- a cache-hit index carries no
+			// vectors, and replaceForPaper deletes before inserting, so
+			// syncing one would wipe rows that are already correct.
+			if (embedded.length && !embedded.some(pf => pf.contentEmbedding || pf.captionEmbedding)) return;
 			let contentEntries = embedded
 				.map((pf, i) => ({ sourceId: i, embedding: pf.contentEmbedding }))
 				.filter(e => e.embedding);
 			let captionEntries = embedded
 				.map((pf, i) => ({ sourceId: i, embedding: pf.captionEmbedding }))
 				.filter(e => e.embedding);
-			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "preformatted_content", contentEntries);
-			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "preformatted_caption", captionEntries);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, index.embeddingModel, "preformatted_content", contentEntries);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, index.embeddingModel, "preformatted_caption", captionEntries);
 			onMessage?.(`Synced ${contentEntries.length} preformatted content and ${captionEntries.length} preformatted caption embedding${(contentEntries.length + captionEntries.length) === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
 		}
 		catch (e) {
-			this.log(`_getRawIndex: failed to sync to embeddings DB: ${e.message}`);
+			this.log(`persistIndex: failed to sync to embeddings DB: ${e.message}`);
 			onMessage?.(`Failed to sync preformatted embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
 		}
-		return index;
 	},
 
 	// The short, citable LABEL for a region's own matched caption -- the
@@ -404,8 +424,8 @@ LLMPreformatted = {
 	// _textRecord already gives paragraphs/headings, in case a future
 	// citation-link mechanism (there's no `<ref:preformatted:N>` yet) needs
 	// to navigate to a region the same way it already can for a paragraph.
-	async getPreformattedIndex(item, onEmbeddingStart, onMessage) {
-		let raw = await this._getRawIndex(item, onEmbeddingStart, onMessage);
+	async getPreformattedIndex(item, onEmbeddingStart, onMessage, { defer = false } = {}) {
+		let raw = await this._getRawIndex(item, onEmbeddingStart, onMessage, { defer });
 		if (!raw) return null;
 		return {
 			sentences: this._assignLabels(raw.preformatted).map(pf => ({
@@ -419,6 +439,179 @@ LLMPreformatted = {
 			paperId: item.id,
 			sources: ["preformatted_content", "preformatted_caption"],
 		};
+	},
+
+	// Fraction of the SMALLER of two rects that must be covered for them to
+	// count as the same physical region. Measured against the smaller one
+	// (not either area, and not IoU) because a duplicate detection is
+	// typically a near-subset rather than a near-equal box -- one pipeline
+	// captures a listing's shaded box, the other only the text inside it.
+	// 0.5 sits far above mere adjacency (two stacked elements touching at
+	// an edge overlap ~0%) and far below the 96-100% every confirmed
+	// duplicate on this plugin's own test paper actually measured.
+	_duplicateOverlapThreshold: 0.5,
+
+	_overlapFraction(a, b) {
+		let ix = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+		let iy = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+		if (ix <= 0 || iy <= 0) return 0;
+		let areaA = (a[2] - a[0]) * (a[3] - a[1]);
+		let areaB = (b[2] - b[0]) * (b[3] - b[1]);
+		let smaller = Math.min(areaA, areaB);
+		return smaller > 0 ? (ix * iy) / smaller : 0;
+	},
+
+	// True when two entries (each { pageIndex, rects }) share a page and any
+	// of their rects overlap past _duplicateOverlapThreshold.
+	_regionsOverlap(a, b) {
+		if (a.pageIndex == null || b.pageIndex == null || a.pageIndex !== b.pageIndex) return false;
+		for (let ra of a.rects || []) {
+			for (let rb of b.rects || []) {
+				if (this._overlapFraction(ra, rb) >= this._duplicateOverlapThreshold) return true;
+			}
+		}
+		return false;
+	},
+
+	// A synthetic, extraction-invented label -- NOT a caption the paper
+	// itself printed. extract-tables-sdt.js/extract-figures-sdt.js give an
+	// UNcaptioned table/figure a stand-in label of the form
+	// "<section title>, Unlabelled Table 3" and copy it into `caption` too
+	// (see their own unmatched-body handling), so a bare `entry.caption`
+	// truthiness check cannot tell a real caption from an invented one.
+	// That distinction is the whole basis of the dedup rule below:
+	// confirmed concretely on this plugin's own test paper that EVERY one
+	// of the 12 spurious "tables" duplicating a listing carried exactly
+	// such a synthetic caption, so treating those as captioned would
+	// discard the real listing and keep the phantom table.
+	_SYNTHETIC_LABEL_RE: /,\s*Unlabelled (?:Table|Figure)\s+\d+\s*$/i,
+
+	_hasGenuineCaption(caption) {
+		return !!caption && !this._SYNTHETIC_LABEL_RE.test(caption);
+	},
+
+	// Deduplicates preformatted regions against tables/equations/paragraphs,
+	// which are all extracted by INDEPENDENT pipelines that never consult
+	// each other -- so one physical listing routinely comes back as both a
+	// preformatted region AND, say, an unlabelled table, and then appears
+	// twice in the model's context.
+	//
+	// For every geometric overlap (see _regionsOverlap) between a
+	// preformatted region A and a table/equation/paragraph B:
+	//   - if ONLY B is genuinely captioned, B is the real element -> A loses
+	//   - otherwise -> B loses
+	// "Genuinely" excludes extraction-invented labels (see
+	// _hasGenuineCaption) -- without that, the rule inverts on real
+	// documents and deletes the listings it is meant to protect.
+	//
+	// A's captioned-ness is evaluated per GROUP, not per fragment: a
+	// listing split across a page break carries its caption on exactly ONE
+	// of its fragments (see extract-preformatted-sdt.js's grouping pass),
+	// so testing a continuation fragment alone would wrongly read the whole
+	// listing as uncaptioned.
+	//
+	// Losers are SPLICED OUT of the arrays they came in on. That is only
+	// safe because of WHEN this runs: `sentence`, `paragraph`, `heading`,
+	// and both `preformatted_*` embedding rows are keyed by ARRAY INDEX
+	// (see citation.js's/this module's own replaceForPaper calls), and
+	// getRelevantChunks resolves a hit straight back through
+	// `index.sentences[r.sourceId]` -- so removing an entry after those
+	// rows exist would re-point every later embedding at the wrong text,
+	// with no error to notice. llm/index-pipeline.js therefore calls this
+	// BEFORE anything is persisted, so the rows are written from the
+	// already-deduplicated arrays; where an index was already on disk from
+	// an earlier session, it re-keys the existing rows via `_originalIndex`
+	// below rather than letting them drift.
+	//
+	// Mutates the passed arrays in place and returns a summary of what went
+	// (including the stable table/equation ids, which the pipeline needs to
+	// delete their rows). Persisting is the caller's job -- see
+	// llm/index-pipeline.js, which owns the whole build/dedup/write cycle,
+	// since each array is owned by a different module with its own cache.
+	deduplicatePreformatted({ preformatted = [], tables = [], equations = [], paragraphs = [] }) {
+		let empty = { preformatted: 0, tables: 0, equations: 0, paragraphs: 0, tableIds: [], equationIds: [] };
+		if (!preformatted.length) return empty;
+
+		// Recorded BEFORE anything is removed: scripts/db.py's `compact`
+		// needs each survivor's ORIGINAL position to re-key the embedding
+		// rows of an index that was already persisted (a cache hit) before
+		// deduplication ran. Harmless for a freshly built index, whose rows
+		// are written from the post-deduplication arrays anyway.
+		for (let list of [preformatted, paragraphs]) {
+			list.forEach((entry, i) => {
+				if (entry._originalIndex === undefined) entry._originalIndex = i;
+			});
+		}
+
+		let positionOf = entry => ({
+			pageIndex: entry.position?.pageIndex ?? entry.pageIndex ?? null,
+			rects: entry.position?.rects || entry.rects || [],
+		});
+
+		// Group-level, not per-fragment: a listing split across a page break
+		// carries its caption on exactly ONE of its fragments (see
+		// extract-preformatted-sdt.js's grouping pass), so testing a
+		// continuation fragment alone would read the whole listing as
+		// uncaptioned and let a phantom table win against it.
+		let captionedGroups = new Set();
+		for (let pf of preformatted) {
+			if (this._hasGenuineCaption(pf.caption)) captionedGroups.add(pf.preformatted_id);
+		}
+
+		let others = [
+			...tables.map(t => ({ entry: t, kind: "tables", captioned: this._hasGenuineCaption(t.caption) })),
+			// An equation's own "caption" is its printed number: equation_num
+			// is one the paper itself prints, formula_num is this plugin's
+			// own synthetic fallback (see extract-equations.js), so only the
+			// former counts as genuinely captioned.
+			...equations.map(eq => ({ entry: eq, kind: "equations", captioned: eq.equation_num !== null && eq.equation_num !== undefined })),
+			// A paragraph has no caption concept at all, so it can never win
+			// -- which is the intent: prose that geometrically sits inside a
+			// listing's own box is that listing's own text, picked up twice.
+			...paragraphs.map(p => ({ entry: p, kind: "paragraphs", captioned: false })),
+		];
+
+		let doomedOthers = new Set();
+		let doomedGroups = new Set();
+		for (let pf of preformatted) {
+			if (doomedGroups.has(pf.preformatted_id)) continue;
+			let a = positionOf(pf);
+			let aCaptioned = captionedGroups.has(pf.preformatted_id);
+			for (let other of others) {
+				if (doomedOthers.has(other.entry)) continue;
+				if (!this._regionsOverlap(a, positionOf(other.entry))) continue;
+				if (other.captioned && !aCaptioned) {
+					// Only B is genuinely captioned, so B is the real element
+					// and this listing loses -- along with every fragment
+					// sharing its id, since they are one physical listing.
+					doomedGroups.add(pf.preformatted_id);
+					break;
+				}
+				doomedOthers.add(other.entry);
+			}
+		}
+
+		let removeFrom = (list, doomed) => {
+			let before = list.length;
+			for (let i = list.length - 1; i >= 0; i--) {
+				if (doomed(list[i])) list.splice(i, 1);
+			}
+			return before - list.length;
+		};
+
+		let tableIds = tables.filter(t => doomedOthers.has(t)).map(t => t.table_id).filter(id => id != null);
+		let equationIds = equations.filter(eq => doomedOthers.has(eq)).map(eq => eq.equation_id).filter(id => id != null);
+
+		let result = {
+			preformatted: removeFrom(preformatted, pf => doomedGroups.has(pf.preformatted_id)),
+			tables: removeFrom(tables, t => doomedOthers.has(t)),
+			equations: removeFrom(equations, eq => doomedOthers.has(eq)),
+			paragraphs: removeFrom(paragraphs, p => doomedOthers.has(p)),
+			tableIds,
+			equationIds,
+		};
+		this.log(`deduplicatePreformatted: removed ${result.preformatted} listing fragment(s), ${result.tables} table(s), ${result.equations} equation(s), ${result.paragraphs} paragraph(s)`);
+		return result;
 	},
 
 	// Expands a RETRIEVED subset of regions (getRelevantChunks' own top-K

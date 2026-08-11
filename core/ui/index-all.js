@@ -58,35 +58,40 @@ LLMUIIndexAll = {
 	async _indexItem(item, onMessage) {
 		try {
 			let text = await LLMPrompt.getAttachmentFullText(item);
-			if (text.trim()) {
-				// getTextIndex always builds BOTH sentence and paragraph
-				// chunks/embeddings together (see citation.js's own comment) --
-				// unlike buildPromptWithActivePDFContext's own chunking
-				// condition (which only retrieves paragraph-level chunks for
-				// THIS paper's own single-paper context when its full text
-				// exceeds maxPDFContextChars -- a short paper just gets shown
-				// in full there, no retrieval needed), the paragraph half is
-				// still built here regardless of paper length, since
-				// LLMCitation.getCrossLibraryChunks (cross-library retrieval,
-				// see llm/prompt.js's shouldIncludeCrossLibraryWithLLM) only
-				// ever searches source:"paragraph" embeddings -- confirmed
-				// concretely that gating this the same way as the single-
-				// paper path left every paper short enough to fit under
-				// maxPDFContextChars permanently unfindable via cross-library
-				// search, even after a full (re-)index. Indexing (this
-				// function, via either "Index" or "Index All") is exactly the
-				// place that should pre-warm for BOTH use cases, not just the
-				// single-paper one.
-				await LLMCitation.getTextIndex(item, text, undefined, onMessage).catch((e) => {
-					this.log(`getTextIndex failed for ${item.libraryKey}: ${e.message}`);
-				});
-			}
+			// The text, preformatted, table, and equation indexes are built
+			// through the pipeline rather than individually, so they can be
+			// deduplicated against each other BEFORE any of them is written
+			// (see llm/index-pipeline.js) -- the same path llm/request.js
+			// takes, so a paper indexed here behaves identically to one
+			// indexed on demand mid-chat. Each index is still individually
+			// best-effort in there; one failing does not cost the others.
+			//
+			// The text half always builds BOTH sentence and paragraph
+			// chunks/embeddings together (see citation.js's own comment) --
+			// unlike buildPromptWithActivePDFContext's own chunking condition
+			// (which only retrieves paragraph-level chunks for THIS paper's
+			// own single-paper context when its full text exceeds
+			// maxPDFContextChars -- a short paper just gets shown in full
+			// there, no retrieval needed), the paragraph half is still built
+			// here regardless of paper length, since
+			// LLMCitation.getCrossLibraryChunks (cross-library retrieval, see
+			// llm/prompt.js's shouldIncludeCrossLibraryWithLLM) only ever
+			// searches source:"paragraph" embeddings -- confirmed concretely
+			// that gating this the same way as the single-paper path left
+			// every paper short enough to fit under maxPDFContextChars
+			// permanently unfindable via cross-library search, even after a
+			// full (re-)index. Indexing (this function, via either "Index" or
+			// "Index All") is exactly the place that should pre-warm for BOTH
+			// use cases, not just the single-paper one.
+			//
+			// Figures and references stay separate: neither participates in
+			// deduplication (figures carry their own rendered images and are
+			// matched by caption, not geometry), so there is nothing to
+			// coordinate and they can run alongside.
 			await Promise.all([
-				LLMTables.getTableIndex(item, undefined, onMessage).catch((e) => this.log(`getTableIndex failed for ${item.libraryKey}: ${e.message}`)),
+				LLMIndexPipeline.buildIndexes(item, text, { onMessage }).catch((e) => this.log(`buildIndexes failed for ${item.libraryKey}: ${e.message}`)),
 				LLMFigures.getFigureIndex(item, undefined, onMessage).catch((e) => this.log(`getFigureIndex failed for ${item.libraryKey}: ${e.message}`)),
 				LLMReferences.getReferenceIndex(item).catch((e) => this.log(`getReferenceIndex failed for ${item.libraryKey}: ${e.message}`)),
-				LLMEquations.getEquationIndex(item, undefined, onMessage).catch((e) => this.log(`getEquationIndex failed for ${item.libraryKey}: ${e.message}`)),
-				LLMPreformatted.getPreformattedIndex(item, undefined, onMessage).catch((e) => this.log(`getPreformattedIndex failed for ${item.libraryKey}: ${e.message}`)),
 			]);
 			return { ok: true };
 		}

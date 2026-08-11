@@ -30,6 +30,7 @@ var LLMTableExport;
 var LLMInterfaces;
 var LLMIntent;
 var LLMPrompt;
+var LLMIndexPipeline;
 var LLMPythonSetup;
 
 function log(msg) {
@@ -82,6 +83,12 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "core/llm/interfaces.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/llm/intent.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/llm/prompt.js");
+	// Orchestrates every per-paper index together so they can be
+	// deduplicated against each other before anything is written (see
+	// its own header comment) -- references the four index modules
+	// inside method bodies only, so load order relative to them does
+	// not matter.
+	Services.scriptloader.loadSubScript(rootURI + "core/llm/index-pipeline.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/icon.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/logs.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/chat.js");

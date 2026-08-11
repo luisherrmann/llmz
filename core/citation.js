@@ -373,7 +373,20 @@ LLMCitation = {
 	async _saveDiskCache(item, fingerprint, sentences, paragraphs, headings) {
 		try {
 			let path = PathUtils.join(await this._cacheDir(), `${item.id}.json`);
-			await IOUtils.writeUTF8(path, JSON.stringify({ cacheVersion: this._cacheVersion, fingerprint, sentences, paragraphs, headings }, null, 2));
+			// `_embedding` is stripped before writing -- it's attached to each
+			// record only so a vector travels WITH its entry through
+			// deduplication (see llm/index-pipeline.js: deleting an entry must
+			// not leave a parallel embeddings array misaligned). The embeddings
+			// DB is the sole store for the actual vectors, same as
+			// document/tables.js's/preformatted.js's own disk caches.
+			let strip = list => list.map(({ _embedding, ...rest }) => rest);
+			await IOUtils.writeUTF8(path, JSON.stringify({
+				cacheVersion: this._cacheVersion,
+				fingerprint,
+				sentences: strip(sentences),
+				paragraphs: strip(paragraphs),
+				headings: strip(headings),
+			}, null, 2));
 			this.log(`_saveDiskCache: saved ${sentences.length} sentences, ${paragraphs.length} paragraphs, ${headings.length} headings for item ${item.id}`);
 		}
 		catch (e) {
@@ -421,7 +434,7 @@ LLMCitation = {
 	// that gets passed to onEmbeddingDone below so the caller can update the
 	// SAME message in place with a completion line, rather than the two
 	// ever appearing as separate messages.
-	async getTextIndex(item, text, onEmbeddingStart, onMessage) {
+	async getTextIndex(item, text, onEmbeddingStart, onMessage, { defer = false } = {}) {
 		// Resolved BEFORE the memory-cache check below (not just passed to
 		// _loadDiskCache further down) -- switching provider/model
 		// mid-session must invalidate an already-loaded memory-cached index
@@ -477,8 +490,16 @@ LLMCitation = {
 		let headingDbCount = headingDbStatus.count;
 
 		if (sentenceDbCount === sentences.length && paragraphDbCount === paragraphs.length && headingDbCount === headings.length) {
-			let index = { sentences, paragraphs, headings, model, provider };
+			let index = { sentences, paragraphs, headings, model, provider, _fingerprint: fingerprint };
 			this._indexCache.set(item.id, index);
+			if (defer) {
+				// Nothing to sync to the DB here (its rows already match), but
+				// the pipeline may still DELETE entries during deduplication,
+				// which both rewrites this cache and renumbers those rows --
+				// see llm/index-pipeline.js.
+				index.pendingPersist = true;
+				return index;
+			}
 			// The DB already has everything needed for retrieval, but if the
 			// disk cache is what's actually MISSING here (e.g. a failed prior
 			// write, or a JSON file deleted/moved outside this plugin), this
@@ -525,23 +546,72 @@ LLMCitation = {
 			progress.textContent = `Recomputed ${sentenceEmbeddings.length} sentence, ${paragraphEmbeddings.length} paragraph, and ${headingEmbeddings.length} heading embedding${embeddedCount === 1 ? "" : "s"} using ${provider} ${model}.`;
 		}
 
-		let index = { sentences, paragraphs, headings, model, provider };
+		// Attached PER RECORD rather than kept in parallel arrays so that a
+		// vector stays with its own entry if the index pipeline later deletes
+		// entries during deduplication -- a parallel array would silently
+		// misalign the moment anything is removed. Stripped again before the
+		// disk cache is written (see _saveDiskCache).
+		sentences.forEach((s, i) => { s._embedding = sentenceEmbeddings[i]; });
+		paragraphs.forEach((p, i) => { p._embedding = paragraphEmbeddings[i]; });
+		headings.forEach((h, i) => { h._embedding = headingEmbeddings[i]; });
+
+		let index = { sentences, paragraphs, headings, model, provider, _fingerprint: fingerprint };
 		this._indexCache.set(item.id, index);
-		await this._saveDiskCache(item, fingerprint, sentences, paragraphs, headings);
+		if (defer) {
+			// See document/tables.js's own `defer` comment -- the index
+			// pipeline persists once, after cross-index deduplication has run.
+			index.pendingPersist = true;
+			return index;
+		}
+		await this.persistIndex(item, index, onMessage);
+		return index;
+	},
+
+	// Writes `index` to its disk cache and mirrors its embeddings into the
+	// embeddings DB. Split out of getTextIndex so the index pipeline can
+	// defer both until after deduplication; calling it twice is harmless,
+	// since both writes replace wholesale.
+	//
+	// sourceId is each record's CURRENT array position, recomputed here
+	// rather than remembered from when the embeddings were made -- that is
+	// what makes deleting entries before this runs safe: survivors are
+	// renumbered densely and their vectors (carried on `_embedding`, see
+	// above) follow them. Skips the DB entirely when the records carry no
+	// embeddings, which is the "DB rows already matched" path above.
+	//
+	// `_embedding` is dropped from every record once written: this index
+	// stays in _indexCache for the rest of the session, and holding a
+	// full-dimension vector per sentence/paragraph/heading there would
+	// retain tens of megabytes per paper for data the embeddings DB is now
+	// the store of record for. A consequence worth knowing: a SECOND
+	// persistIndex call rewrites the disk cache but no longer re-syncs the
+	// DB (it sees no embeddings and takes the "already matched" path),
+	// which is correct only because the first call already wrote them.
+	async persistIndex(item, index, onMessage) {
+		delete index.pendingPersist;
+		await this._saveDiskCache(item, index._fingerprint, index.sentences, index.paragraphs, index.headings);
+		let hasEmbeddings = index.sentences.some(s => s._embedding);
+		if (!hasEmbeddings) return;
 		try {
-			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "sentence",
-				sentences.map((s, i) => ({ sourceId: i, embedding: sentenceEmbeddings[i] })));
-			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "paragraph",
-				paragraphs.map((p, i) => ({ sourceId: i, embedding: paragraphEmbeddings[i] })));
-			await LLMEmbeddingsDB.replaceForPaper(item.id, model, "heading",
-				headings.map((h, i) => ({ sourceId: i, embedding: headingEmbeddings[i] })));
-			onMessage?.(`Synced ${sentenceEmbeddings.length} sentence, ${paragraphEmbeddings.length} paragraph, and ${headingEmbeddings.length} heading embedding${embeddedCount === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
+			let rows = list => list
+				.map((entry, i) => ({ sourceId: i, embedding: entry._embedding }))
+				.filter(r => r.embedding);
+			let sentenceRows = rows(index.sentences);
+			let paragraphRows = rows(index.paragraphs);
+			let headingRows = rows(index.headings);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, index.model, "sentence", sentenceRows);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, index.model, "paragraph", paragraphRows);
+			await LLMEmbeddingsDB.replaceForPaper(item.id, index.model, "heading", headingRows);
+			let total = sentenceRows.length + paragraphRows.length + headingRows.length;
+			onMessage?.(`Synced ${sentenceRows.length} sentence, ${paragraphRows.length} paragraph, and ${headingRows.length} heading embedding${total === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
+			for (let list of [index.sentences, index.paragraphs, index.headings]) {
+				for (let entry of list) delete entry._embedding;
+			}
 		}
 		catch (e) {
-			this.log(`getTextIndex: failed to sync to embeddings DB: ${e.message}`);
+			this.log(`persistIndex: failed to sync to embeddings DB: ${e.message}`);
 			onMessage?.(`Failed to sync sentence/paragraph/heading embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
 		}
-		return index;
 	},
 
 	// Sentence-level view over getTextIndex, used ONLY as document/citations.js's

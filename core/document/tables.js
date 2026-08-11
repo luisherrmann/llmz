@@ -317,7 +317,7 @@ LLMTables = {
 	// content element) is updated in place with a completion line once
 	// recomputation finishes, rather than logging start/done as two
 	// separate messages.
-	async getTableIndex(item, onEmbeddingStart, onMessage) {
+	async getTableIndex(item, onEmbeddingStart, onMessage, { defer = false } = {}) {
 		// Resolved BEFORE the memory-cache check below (not just threaded
 		// through to _loadDiskCache further down) -- switching provider/
 		// model mid-session must invalidate an already-loaded memory-cached
@@ -352,36 +352,65 @@ LLMTables = {
 		if (progress) progress.textContent = `Recomputed ${embedded.length} table caption/content embedding${embedded.length === 1 ? "" : "s"} using ${embeddingProvider} ${embeddingModel}.`;
 		let index = { tables: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);
+		if (defer) {
+			// Caller (see llm/index-pipeline.js) will call persistIndex once
+			// every index has been built and cross-index deduplication has
+			// run -- writing here first would mean saving rows we are about
+			// to delete, and paying for embeddings of entries that lose.
+			index.pendingPersist = true;
+			return index;
+		}
+		await this.persistIndex(item, index, onMessage);
+		return index;
+	},
+
+	// Writes `index` to its disk cache and mirrors its embeddings into the
+	// embeddings DB. Split out of getTableIndex so the index pipeline can
+	// defer both until after deduplication (see `defer` above); calling it
+	// twice is harmless, since both writes replace wholesale rather than
+	// append.
+	//
+	// source_id is table_id (already a stable, always-present per-table
+	// identifier, see extract-tables-sdt.js's own header comment), not
+	// array position, so removing a table during deduplication leaves every
+	// surviving table addressable exactly as before. Two separate sources
+	// ("table_caption"/"table_content") rather than one, matching
+	// _addTextEmbeddings' own reasoning for keeping them as separate
+	// vectors. Filtered to tables that actually got an embedding --
+	// _addTextEmbeddings' own try/catch means a total embedding-call
+	// failure leaves EVERY table without one, not a partial set, but this
+	// stays defensive rather than assuming that. The DB sync is
+	// best-effort, same reasoning as citation.js's/figures.js's own sync --
+	// the disk cache is already the source of truth LLMTables itself reads
+	// from; this DB is an additional, non-authoritative mirror.
+	async persistIndex(item, index, onMessage) {
+		delete index.pendingPersist;
 		await this._saveDiskCache(item, index);
-		// Mirrors the disk-cache write into the embeddings DB (one .sqlite
-		// file per model, see core/llm/embeddings-db.js) -- source_id is
-		// table_id (already a stable, always-present per-table identifier,
-		// see extract-tables-sdt.js's own header comment), not array
-		// position, since that's the same handle callers already use to
-		// look a table back up in this cache file. Two separate sources
-		// ("table_caption"/"table_content") rather than one, matching
-		// _addTextEmbeddings' own reasoning for keeping them as separate
-		// vectors. Filtered to tables that actually got an embedding --
-		// _addTextEmbeddings' own try/catch means a total embedding-call
-		// failure leaves EVERY table without one, not a partial set, but
-		// this stays defensive rather than assuming that. Best-effort, same
-		// reasoning as citation.js's/figures.js's own sync -- the disk cache
-		// above is already the source of truth LLMTables itself reads from;
-		// this DB is an additional, non-authoritative mirror for now.
 		try {
+			let embedded = index.tables || [];
+			// Mirrors citation.js's own persistIndex guard. An index that came
+			// from a CACHE HIT carries no vectors at all (_saveDiskCache above
+			// strips them; the embeddings DB is the store of record), and
+			// replaceForPaper DELETES a source's rows before inserting -- so
+			// syncing an embedding-less index here would wipe the very rows
+			// that are already correct. Renumbering those rows after
+			// deduplication removes entries is llm/index-pipeline.js's job
+			// (via compactForPaper) instead. A genuinely EMPTY index still
+			// falls through, so a paper whose tables all disappeared does get
+			// its stale rows cleared.
+			if (embedded.length && !embedded.some(t => t.captionEmbedding || t.contentEmbedding)) return;
 			let withCaption = embedded.filter(t => t.captionEmbedding);
 			let withContent = embedded.filter(t => t.contentEmbedding);
-			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "table_caption",
+			await LLMEmbeddingsDB.replaceForPaper(item.id, index.embeddingModel, "table_caption",
 				withCaption.map(t => ({ sourceId: t.table_id, embedding: t.captionEmbedding })));
-			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "table_content",
+			await LLMEmbeddingsDB.replaceForPaper(item.id, index.embeddingModel, "table_content",
 				withContent.map(t => ({ sourceId: t.table_id, embedding: t.contentEmbedding })));
 			onMessage?.(`Synced ${withCaption.length} table caption and ${withContent.length} table content embedding${(withCaption.length + withContent.length) === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
 		}
 		catch (e) {
-			this.log(`getTableIndex: failed to sync to embeddings DB: ${e.message}`);
+			this.log(`persistIndex: failed to sync to embeddings DB: ${e.message}`);
 			onMessage?.(`Failed to sync table embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
 		}
-		return index;
 	},
 
 	// Debug affordance ("Clear Cache" button) -- drops both the memory and

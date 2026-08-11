@@ -941,12 +941,33 @@ LLMRequest = {
 
 			let paragraphIndex = null;
 			let preformattedIndex = null;
-			if (isPDF && pdfText && pdfText.trim()) {
-				try {
-					paragraphIndex = await LLMCitation.getParagraphIndex(pdfItem, pdfText, onEmbeddingStart, onStructureMessage);
-				}
-				catch (e) {
-					this.log(`getParagraphIndex failed: ${e.message}`);
+			if (pdfItem) {
+				// Builds the text, preformatted, table, and equation indexes
+				// TOGETHER, deduplicates them against one another, and only
+				// then writes any of them -- see llm/index-pipeline.js for why
+				// that has to happen before anything is persisted. The
+				// getTableIndex/getEquationIndex calls further down then hit
+				// the memoized, already-deduplicated objects instead of
+				// rebuilding anything, so this is not extra work moved
+				// earlier, just the same work ordered so dedup can happen.
+				await LLMIndexPipeline.buildIndexes(pdfItem, pdfText, {
+					onEmbeddingStart,
+					onMessage: onStructureMessage,
+				});
+				if (isCancelled()) return;
+				// Re-fetched through the normal accessors rather than read off
+				// buildIndexes' return value: both of these are reshaped VIEWS
+				// over a raw index (paragraph-level chunks; regions with
+				// resolved positions/labels), and both are backed by the same
+				// memoized objects the pipeline just deduplicated -- so these
+				// are cache hits, not rebuilds.
+				if (pdfText && pdfText.trim()) {
+					try {
+						paragraphIndex = await LLMCitation.getParagraphIndex(pdfItem, pdfText, onEmbeddingStart, onStructureMessage);
+					}
+					catch (e) {
+						this.log(`getParagraphIndex failed: ${e.message}`);
+					}
 				}
 				try {
 					preformattedIndex = await LLMPreformatted.getPreformattedIndex(pdfItem, onEmbeddingStart, onStructureMessage);

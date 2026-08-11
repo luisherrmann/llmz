@@ -537,9 +537,16 @@ LLMPreformatted = {
 		// rows of an index that was already persisted (a cache hit) before
 		// deduplication ran. Harmless for a freshly built index, whose rows
 		// are written from the post-deduplication arrays anyway.
+		//
+		// ALWAYS overwritten, never preserved: this value only means
+		// "position in the array as it stands right now", which is exactly
+		// how the DB rows for a cache-hit index are numbered. A previous
+		// run's value survives into the disk cache (nothing strips it), and
+		// honouring that stale number here would point compaction at the
+		// wrong rows the second time a paper is deduplicated.
 		for (let list of [preformatted, paragraphs]) {
 			list.forEach((entry, i) => {
-				if (entry._originalIndex === undefined) entry._originalIndex = i;
+				entry._originalIndex = i;
 			});
 		}
 

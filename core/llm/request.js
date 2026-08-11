@@ -918,7 +918,60 @@ LLMRequest = {
 				};
 			};
 			let onStructureMessage = (text) => appendMessage("System", text);
-			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText, onEmbeddingStart, onStructureMessage);
+
+			// The active PDF, its full text, and the two SDT-derived indexes
+			// are resolved HERE rather than inside
+			// buildPromptWithActivePDFContext (which used to do all four
+			// itself) so that every index a request needs is built in one
+			// place -- see that function's own comment on
+			// paragraphIndex/preformattedIndex. getAttachmentFullText is a
+			// read of Zotero's own full-text cache file in the normal case,
+			// so hoisting it here costs nothing; it's passed through below
+			// rather than re-read.
+			let activeItem = LLMChatPane.getActiveReaderAttachment();
+			let isPDF = !!activeItem && activeItem.isPDFAttachment();
+			// null (not merely falsy-ish) for a non-PDF attachment, matching
+			// what buildPromptWithActivePDFContext used to hand back as
+			// `item` -- every `if (pdfItem)` guard below depends on that,
+			// and getActiveReaderAttachment on its own is truthy for a
+			// non-PDF reader tab (e.g. an EPUB/snapshot).
+			let pdfItem = isPDF ? activeItem : null;
+			let pdfText = isPDF ? await LLMPrompt.getAttachmentFullText(activeItem) : undefined;
+			if (isCancelled()) return;
+
+			let paragraphIndex = null;
+			let preformattedIndex = null;
+			if (isPDF && pdfText && pdfText.trim()) {
+				try {
+					paragraphIndex = await LLMCitation.getParagraphIndex(pdfItem, pdfText, onEmbeddingStart, onStructureMessage);
+				}
+				catch (e) {
+					this.log(`getParagraphIndex failed: ${e.message}`);
+				}
+				try {
+					preformattedIndex = await LLMPreformatted.getPreformattedIndex(pdfItem, onEmbeddingStart, onStructureMessage);
+				}
+				catch (e) {
+					this.log(`getPreformattedIndex failed: ${e.message}`);
+				}
+			}
+			if (isCancelled()) return;
+
+			let { prompt: modelPrompt, systemPrompt, contextInfo } = await LLMPrompt.buildPromptWithActivePDFContext({
+				userPrompt: prompt,
+				selectedText,
+				pageText,
+				onEmbeddingStart,
+				onMessage: onStructureMessage,
+				// activeItem, not pdfItem -- this function does its own
+				// "not a PDF attachment" early return, and passing the
+				// nulled-out version would make it take the "no reader tab
+				// open at all" path instead.
+				item: activeItem,
+				text: pdfText,
+				paragraphIndex,
+				preformattedIndex,
+			});
 			if (isCancelled()) return;
 			let tableIndexPromise = pdfItem
 				? LLMTables.getTableIndex(pdfItem, onEmbeddingStart, onStructureMessage).catch((e) => {
@@ -1033,22 +1086,11 @@ LLMRequest = {
 				figureIndex: imageResult.index,
 				referenceIndex: referenceResult.index,
 				equationIndex: equationResult.index,
-				// Read straight from LLMPreformatted's own cache rather than
-				// threaded down from the prompt-building step -- unlike the
-				// four above (each already fetched here for their own
-				// context blocks), preformatted regions are fetched inside
-				// buildPromptWithActivePDFContext itself, which doesn't hand
-				// its index back out. Cheap: this is a memory/disk cache hit
-				// by the time this runs, never a re-extraction. Best-effort
-				// -- a failure here just leaves ref:preformatted links
-				// unresolved, exactly as before this existed, rather than
-				// taking down the whole reply.
-				preformattedIndex: pdfItem
-					? await LLMPreformatted.getPreformattedIndex(pdfItem).catch((e) => {
-						this.log(`getPreformattedIndex failed while building link index: ${e.message}`);
-						return null;
-					})
-					: null,
+				// Reuses the index already built above for the prompt's own
+				// <PREFORMATTED> blocks -- it used to be re-fetched here,
+				// back when buildPromptWithActivePDFContext resolved it
+				// internally and never handed it back.
+				preformattedIndex,
 				notes: noteResult.notes,
 			});
 

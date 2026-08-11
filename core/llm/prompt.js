@@ -1183,8 +1183,26 @@ LLMPrompt = {
 	// it's naturally query-dependent (retrieved chunks, selected text,
 	// etc.) rather than something that'd make sense to send once for a
 	// whole conversation.
-	async buildPromptWithActivePDFContext(userPrompt, selectedText = null, pageText = null, onEmbeddingStart = null, onMessage = null) {
-		let item = LLMChatPane.getActiveReaderAttachment();
+	// Takes an options object rather than a positional list: `item`/`text`
+	// and the two indexes are now supplied by the caller (see the comment
+	// on paragraphIndex/preformattedIndex below for why), which would
+	// otherwise push this past seven positional parameters. `item` and
+	// `text` are optional -- omitted, they're resolved here exactly as
+	// before, which keeps this callable on its own (e.g. from a future
+	// caller that just wants a prompt and has no index pipeline of its
+	// own).
+	async buildPromptWithActivePDFContext({
+		userPrompt,
+		selectedText = null,
+		pageText = null,
+		onEmbeddingStart = null,
+		onMessage = null,
+		item = undefined,
+		text = undefined,
+		paragraphIndex = null,
+		preformattedIndex = null,
+	}) {
+		if (item === undefined) item = LLMChatPane.getActiveReaderAttachment();
 		let systemPrompt = [this._systemPrompt, this._historyStructureNote()].filter(Boolean).join(" ");
 
 		if (!item || !item.isPDFAttachment()) {
@@ -1201,7 +1219,7 @@ LLMPrompt = {
 			};
 		}
 
-		let text = await this.getAttachmentFullText(item);
+		if (text === undefined) text = await this.getAttachmentFullText(item);
 		if (!text.trim()) {
 			return {
 				prompt: userPrompt,
@@ -1234,29 +1252,23 @@ LLMPrompt = {
 		}
 
 		let context, retrieved = false, truncated = false, chunkCount = 0, preformattedCount = 0;
-		// Fetched unconditionally (not just on the "too large" path, unlike
-		// before) -- both the full-PDF and chunked cases now read from the
-		// SAME SDT-derived paragraph list (LLMCitation.getParagraphIndex) and
-		// combined SDT+PyMuPDF preformatted list (LLMPreformatted.
-		// getPreformattedIndex, a SEPARATE module/cache/embedding pipeline --
-		// see its own header comment), since only those carry the per-block
-		// pageIndex/rects overlap injection needs. Falls through to the
-		// raw-text path below (same as before this change) for a PDF the
-		// layout classifier couldn't produce paragraph blocks for at all.
-		let paragraphIndex = null;
-		let preformattedIndex = null;
-		try {
-			paragraphIndex = await LLMCitation.getParagraphIndex(item, text, onEmbeddingStart, onMessage);
-		}
-		catch (e) {
-			this.log(`getParagraphIndex failed: ${e.message}`);
-		}
-		try {
-			preformattedIndex = await LLMPreformatted.getPreformattedIndex(item, onEmbeddingStart, onMessage);
-		}
-		catch (e) {
-			this.log(`getPreformattedIndex failed: ${e.message}`);
-		}
+		// `paragraphIndex`/`preformattedIndex` are passed IN by the caller
+		// (llm/request.js) rather than fetched here. Both the full-PDF and
+		// chunked cases below read from them -- the SDT-derived paragraph
+		// list and the combined SDT+PyMuPDF preformatted list -- since only
+		// those carry the per-block pageIndex/rects that note-overlap
+		// injection needs. Either may be null (extraction failed, or this
+		// PDF's layout classifier produced no paragraph blocks at all), in
+		// which case this falls through to the raw-text path below exactly
+		// as before.
+		//
+		// Moved out of this function so that EVERY index a request needs is
+		// built in ONE place: they can then be deduplicated against each
+		// other (independent extractors routinely report the same physical
+		// region as both a listing and an unlabelled table, see
+		// LLMPreformatted.deduplicatePreformatted) and written to their
+		// caches/the embeddings DB exactly once, instead of each module
+		// persisting on its own before anything can compare them.
 
 		// ALWAYS the paper's full heading outline, never narrowed by RAG --
 		// see _interleaveHeadingsAndParagraphs's own comment for why: this is

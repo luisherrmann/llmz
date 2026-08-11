@@ -61,8 +61,64 @@
 // unruled tables PyMuPDF's own find_tables() fails on).
 
 import fs from 'fs';
-import { flattenText, pairWithCaptions, flattenOutline, nearestSection } from './match-captions.js';
+import { flattenText, pairWithCaptions, flattenOutline, nearestSection, hasInterveningProse } from './match-captions.js';
 import { loadOrComputeStructure } from './structure-sdt.js';
+
+// The terse "<word> <number>" prefix of a table caption, normalized so two
+// captions naming the SAME table compare equal regardless of how each is
+// written or what follows. Accepts the abbreviations papers actually use
+// ("Table 1", "Tbl. 1", "Tab. 1") and keeps an appendix letter as part of
+// the key, so "Table D.1" never collides with "Table 1".
+//
+// Used by the merge pass below for the case where BOTH fragments of a
+// page-split table carry a caption: a LaTeX longtable repeats its own
+// header on each page as "Table 1 - continued from previous page", which
+// is a genuine caption by every shape test -- it just names a table that
+// has already been seen, rather than introducing a new one. Comparing the
+// normalized prefix is what distinguishes "this is the same table
+// continuing" from "this is the next table".
+const CAPTION_LABEL_KEY_RE = /^\s*(?:table|tbl|tab)\.?\s*([a-z]\.)?\s*(\d+)/i;
+
+function captionLabelKey(caption) {
+	if (!caption) return null;
+	let m = CAPTION_LABEL_KEY_RE.exec(caption);
+	return m ? `${(m[1] || '').toLowerCase()}${m[2]}` : null;
+}
+
+// Collapses a group's fragments into ONE reader position. Mirrors
+// llm/prompt.js's own buildLinkIndex window for page-split listings, for
+// the same reason: the reader's position format supports exactly two
+// adjacent pages (`rects` on `pageIndex`, optional `nextPageRects` on
+// `pageIndex + 1`), with no general N-page form. Fragments on the anchor
+// page are unioned into `rects`, ones on the next page into
+// `nextPageRects`, and a table spanning 3+ pages shows only that two-page
+// window.
+//
+// Anchored on the page carrying the table's own CAPTION so the jump frames
+// the labeled end; since nextPageRects only extends FORWARD, an anchor
+// that is already the last page steps back one (when genuinely adjacent)
+// so the window covers the final two pages instead of running off the end.
+// A single-fragment table comes out as plain { pageIndex, rects: [bbox] },
+// exactly as before this pass existed.
+function buildGroupPosition(fragments, captionFragment) {
+	let rectsByPage = new Map();
+	for (let f of fragments) {
+		let page = f.page_num - 1;
+		if (!rectsByPage.has(page)) rectsByPage.set(page, []);
+		rectsByPage.get(page).push(f.bbox);
+	}
+	let pages = [...rectsByPage.keys()].sort((a, b) => a - b);
+	let captionPage = captionFragment ? captionFragment.page_num - 1 : null;
+	let anchor = (captionPage != null && rectsByPage.has(captionPage)) ? captionPage : pages[0];
+	if (anchor === pages[pages.length - 1] && pages.length > 1) {
+		let previous = pages[pages.indexOf(anchor) - 1];
+		if (previous === anchor - 1) anchor = previous;
+	}
+	let position = { pageIndex: anchor, rects: rectsByPage.get(anchor) };
+	let nextPageRects = rectsByPage.get(anchor + 1);
+	if (nextPageRects) position.nextPageRects = nextPageRects;
+	return position;
+}
 
 // SDT's table block content is either a real row/column grid (array of
 // tablerow -> tablecell nodes, when its internal grid-fitting model
@@ -118,17 +174,127 @@ async function main() {
 		// thinks each one IS. The `^` anchor keeps this safe against false
 		// positives from an ordinary paragraph that merely MENTIONS a
 		// table mid-sentence (e.g. "As shown in Table 2, ...") -- only a
-		// block whose text literally STARTS with "Table"/"Tbl" matches at
-		// all, which is already a strong caption-like signal on its own
-		// regardless of the source block's classified type.
+		// block whose text literally STARTS with "Table"/"Tbl"/"Tab"
+		// matches at all, which is already a strong caption-like signal on
+		// its own regardless of the source block's classified type. "Tab"
+		// is accepted because papers really do abbreviate that far ("Tab. 1
+		// - continued"), and without it such a caption is invisible to the
+		// pairing algorithm entirely, leaving a perfectly well-labeled table
+		// stored as an "Unlabelled Table N". The `\b` keeps it tight: it
+		// matches "Tab." and "Tab 1" but never "Tabular"/"Tabulated".
 		let text = flattenText(block).replace(/\s+/g, ' ').trim();
-		if (/^(table|tbl)\b/i.test(text)) {
+		if (/^(table|tbl|tab)\b/i.test(text)) {
 			captions.push({ blockIndex: i, page_num: pageRect[0] + 1, bbox: pageRect.slice(1), text });
 		}
 	}
 
 	let sections = flattenOutline(structure.catalog?.outline || [], structure);
 	let { matched, unmatchedBodies: unmatchedTables } = pairWithCaptions(tables, captions);
+
+	// A table that runs past the bottom of a page continues on the next one,
+	// and SDT sees each page's portion as its own separate `table` block --
+	// so one logical table arrives here as several fragments that have to be
+	// merged back together, exactly as page-split listings do in
+	// extract-preformatted-sdt.js (see its own grouping pass, and
+	// hasInterveningProse in match-captions.js for the shared test).
+	//
+	// Captioned and uncaptioned fragments are merged from ONE list rather
+	// than handled in the two separate loops below, because the two halves
+	// of a split table routinely land on opposite sides of that split: the
+	// first page's portion gets the real caption, the rest gets none (or a
+	// repeated "continued" header). Merging has to happen before the
+	// captioned/uncaptioned distinction is acted on at all.
+	let fragments = [
+		...matched.map(m => ({
+			blockIndex: m.blockIndex, page_num: m.page_num, bbox: m.bbox, content: m.content,
+			caption: m.caption, label: m.label, captionBlockIndex: m.captionBlockIndex,
+		})),
+		...unmatchedTables.map(t => ({
+			blockIndex: t.blockIndex, page_num: t.page_num, bbox: t.bbox, content: t.content,
+			caption: null, label: null, captionBlockIndex: null,
+		})),
+	].sort((a, b) => a.blockIndex - b.blockIndex);
+
+	// Which side of its table a caption sits on decides which fragment is
+	// the CONTINUATION -- the one that must not have a caption of its own
+	// for the two to be the same table. Established from the document rather
+	// than assumed, by majority over the captions actually matched, the same
+	// way extract-preformatted-sdt.js and match-captions.js's own
+	// dominantArrangement already do.
+	//
+	// A fragment matched to a caption that IS its own block (a longtable's
+	// repeated "Table 1 - continued from previous page" header, which opens
+	// the very block it heads) is skipped: it sits at distance zero on
+	// neither side and says nothing about where this paper puts its
+	// captions. Counting those was actively wrong -- on a table split across
+	// three or more pages the self-captioned continuations OUTVOTE the one
+	// real caption, flipping the orientation, which then picks a
+	// "continued from previous page" repeat as the merged table's caption
+	// instead of the caption that actually names it.
+	let captionsPrecedeTables = (() => {
+		let before = 0;
+		let after = 0;
+		for (let m of matched) {
+			if (m.captionBlockIndex == null || m.captionBlockIndex === m.blockIndex) continue;
+			if (m.captionBlockIndex < m.blockIndex) before++;
+			else after++;
+		}
+		return before >= after;
+	})();
+
+	// Two adjacent fragments are the same table when no real prose separates
+	// them AND either:
+	//   - the CONTINUATION side carries no caption at all (the plain case: a
+	//     table simply spills onto the next page with no repeated header), or
+	//   - both carry a caption naming the SAME table (a longtable repeating
+	//     "Table 1 - continued from previous page"). Without this, such a
+	//     continuation looks like a brand new captioned table and the two
+	//     halves stay split -- confirmed on longtable.pdf, where the repeated
+	//     header even gets matched to its own fragment as that fragment's
+	//     caption, so the whole page-2 body ends up stored as caption text.
+	let sameGroupAsNext = new Array(fragments.length).fill(false);
+	for (let i = 0; i < fragments.length - 1; i++) {
+		let earlier = fragments[i];
+		let later = fragments[i + 1];
+		if (hasInterveningProse(structure.content, earlier.blockIndex, later.blockIndex)) continue;
+		let continuation = captionsPrecedeTables ? later : earlier;
+		let key = captionLabelKey(earlier.caption);
+		if (!continuation.caption || (key && key === captionLabelKey(later.caption))) {
+			sameGroupAsNext[i] = true;
+		}
+	}
+
+	let groups = [];
+	let current = [];
+	fragments.forEach((f, i) => {
+		current.push(f);
+		if (!sameGroupAsNext[i]) {
+			groups.push(current);
+			current = [];
+		}
+	});
+	if (current.length) groups.push(current);
+
+	// One entry per logical table. `data` is every fragment's rows in
+	// document order -- a repeated "continued" header row is kept rather
+	// than stripped, since it is real printed content and a fragment may not
+	// have one at all. The caption kept is the one from the END the document
+	// puts its captions on, so a "continued from previous page" repeat never
+	// displaces the real introducing caption.
+	let merged = groups.map((group) => {
+		let captioned = group.filter(f => f.caption);
+		let captionFragment = captionsPrecedeTables ? captioned[0] : captioned[captioned.length - 1];
+		return {
+			blockIndex: group[0].blockIndex,
+			page_num: group[0].page_num,
+			caption: captionFragment?.caption || null,
+			label: captionFragment?.label || null,
+			data: group.flatMap(f => tableContentToData(f.content)),
+			position: buildGroupPosition(group, captionFragment),
+		};
+	});
+	matched = merged.filter(t => t.caption);
+	unmatchedTables = merged.filter(t => !t.caption);
 
 	// Plain numeric caption ("Table 3: ...") -> table_num; anything else
 	// (lettered-appendix caption, or no caption at all) -> table_extra_num,
@@ -140,7 +306,7 @@ async function main() {
 	// sentence) -- matches the "Table 1"/"Formula 8"-style terse labels used
 	// everywhere else, for a lettered-appendix caption. Plain-numbered ones
 	// don't need this (they get a synthesized `Table ${table_num}` below).
-	const LABEL_PREFIX_RE = /^((?:table|tbl)\.?\s*(?:[a-z]\.)?\d+)/i;
+	const LABEL_PREFIX_RE = /^((?:table|tbl|tab)\.?\s*(?:[a-z]\.)?\d+)/i;
 	let output = [];
 	let extraCounter = 0;
 
@@ -163,9 +329,9 @@ async function main() {
 			table_extra_num,
 			label,
 			caption: m.caption,
-			data: tableContentToData(m.content),
+			data: m.data,
 			image_data: null,
-			position: { pageIndex: m.page_num - 1, rects: [m.bbox] },
+			position: m.position,
 		});
 	}
 
@@ -188,9 +354,9 @@ async function main() {
 				table_extra_num: ++extraCounter,
 				label,
 				caption: label,
-				data: tableContentToData(t.content),
+				data: t.data,
 				image_data: null,
-				position: { pageIndex: t.page_num - 1, rects: [t.bbox] },
+				position: t.position,
 			});
 		});
 	}

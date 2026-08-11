@@ -79,16 +79,9 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { createRequire } from 'module';
 import { execFileSync } from 'child_process';
-import { flattenText, unionRect, pairWithCaptions } from './match-captions.js';
+import { flattenText, unionRect, pairWithCaptions, hasInterveningProse } from './match-captions.js';
 import { loadOrComputeStructure } from './structure-sdt.js';
-
-// See shared-patterns.js's own header comment for why this is require()'d
-// (via Node's ESM-to-CommonJS bridge) rather than imported -- same as
-// extract-equations.js's own use of splitSentences.
-const require = createRequire(import.meta.url);
-const { splitSentences } = require('./shared-patterns.js');
 
 // Two rects are merged (unioned) whenever extending EACH by this many points
 // on every side would make them overlap -- absorbs tiny sub-point gaps
@@ -238,56 +231,6 @@ function blockPageRectBbox(block) {
 	let rects = pageRects.filter(pr => pr[0] === pageIndex).map(pr => pr.slice(1));
 	if (!rects.length) return null;
 	return { pageIndex, bbox: rects.reduce((acc, r) => acc ? unionRect(acc, r) : r, null) };
-}
-
-// A region with NO caption of its own is very often not a distinct
-// listing at all, but a CONTINUATION of the next captioned one -- a
-// single logical listing PyMuPDF's own background-fill detection (or a
-// page break) happened to split into multiple separate regions (see the
-// merge pass in main() below). This decides whether two ADJACENT regions
-// (in document/block order) are safe to merge back into one, by checking
-// whether any block strictly BETWEEN their own block-index range contains
-// a real sentence -- reuses LLMPatterns.splitSentences (shared-patterns.js,
-// the SAME sentence-boundary split core/citation.js's own
-// splitIntoSentences applies its own 20-500 char length filter on top of
-// -- applied here too, so "genuine sentence" means the same thing here it
-// already does everywhere else in this plugin) rather than a bespoke
-// check.
-//
-// Only 'paragraph'/'list' blocks can qualify, as an ALLOWLIST rather than
-// skipping a handful of known labels. Every other type is structurally
-// incapable of being the explanatory body text this is looking for:
-// 'heading'/'caption' are labels (a listing's own caption, or an unrelated
-// section heading the two fragments happen to straddle), 'image' has no
-// prose at all, and -- the case that matters most here -- 'preformatted'
-// and 'table' are the listing's OWN CONTENT.
-//
-// That last one is why a denylist was wrong. A listing's own rows are
-// typed 'preformatted' and 'table' (SDT routinely classifies code rows as
-// 'table' -- exactly where this plugin's phantom "Unlabelled Table N"
-// duplicates come from, see core/document/preformatted.js's
-// deduplicatePreformatted), so when one region ends mid-listing, the very
-// next block is the SAME listing continuing, not prose separating two of
-// them.
-//
-// Confirmed on this plugin's own test paper. Listing 7 is a single JSON
-// object spanning blocks 172-176 (types table/preformatted/table/
-// preformatted/table) that PyMuPDF split into two regions -- one covering
-// blocks 172-174, one starting at 176. That leaves exactly one block
-// strictly between them: 175, typed 'preformatted', and nothing but more
-// of the same JSON. The old denylist counted it as a genuine sentence, so
-// the two halves never merged and the first surfaced as its own
-// uncaptioned "Preformatted 3" entry alongside the captioned "Listing 7".
-function hasInterveningProse(content, afterBlockIndex, beforeBlockIndex) {
-	for (let i = afterBlockIndex + 1; i < beforeBlockIndex; i++) {
-		let block = content[i];
-		if (!block || (block.type !== 'paragraph' && block.type !== 'list')) continue;
-		let text = flattenText(block).replace(/\s+/g, ' ').trim();
-		if (!text) continue;
-		let sentences = splitSentences(text).filter(s => s.length >= 20 && s.length <= 500);
-		if (sentences.length) return true;
-	}
-	return false;
 }
 
 async function main() {

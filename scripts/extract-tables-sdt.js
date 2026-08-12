@@ -85,6 +85,22 @@ function captionLabelKey(caption) {
 	return m ? `${(m[1] || '').toLowerCase()}${m[2]}` : null;
 }
 
+// A caption that announces itself as the REST of a table already started,
+// rather than introducing a new one -- "Table 9 - continued from previous
+// page", "Tab. 1 (cont'd)". Written by the same longtable machinery that
+// emits the "Continued on next page" footer, so the wording is formulaic.
+//
+// Checked alongside the label key rather than instead of it: the keyword
+// says "this is a continuation" and the key says "of THIS table", and only
+// both together justify merging across a page break without consulting
+// what sits in between. On its own the keyword would also swallow a
+// genuinely new table whose caption happened to mention continuation.
+const CONTINUATION_CAPTION_RE = /\b(continued|cont'?d|cont\.)\b/i;
+
+function isContinuationCaption(caption) {
+	return !!caption && CONTINUATION_CAPTION_RE.test(caption);
+}
+
 // Collapses a group's fragments into ONE reader position. Mirrors
 // llm/prompt.js's own buildLinkIndex window for page-split listings, for
 // the same reason: the reader's position format supports exactly two
@@ -242,38 +258,74 @@ async function main() {
 		return before >= after;
 	})();
 
-	// Two adjacent fragments are the same table when no real prose separates
-	// them AND either:
-	//   - the CONTINUATION side carries no caption at all (the plain case: a
-	//     table simply spills onto the next page with no repeated header), or
-	//   - both carry a caption naming the SAME table (a longtable repeating
-	//     "Table 1 - continued from previous page"). Without this, such a
-	//     continuation looks like a brand new captioned table and the two
-	//     halves stay split -- confirmed on longtable.pdf, where the repeated
-	//     header even gets matched to its own fragment as that fragment's
-	//     caption, so the whole page-2 body ends up stored as caption text.
-	let sameGroupAsNext = new Array(fragments.length).fill(false);
-	for (let i = 0; i < fragments.length - 1; i++) {
-		let earlier = fragments[i];
-		let later = fragments[i + 1];
-		if (hasInterveningProse(structure.content, earlier.blockIndex, later.blockIndex)) continue;
+	// Two adjacent fragments are the same table under either of two rules,
+	// in order of how direct the evidence is:
+	//
+	//   1. The continuation's caption says "continued" AND names the same
+	//      table as the group it would join ("Table 9" then "Table 9 -
+	//      continued from previous page"). The document is stating outright
+	//      that this is one table, which beats any heuristic, so this merges
+	//      regardless of what sits in between.
+	//   2. Otherwise, the continuation carries no caption at all AND no real
+	//      prose separates the two -- the implicit case, where a table simply
+	//      spills onto the next page with nothing repeated.
+	//
+	// Rule 1 exists because rule 2's prose test is not survivable across a
+	// real page break. Between the two halves of OSWorld's Table 9 sit
+	// "Continued on next page" (22 chars -- just over the >=20 sentence
+	// filter) and "Chrome Google Chrome Help https://support.google.com/
+	// chrome", a table ROW that SDT classified as a paragraph. Neither is
+	// explanatory body text, but both read as a sentence, so the halves
+	// stayed split even though both captions say "Table 9". Its Table 12
+	// repeats the same "Continued on next page" footer between all four of
+	// its pages.
+	//
+	// The comparison is against the GROUP's established label rather than
+	// just the previous fragment's, because a long table's interior
+	// fragments carry no caption of their own: Table 12 runs
+	// captioned/uncaptioned/captioned/uncaptioned..., so pairing a bare
+	// interior fragment with the next "continued" header would compare
+	// against null and never match.
+	let groups = [];
+	let current = null;
+	let currentKey = null;
+	for (let fragment of fragments) {
+		if (!current) {
+			current = [fragment];
+			currentKey = captionLabelKey(fragment.caption);
+			groups.push(current);
+			continue;
+		}
+		let earlier = current[current.length - 1];
+		let later = fragment;
+		let earlierKey = captionLabelKey(earlier.caption);
+		let laterKey = captionLabelKey(later.caption);
+		// Which side is the continuation flips with the caption convention,
+		// exactly as in extract-preformatted-sdt.js's own grouping pass.
 		let continuation = captionsPrecedeTables ? later : earlier;
-		let key = captionLabelKey(earlier.caption);
-		if (!continuation.caption || (key && key === captionLabelKey(later.caption))) {
-			sameGroupAsNext[i] = true;
+		let continuationKey = captionsPrecedeTables ? laterKey : earlierKey;
+		let establishedKey = (captionsPrecedeTables ? earlierKey : laterKey) || currentKey;
+
+		let sameTable;
+		if (isContinuationCaption(continuation.caption)
+			&& continuationKey && establishedKey && continuationKey === establishedKey) {
+			sameTable = true;
+		}
+		else {
+			sameTable = !continuation.caption
+				&& !hasInterveningProse(structure.content, earlier.blockIndex, later.blockIndex);
+		}
+
+		if (sameTable) {
+			current.push(fragment);
+			currentKey = currentKey || laterKey || earlierKey;
+		}
+		else {
+			current = [fragment];
+			currentKey = captionLabelKey(fragment.caption);
+			groups.push(current);
 		}
 	}
-
-	let groups = [];
-	let current = [];
-	fragments.forEach((f, i) => {
-		current.push(f);
-		if (!sameGroupAsNext[i]) {
-			groups.push(current);
-			current = [];
-		}
-	});
-	if (current.length) groups.push(current);
 
 	// One entry per logical table. `data` is every fragment's rows in
 	// document order -- a repeated "continued" header row is kept rather

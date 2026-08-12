@@ -85,21 +85,13 @@ function captionLabelKey(caption) {
 	return m ? `${(m[1] || '').toLowerCase()}${m[2]}` : null;
 }
 
-// A caption that announces itself as the REST of a table already started,
-// rather than introducing a new one -- "Table 9 - continued from previous
-// page", "Tab. 1 (cont'd)". Written by the same longtable machinery that
-// emits the "Continued on next page" footer, so the wording is formulaic.
-//
-// Checked alongside the label key rather than instead of it: the keyword
-// says "this is a continuation" and the key says "of THIS table", and only
-// both together justify merging across a page break without consulting
-// what sits in between. On its own the keyword would also swallow a
-// genuinely new table whose caption happened to mention continuation.
-const CONTINUATION_CAPTION_RE = /\b(continued|cont'?d|cont\.)\b/i;
-
-function isContinuationCaption(caption) {
-	return !!caption && CONTINUATION_CAPTION_RE.test(caption);
-}
+// Deliberately NOT paired with a "continued"/"cont'd" keyword test. The
+// number is the robust half of that signal and the wording is the fragile
+// one: it is phrasing- and language-dependent ("continued from previous
+// page", "cont'd", "Fortsetzung"), and papers that repeat a caption header
+// without any such word are perfectly common. Two DIFFERENT tables in one
+// document do not share a number, so a repeated number is already saying
+// "this is the same table" on its own.
 
 // Collapses a group's fragments into ONE reader position. Mirrors
 // llm/prompt.js's own buildLinkIndex window for page-split listings, for
@@ -261,11 +253,12 @@ async function main() {
 	// Two adjacent fragments are the same table under either of two rules,
 	// in order of how direct the evidence is:
 	//
-	//   1. The continuation's caption says "continued" AND names the same
-	//      table as the group it would join ("Table 9" then "Table 9 -
-	//      continued from previous page"). The document is stating outright
-	//      that this is one table, which beats any heuristic, so this merges
-	//      regardless of what sits in between.
+	//   1. The continuation's caption names the SAME table as the group it
+	//      would join ("Table 9" then "Table 9 - continued from previous
+	//      page"). Two different tables in one document do not share a
+	//      number, so this is the document stating outright that these are
+	//      one table -- which beats any heuristic, and merges regardless of
+	//      what sits in between.
 	//   2. Otherwise, the continuation carries no caption at all AND no real
 	//      prose separates the two -- the implicit case, where a table simply
 	//      spills onto the next page with nothing repeated.
@@ -307,8 +300,7 @@ async function main() {
 		let establishedKey = (captionsPrecedeTables ? earlierKey : laterKey) || currentKey;
 
 		let sameTable;
-		if (isContinuationCaption(continuation.caption)
-			&& continuationKey && establishedKey && continuationKey === establishedKey) {
+		if (continuationKey && establishedKey && continuationKey === establishedKey) {
 			sameTable = true;
 		}
 		else {

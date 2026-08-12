@@ -90,31 +90,30 @@ import { loadOrComputeStructure } from './structure-sdt.js';
 // without merging two genuinely different, merely nearby regions.
 const OVERLAP_MARGIN = 2.0;
 
-// A rect wider than this is rejected outright, whether it's a raw INPUT
-// (an SDT block's own anchor.pageRects) or the OUTCOME of a merge -- two
-// real, independently confirmed failure modes on this plugin's own test
-// paper, both producing a ~524pt-wide rect (this paper's two columns
-// combined) against every genuine single-column listing measuring
-// 251-261pt:
-//   1. An input rect can itself be corrupted at the SOURCE -- confirmed
-//      concretely: one SDT 'preformatted' block's own anchor.pageRects
-//      spanned nearly the ENTIRE two-column page (both columns, most of
-//      the height) instead of its own small snippet, poisoning every
-//      region it got merged into.
-//   2. A merge OUTCOME can be spuriously cross-column even when both
-//      INPUTS were individually plausible -- two same-height rects sitting
-//      in the left and right column respectively, at just the right
-//      horizontal spacing, can satisfy the overlap test's margin and
-//      union into one bogus page-spanning region.
-// 300 sits comfortably above every genuine single-column width observed
-// (max 261pt) and comfortably below a two-column span (524pt) -- wide
-// margin on both sides, not a tuned-to-the-edge threshold.
-const MAX_REGION_WIDTH = 300;
-
-function isRectPlausible(rect) {
-	return (rect[2] - rect[0]) <= MAX_REGION_WIDTH;
-}
-
+// There was a MAX_REGION_WIDTH = 300 guard here, rejecting any rect wider
+// than that as implausible -- whether a raw input (a PyMuPDF region, an SDT
+// block's own anchor.pageRects) or the outcome of a merge. It was measured
+// on a TWO-COLUMN paper, where it encoded "one column, not two": genuine
+// single-column listings ran 251-261pt and a both-columns span ran ~524pt,
+// so 300 sat between them with margin.
+//
+// Removed because the quantity is only meaningful relative to the page's
+// own layout, and 300pt is not. On a SINGLE-column paper one column IS
+// ~400pt, so the same number silently means "narrower than a full column"
+// and throws away exactly the listings it was meant to protect. Confirmed
+// on OSWorld (612pt page, single column): its real code listings measure
+// 396pt and were rejected outright, while the 277pt-wide bands of a
+// screenshot figure passed and were kept as listings -- the pipeline
+// preserving the wrong regions and discarding the right ones. 41 of 170
+// candidate regions were discarded on width alone there.
+//
+// Both failure modes it guarded against were inherently about CROSSING
+// COLUMNS, which cannot happen on a single-column layout. On the
+// two-column paper it was measured against, dropping it leaves all 19
+// detected regions byte-for-byte identical; the one thing it still caught
+// there is a corrupted source rect (an SDT block whose own pageRect spans
+// both columns at 498pt while its text is a listing), which now surfaces
+// as one spurious region rather than being filtered here.
 function rectsOverlap(a, b, margin = OVERLAP_MARGIN) {
 	return (a[0] - margin) < (b[2] + margin) && (a[2] + margin) > (b[0] - margin)
 		&& (a[1] - margin) < (b[3] + margin) && (a[3] + margin) > (b[1] - margin);
@@ -124,11 +123,7 @@ function rectsOverlap(a, b, margin = OVERLAP_MARGIN) {
 // restarting the scan after each merge so a chain (A overlaps B, B overlaps
 // C, but A doesn't directly overlap C) still collapses into ONE region
 // rather than stopping at the first pairwise merge -- a plain single pass
-// would miss that transitive case. A candidate union that would come out
-// wider than MAX_REGION_WIDTH is rejected (the two rects are left
-// unmerged) rather than performed -- see that constant's own comment for
-// why (case 2, the "individually plausible inputs, implausible union"
-// failure).
+// would miss that transitive case.
 function mergeOverlappingRects(rects) {
 	let merged = rects.slice();
 	let changed = true;
@@ -139,7 +134,6 @@ function mergeOverlappingRects(rects) {
 			for (let j = i + 1; j < merged.length; j++) {
 				if (!rectsOverlap(merged[i], merged[j])) continue;
 				let candidate = unionRect(merged[i], merged[j]);
-				if (!isRectPlausible(candidate)) continue;
 				merged[i] = candidate;
 				merged.splice(j, 1);
 				changed = true;
@@ -277,7 +271,6 @@ async function main() {
 	// typing).
 	let byPage = new Map(); // page_num -> [rect, ...]
 	function addRect(pageNum, rect) {
-		if (!isRectPlausible(rect)) return;
 		if (!byPage.has(pageNum)) byPage.set(pageNum, []);
 		byPage.get(pageNum).push(rect);
 	}
@@ -325,15 +318,13 @@ async function main() {
 		for (let pageRect of block.anchor?.pageRects || []) {
 			let pageNum = pageRect[0] + 1;
 			let rect = pageRect.slice(1);
-			// Same rejection as step 2's addRect, applied here too --
-			// confirmed concretely as a SEPARATE failure from the one
-			// addRect alone fixes: even excluded as a merge INPUT, a
-			// corrupted oversized block rect (see MAX_REGION_WIDTH's own
-			// comment) still trivially "overlaps" one or more real,
-			// legitimately-sized regions once checked against them
-			// directly here, leaking that block's own unrelated text into
-			// whichever region its bogus rect happens to touch.
-			if (!isRectPlausible(rect)) continue;
+			// A width check used to sit here too, rejecting corrupted
+			// oversized block rects before they could leak their text into
+			// whichever region they happened to touch. Removed with
+			// MAX_REGION_WIDTH (see its own note above): it cost more than
+			// it saved, since the same check also rejected legitimate
+			// single-column block rects on non-two-column papers, starving
+			// real regions of their text entirely.
 			let regions = regionsByPage.get(pageNum);
 			if (!regions) continue;
 			for (let r = 0; r < regions.length; r++) {

@@ -29,16 +29,28 @@
 //      SDT missed (or vice versa) still gets its own.
 //   4. For each merged region, scan EVERY block in structure.content
 //      (regardless of type -- 'table', 'paragraph', whatever SDT happened to
-//      classify it as) for one whose OWN pageRects overlap that region on
+//      classify it as) for those whose OWN pageRects overlap that region on
 //      the same page. This is the step that actually recovers the
 //      misclassified 'table' fragments -- membership is decided by
 //      GEOMETRY (does this block's own rect fall inside the listing's real
-//      visual extent?), not by trusting SDT's per-block type judgment.
-//   5. Merge those blocks' own text, in their original document (block)
-//      order, into one string per region -- using SDT's own per-block text
-//      (via flattenText), not PyMuPDF's raw page.get_text() extraction,
-//      so this stays a single source of truth for TEXT CONTENT (SDT) with
-//      PyMuPDF used PURELY for geometry/region detection.
+//      visual extent?), not by trusting SDT's per-block type judgment. A
+//      block is NOT consumed by the first region it happens to touch: it
+//      may belong to several, which is how a listing continuing across a
+//      column break (one SDT block, two shaded boxes) keeps both halves.
+//   5. Decide which of those blocks each region really owns, then merge the
+//      owned blocks' text in document (block) order into one string per
+//      region -- using SDT's own per-block text (via flattenText), not
+//      PyMuPDF's raw page.get_text() extraction, so this stays a single
+//      source of truth for TEXT CONTENT (SDT) with PyMuPDF used PURELY for
+//      geometry/region detection. (That single-source rule is load-bearing:
+//      citation grounding re-anchors quotes against an index built from the
+//      same structure.content, so preformatted text has to be a literal
+//      substring of it.) A block only several regions could claim is
+//      admitted where it covers new ground -- see
+//      BLOCK_NEW_COVERAGE_RATIO.
+//   6. Regions that ended up owning the SAME block are two visual pieces of
+//      one element: they collapse into a single entry carrying BOTH rects,
+//      so the text is emitted once and neither piece's geometry is lost.
 //
 // Usage: node --import ../sdt/document-worker/scripts/pdfjs-setup.js
 //   extract-preformatted-sdt.js <pdf_path> <output_json_path> <python_path>
@@ -90,6 +102,16 @@ import { loadOrComputeStructure } from './structure-sdt.js';
 // without merging two genuinely different, merely nearby regions.
 const OVERLAP_MARGIN = 2.0;
 
+// A block that several regions could claim is admitted to one of them only
+// if most of what it covers there is NOT already covered by that region's
+// own unambiguous blocks. Redundancy, not size, is what disqualifies an
+// unreliable rect: ANS block 175 spans four regions and covers 65% of one,
+// but adds only 2.3% of new area there (ratio 0.035), while block 236 --
+// a listing genuinely continuing across a column break -- contributes
+// essentially everything it covers (ratio 1.00). The gap is wide enough
+// that the exact cutoff does not matter.
+const BLOCK_NEW_COVERAGE_RATIO = 0.5;
+
 // There was a MAX_REGION_WIDTH = 300 guard here, rejecting any rect wider
 // than that as implausible -- whether a raw input (a PyMuPDF region, an SDT
 // block's own anchor.pageRects) or the outcome of a merge. It was measured
@@ -114,6 +136,31 @@ const OVERLAP_MARGIN = 2.0;
 // there is a corrupted source rect (an SDT block whose own pageRect spans
 // both columns at 498pt while its text is a listing), which now surfaces
 // as one spurious region rather than being filtered here.
+// Intersection of two rects, or null when they do not overlap.
+function clipRect(a, b) {
+	let x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]);
+	let x1 = Math.min(a[2], b[2]), y1 = Math.min(a[3], b[3]);
+	return (x1 <= x0 || y1 <= y0) ? null : [x0, y0, x1, y1];
+}
+
+// Area of the UNION of a rect list, via coordinate compression -- exact,
+// and the rect counts here are tiny (a handful of blocks per region).
+function unionArea(rects) {
+	if (!rects.length) return 0;
+	let xs = [...new Set(rects.flatMap(r => [r[0], r[2]]))].sort((a, b) => a - b);
+	let ys = [...new Set(rects.flatMap(r => [r[1], r[3]]))].sort((a, b) => a - b);
+	let total = 0;
+	for (let i = 0; i < xs.length - 1; i++) {
+		for (let j = 0; j < ys.length - 1; j++) {
+			let cx = (xs[i] + xs[i + 1]) / 2, cy = (ys[j] + ys[j + 1]) / 2;
+			if (rects.some(r => cx > r[0] && cx < r[2] && cy > r[1] && cy < r[3])) {
+				total += (xs[i + 1] - xs[i]) * (ys[j + 1] - ys[j]);
+			}
+		}
+	}
+	return total;
+}
+
 function rectsOverlap(a, b, margin = OVERLAP_MARGIN) {
 	return (a[0] - margin) < (b[2] + margin) && (a[2] + margin) > (b[0] - margin)
 		&& (a[1] - margin) < (b[3] + margin) && (a[3] + margin) > (b[1] - margin);
@@ -310,6 +357,7 @@ async function main() {
 	// region -- confirmed concretely as a real failure, not just
 	// theoretical: without this, such a block's own text was counted (and
 	// so appeared in the final merged text) TWICE.
+	let blockRegions = new Map(); // blockIndex -> Set(region key)
 	let blocksByRegion = new Map(); // "pageNum:regionIndex" -> Map(blockIndex -> { text, type })
 	for (let i = 0; i < structure.content.length; i++) {
 		let block = structure.content[i];
@@ -331,8 +379,13 @@ async function main() {
 				if (!rectsOverlap(rect, regions[r], 0)) continue;
 				let key = `${pageNum}:${r}`;
 				if (!blocksByRegion.has(key)) blocksByRegion.set(key, new Map());
-				blocksByRegion.get(key).set(i, { text, type: block.type });
-				break; // a block belongs to at most one region
+				let entry = blocksByRegion.get(key).get(i) || { text, type: block.type, rects: [] };
+					let cl = clipRect(rect, regions[r]);
+					if (cl) entry.rects.push(cl);
+					blocksByRegion.get(key).set(i, entry);
+					if (!blockRegions.has(i)) blockRegions.set(i, new Set());
+					blockRegions.get(i).add(key);
+				continue; // a block may legitimately belong to several regions
 			}
 		}
 	}
@@ -369,15 +422,41 @@ async function main() {
 				.map(([blockIndex, info]) => ({ blockIndex, ...info }))
 				.sort((a, b) => a.blockIndex - b.blockIndex);
 			if (!blocks.length) continue;
+
+			// Which of the overlapping blocks actually belong to THIS region?
+			//   - a block no other region touches cannot be misattributed, so it is
+			//     kept outright (this is also what keeps a line-number block like
+			//     ANS block 37, whose 12x6 rect straddles the fill box's left edge
+			//     because the gutter sits outside the shading);
+			//   - a block several regions could claim is admitted only if it covers
+			//     ground those blocks do not already cover (see
+			//     BLOCK_NEW_COVERAGE_RATIO).
+			let claimed = blocks.filter(b => (blockRegions.get(b.blockIndex)?.size ?? 1) === 1);
+			let contested = blocks.filter(b => (blockRegions.get(b.blockIndex)?.size ?? 1) > 1)
+				.sort((a, b) => unionArea(b.rects) - unionArea(a.rects));
+			let coverRects = claimed.flatMap(b => b.rects);
+			let coverArea = unionArea(coverRects);
+			for (let b of contested) {
+				let own = unionArea(b.rects);
+				if (!own) continue;
+				let merged = unionArea(coverRects.concat(b.rects));
+				if ((merged - coverArea) / own < BLOCK_NEW_COVERAGE_RATIO) continue;
+				claimed.push(b);
+				coverRects = coverRects.concat(b.rects);
+				coverArea = merged;
+			}
+			if (!claimed.length) continue;
+			claimed.sort((a, b) => a.blockIndex - b.blockIndex);
+
 			let text = '';
-			for (let b of blocks) {
+			for (let b of claimed) {
 				if (text && !/\s$/.test(text)) text += '\n';
 				text += b.text;
 			}
 			if (!text.trim()) continue;
-			let blockIndex = Math.min(...blocks.map(b => b.blockIndex));
-			let maxBlockIndex = Math.max(...blocks.map(b => b.blockIndex));
-			bodies.push({ blockIndex, maxBlockIndex, page_num: pageNum, bbox: regions[r], text });
+			let blockIndex = Math.min(...claimed.map(b => b.blockIndex));
+			let maxBlockIndex = Math.max(...claimed.map(b => b.blockIndex));
+			bodies.push({ blockIndex, maxBlockIndex, page_num: pageNum, bbox: regions[r], rects: [regions[r]], claimed: claimed.map(b => b.blockIndex), text });
 		}
 	}
 
@@ -420,6 +499,39 @@ async function main() {
 		captions.push({ blockIndex: i, page_num: position.pageIndex + 1, bbox: position.bbox, text });
 	}
 
+	// Two regions that ended up claiming the SAME block are two visual
+	// pieces of one element -- a listing continuing across a column break
+	// gives SDT a single block whose text spans both columns (ANS block
+	// 236). They become one body carrying BOTH rects: the text is emitted
+	// once, each piece keeps its own rect (no box spanning the gutter), and
+	// blockIndex stays unique, which the caption lookup below relies on.
+	{
+		let owner = new Map();
+		let mergedInto = new Map();
+		for (let b of bodies) {
+			let target = null;
+			for (let bx of b.claimed) {
+				let o = owner.get(bx);
+				while (o && mergedInto.has(o)) o = mergedInto.get(o);
+				if (o && o !== b) { target = o; break; }
+			}
+			if (!target) { for (let bx of b.claimed) if (!owner.has(bx)) owner.set(bx, b); continue; }
+			target.rects.push(...b.rects);
+			target.bbox = target.rects.reduce((acc, r) => acc ? unionRect(acc, r) : r, null);
+			target.maxBlockIndex = Math.max(target.maxBlockIndex, b.maxBlockIndex);
+			let seen = new Set(target.claimed);
+			let added = b.claimed.filter(x => !seen.has(x));
+			if (added.length) {
+				target.text += (/\s$/.test(target.text) ? '' : '\n') + b.text;
+				added.forEach(x => { seen.add(x); owner.set(x, target); });
+			}
+			target.claimed = [...seen];
+			target.blockIndex = Math.min(target.blockIndex, b.blockIndex);
+			mergedInto.set(b, target);
+		}
+		bodies = bodies.filter(b => !mergedInto.has(b)).sort((a, b) => a.blockIndex - b.blockIndex);
+	}
+
 	let { matched } = pairWithCaptions(bodies, captions);
 	let matchedByBlockIndex = new Map(matched.map(m => [m.blockIndex, m]));
 
@@ -458,7 +570,7 @@ async function main() {
 			bbox,
 			text: body.text,
 			caption,
-			position: { pageIndex: body.page_num - 1, rects: [bbox] },
+			position: { pageIndex: body.page_num - 1, rects: body.rects.length > 1 ? body.rects : [bbox] },
 			blockIndex: body.blockIndex,
 			maxBlockIndex: body.maxBlockIndex,
 		};

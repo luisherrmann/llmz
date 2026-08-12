@@ -57,11 +57,23 @@ TILE_GAP_TOLERANCE = 2.0
 # both ~1000-1400 sq pt) that get picked up by get_image_info() just like a
 # real figure would, but aren't one -- surfacing them as candidate figure
 # bodies in extract-figures-sdt.js produced spurious "figures" with no real
-# caption anywhere nearby. Real figures observed so far run 85,000+ sq pt
-# (roughly 250x340pt, a bit under half a page), so this threshold has wide
-# margin on both sides -- generous enough not to exclude a genuinely small
-# figure/inset, strict enough to exclude anything decorative.
-MIN_IMAGE_AREA = 10000
+# caption anywhere nearby.
+#
+# What this filters is TILES, not whole figures. A multi-panel figure whose
+# panels sit more than TILE_GAP_TOLERANCE apart is never merged here at all
+# -- the merge above only closes sub-point seams -- so each panel arrives as
+# its own small region and extract-figures-sdt.js's own groupImagesByBoundary
+# assembles them into one figure downstream. Anything rejected here is
+# therefore withheld from that grouping, not merely from the output.
+#
+# 10000 was measured against papers whose figures are single large images
+# (85,000+ sq pt) and broke exactly the tiled case: on OSWorld, Figure 21's
+# six screenshot panels are 9,417 sq pt each and Figures 19/20's are ~5,200,
+# so every panel fell below the floor and all three figures were either
+# missing outright or reduced to the fragment SDT happened to see. 5000
+# clears the smallest observed real panel while keeping a 3.5x margin over
+# the largest observed decorative image (~1,400 sq pt).
+MIN_IMAGE_AREA = 5000
 
 # Maximum ratio between a merged region's longer and shorter side -- excludes
 # decorative horizontal/vertical rules and divider lines (observed on

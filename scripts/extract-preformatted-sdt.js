@@ -105,17 +105,23 @@ const OVERLAP_MARGIN = 2.0;
 // A block that several regions could claim is admitted to one of them only
 // if what it covers there is NOT already covered by that region's own
 // unambiguous blocks. Redundancy, not size, is what disqualifies an
-// unreliable rect: ANS block 175 spans four regions and covers 65% of one,
-// but adds only 2.3% of new area there (ratio 0.035), while block 236 --
-// a listing genuinely continuing across a column break -- contributes
-// essentially everything it covers (ratio 1.00).
+// unreliable rect.
 //
-// Set low deliberately. The two behaviours this separates sit at opposite
-// ends of the range, so the cutoff's job is only to reject blocks that are
-// almost entirely redundant; anything contributing even a modest amount of
-// genuinely new area is content some region would otherwise lose, and
-// keeping it is the safer error.
-const BLOCK_NEW_COVERAGE_RATIO = 0.1;
+// Measured decision points on this plugin's own test papers -- note they do
+// NOT all sit at the extremes, so this is a real threshold rather than a
+// formality:
+//   1.00        ANS block 236 joining either half of the listing it spans
+//               across a column break -- contributes all it covers, and
+//               dropping it would lose that half of Listing 10 entirely.
+//   0.15-0.20   ANS block 175 joining Listing 7's caption region on a thin
+//               uncovered strip. Admitting it duplicates 286 chars already
+//               present in that listing's body fragment.
+//   0.035       the same block joining Listing 8's region, where it would
+//               contribute another listing's text outright.
+// 0.5 sits above the duplicating case with margin on both sides. Sweeping
+// 0.2/0.3/0.5 gives byte-identical output on both papers, so the margin is
+// free; 0.1 and 0.15 readmit the duplicate.
+const BLOCK_NEW_COVERAGE_RATIO = 0.5;
 
 // There was a MAX_REGION_WIDTH = 300 guard here, rejecting any rect wider
 // than that as implausible -- whether a raw input (a PyMuPDF region, an SDT

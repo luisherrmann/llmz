@@ -103,14 +103,19 @@ import { loadOrComputeStructure } from './structure-sdt.js';
 const OVERLAP_MARGIN = 2.0;
 
 // A block that several regions could claim is admitted to one of them only
-// if most of what it covers there is NOT already covered by that region's
-// own unambiguous blocks. Redundancy, not size, is what disqualifies an
+// if what it covers there is NOT already covered by that region's own
+// unambiguous blocks. Redundancy, not size, is what disqualifies an
 // unreliable rect: ANS block 175 spans four regions and covers 65% of one,
 // but adds only 2.3% of new area there (ratio 0.035), while block 236 --
 // a listing genuinely continuing across a column break -- contributes
-// essentially everything it covers (ratio 1.00). The gap is wide enough
-// that the exact cutoff does not matter.
-const BLOCK_NEW_COVERAGE_RATIO = 0.5;
+// essentially everything it covers (ratio 1.00).
+//
+// Set low deliberately. The two behaviours this separates sit at opposite
+// ends of the range, so the cutoff's job is only to reject blocks that are
+// almost entirely redundant; anything contributing even a modest amount of
+// genuinely new area is content some region would otherwise lose, and
+// keeping it is the safer error.
+const BLOCK_NEW_COVERAGE_RATIO = 0.1;
 
 // There was a MAX_REGION_WIDTH = 300 guard here, rejecting any rect wider
 // than that as implausible -- whether a raw input (a PyMuPDF region, an SDT

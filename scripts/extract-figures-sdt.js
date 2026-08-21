@@ -137,6 +137,24 @@ const PYMUPDF_DUPLICATE_IOU = 0.5;
 const MIN_IMAGE_AREA = 10000;
 const MAX_IMAGE_ASPECT_RATIO = 5.0;
 
+// How far pairWithCaptions may reach when absorbing an uncaptioned image
+// region into the captioned figure it belongs to (its own EXTEND_MARGIN
+// default is 10, tuned for bodies whose fragments nearly touch).
+//
+// A multi-panel figure needs much more: list_page_images.py only merges
+// vertically stacked, horizontally OVERLAPPING rects, so a row of
+// side-by-side panels never merges (their gutters make the overlap
+// negative), and consecutive rows are held apart by the per-row label line
+// the paper prints between them. Only the panel beside the caption gets
+// matched; the rest arrive here as leftovers tens of points away.
+// Confirmed on OSWorld Figure 20, a 3x4 screenshot grid that came out as
+// one captioned row plus five loose panels.
+//
+// Output is stable from 40 through 140 on both test papers (identical
+// figures, none exceeding 60% of a page), so 60 sits mid-plateau rather
+// than at an edge; below 30 the far rows stop being reached.
+const FIGURE_ABSORB_MARGIN = 60;
+
 async function main() {
 	let [, , pdfPath, outputPath, pymupdfImagesPath, structureCachePath] = process.argv;
 	if (!pdfPath || !outputPath) {
@@ -303,7 +321,7 @@ async function main() {
 	}
 
 	let sections = flattenOutline(structure.catalog?.outline || [], structure);
-	let { matched, unmatchedBodies: unmatchedImages } = pairWithCaptions(images, captions);
+	let { matched, unmatchedBodies: unmatchedImages } = pairWithCaptions(images, captions, { absorbMargin: FIGURE_ABSORB_MARGIN });
 
 	// Plain numeric caption ("Figure 3: ...") -> figure_num; anything else
 	// (lettered-appendix caption, or no caption at all) -> figure_extra_num,

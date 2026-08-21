@@ -236,6 +236,21 @@ export function iou(a, b) {
 	return inter / (areaA + areaB - inter);
 }
 
+// Default reach for pairWithCaptions' own final step, which absorbs a
+// leftover UNCAPTIONED body into the captioned one it belongs to (see that
+// loop below). A body is extended by this much and tested for overlap
+// against each already-matched body on the page, so it bounds how far a
+// stray fragment may sit from the element it is part of.
+//
+// 10pt suits a body whose fragments are essentially touching -- a listing
+// split by a column break, a table continued on the next page. A caller
+// whose bodies are legitimately spread out passes its own value instead
+// (see extract-figures-sdt.js: a multi-panel figure prints a label line
+// under every row, so its panels sit tens of points apart). It is NOT
+// raised globally: at 30 the listings on this plugin's own test paper
+// balloon across the page gutter -- Listing 6 goes from 55k to 240k sq pt
+// -- because a column-width body that grows sideways is simply wrong,
+// whereas a figure genuinely spans the page.
 export const EXTEND_MARGIN = 10;
 
 // Groups `images` (a page's `type: 'image'` SDT blocks) into clusters using
@@ -385,7 +400,7 @@ export function captionArrangement(bodyBbox, captionBbox) {
 // For a cross-page pair specifically, `bbox` is the body's OWN bbox alone
 // (not unioned with the caption's, which lives on a different page and
 // isn't a meaningful union target) -- see the final mapping step below.
-export function pairWithCaptions(bodies, captions) {
+export function pairWithCaptions(bodies, captions, { absorbMargin = EXTEND_MARGIN } = {}) {
 	let unmatchedBodies = bodies.map((b, i) => ({ ...b, _i: i }));
 	let unmatchedCaptions = captions.map((c, i) => ({ ...c, _i: i }));
 	let takenB = new Set(), takenC = new Set();
@@ -497,7 +512,7 @@ export function pairWithCaptions(bodies, captions) {
 
 	let stillUnmatched = [];
 	for (let b of leftoverBodies) {
-		let ext = extendRect(b.bbox, EXTEND_MARGIN);
+		let ext = extendRect(b.bbox, absorbMargin);
 		let best = null, bestIoU = 0;
 		for (let m of matched) {
 			if (m.page_num !== b.page_num) continue;

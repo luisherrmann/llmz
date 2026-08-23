@@ -75,15 +75,23 @@ TILE_GAP_TOLERANCE = 2.0
 # the largest observed decorative image (~1,400 sq pt).
 MIN_IMAGE_AREA = 5000
 
-# Maximum ratio between a merged region's longer and shorter side -- excludes
-# decorative horizontal/vertical rules and divider lines (observed on
-# Scutteri et al.: a section-divider strip came back as an 983x75 PIXEL,
-# ~472x36 POINT image -- a ~13:1 aspect ratio -- comfortably above
-# MIN_IMAGE_AREA, so the area filter alone let it through as a spurious
-# "figure" with no real caption anywhere nearby). Every real figure
-# observed so far runs under 1.5:1 (mostly close to square or portrait), so
-# this threshold has wide margin against genuine multi-panel figures too.
-MAX_IMAGE_ASPECT_RATIO = 5.0
+# There was a MAX_IMAGE_ASPECT_RATIO = 5.0 filter here, rejecting any merged
+# region whose longer side exceeded 5x its shorter one. It was introduced for a
+# single observed case -- a 472x36pt image on Scutteri et al. p37, described at
+# the time as a "section-divider strip" that the area filter alone let through
+# as a spurious figure.
+#
+# Removed because that description was wrong. Rendering the region shows a
+# display equation (that paper's multistate-design fitness function) set as a
+# flattened raster: the sentence above it ends in a colon introducing it, and
+# get_text() returns zero characters inside its rect while the line above it
+# extracts normally. It is a genuine, caption-less image, so reporting it as an
+# unlabelled figure is the correct outcome, not the failure it was taken for.
+#
+# The filter also cost real figures. A row of side-by-side panels is inherently
+# 6-10:1 (OSWorld Figure 20's rows assemble at 7.1:1 and 6.0:1), so it discarded
+# them -- and since _dedupe_contained_rects had already dropped the panels those
+# rows absorbed, the panels went with them.
 
 
 def _merge_touching_rects(rects, gap_tolerance=TILE_GAP_TOLERANCE):
@@ -174,10 +182,6 @@ def list_page_images(pdf_path):
             merged = _merge_touching_rects(raw_bboxes)
             merged = _dedupe_contained_rects(merged)
             merged = [b for b in merged if (b[2] - b[0]) * (b[3] - b[1]) >= MIN_IMAGE_AREA]
-            merged = [
-                b for b in merged
-                if max(b[2] - b[0], b[3] - b[1]) / max(1e-6, min(b[2] - b[0], b[3] - b[1])) <= MAX_IMAGE_ASPECT_RATIO
-            ]
             if not merged:
                 continue
             height = page.rect.height

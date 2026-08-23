@@ -155,6 +155,36 @@ const MAX_IMAGE_ASPECT_RATIO = 5.0;
 // than at an edge; below 30 the far rows stop being reached.
 const FIGURE_ABSORB_MARGIN = 60;
 
+// Document order for figure bodies: blockIndex first, then geometry as a
+// TIEBREAK only.
+//
+// blockIndex alone is not enough because a PyMuPDF-sourced candidate has no
+// real one -- it is given the midpoint of its page's block-index range (see
+// syntheticBlockIndex below), which is IDENTICAL for every image on that
+// page. Every such candidate therefore ties, and a stable sort falls back to
+// insertion order, i.e. whatever order list_page_images.py happened to emit
+// (its own _dedupe_contained_rects sorts by area, so the order is area rank,
+// not position). Observed on OSWorld p31, where the five Table 12 panels came
+// out numbered bottom-most-first.
+//
+// Geometry only breaks ties, so genuine SDT-sourced figures -- which carry
+// real, distinct block indices -- keep the ordering they already have. y
+// descends because these rects are in PDF-native space where y grows UPWARD,
+// so the largest y is the top of the page; x ascends after it, giving
+// row-major reading order.
+function compareReadingOrder(a, b) {
+	if (a.blockIndex !== b.blockIndex) return a.blockIndex - b.blockIndex;
+	if (a.page_num !== b.page_num) return a.page_num - b.page_num;
+	// Called on BOTH shapes: a raw body candidate (carries `bbox`) and a
+	// finished output entry (carries `position.rects`), so read whichever
+	// this one has.
+	let ra = a.bbox || a.position?.rects?.[0];
+	let rb = b.bbox || b.position?.rects?.[0];
+	if (!ra || !rb) return 0;
+	if (ra[3] !== rb[3]) return rb[3] - ra[3];
+	return ra[0] - rb[0];
+}
+
 async function main() {
 	let [, , pdfPath, outputPath, pymupdfImagesPath, structureCachePath] = process.argv;
 	if (!pdfPath || !outputPath) {
@@ -365,7 +395,7 @@ async function main() {
 	// Group unmatched (uncaptioned) images by nearest preceding section, in
 	// block order within each section, numbering them "Unlabelled Figure i".
 	let bySection = new Map();
-	for (let im of unmatchedImages.sort((a, b) => a.blockIndex - b.blockIndex)) {
+	for (let im of unmatchedImages.sort(compareReadingOrder)) {
 		let section = nearestSection(sections, im.blockIndex);
 		let key = section ? section.title : '(no preceding section)';
 		if (!bySection.has(key)) bySection.set(key, []);
@@ -395,7 +425,7 @@ async function main() {
 	// don't interleave in block order on their own (all captioned figures
 	// are pushed first, then all uncaptioned ones, regardless of where each
 	// actually falls in the document).
-	output.sort((a, b) => a.blockIndex - b.blockIndex);
+	output.sort(compareReadingOrder);
 	output.forEach((f, i) => {
 		f.figure_id = i + 1;
 		delete f.blockIndex;

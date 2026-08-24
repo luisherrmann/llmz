@@ -1005,13 +1005,21 @@ LLMRequest = {
 				// the memoized, already-deduplicated objects instead of
 				// rebuilding anything, so this is not extra work moved
 				// earlier, just the same work ordered so dedup can happen.
-				await LLMIndexPipeline.buildIndexes(pdfItem, pdfText, {
+				//
+				// ensureIndexed rather than buildIndexes: it additionally
+				// pre-warms figures and references, which this function
+				// fetches a little further down anyway, so that is a
+				// reordering rather than extra work -- and it is the one
+				// entry point every other caller (ui/index-all.js, the tool
+				// dispatch below) shares, which is what keeps them from
+				// drifting apart again.
+				await LLMIndexPipeline.ensureIndexed(pdfItem, {
 					onEmbeddingStart,
 					onMessage: onStructureMessage,
 				});
 				if (isCancelled()) return;
 				// Re-fetched through the normal accessors rather than read off
-				// buildIndexes' return value: both of these are reshaped VIEWS
+				// the pipeline's own return value: both of these are reshaped VIEWS
 				// over a raw index (paragraph-level chunks; regions with
 				// resolved positions/labels), and both are backed by the same
 				// memoized objects the pipeline just deduplicated -- so these
@@ -1615,6 +1623,35 @@ LLMRequest = {
 					// mutually exclusive per request (a tool-intent match
 					// returns before _handleNormalChat would ever run), so
 					// there's no actual double-fetch in practice.
+					// Every tool reads the per-paper extraction caches, and
+					// those are only correct once the pipeline has
+					// deduplicated them (see llm/index-pipeline.js's
+					// ensureIndexed -- deduplication lives there, not in the
+					// accessors). A tool intent returns before
+					// _handleNormalChat, the only other chat path that runs
+					// it, so without this a tool on a cold cache reads the
+					// raw extraction: listing this paper's tables reported
+					// every phantom table, while the same request after
+					// pressing "Index" looked right.
+					//
+					// Default-on, opt-out via the tool's own skipIndexing
+					// (see llm/intent.js) rather than opt-in: a tool whose
+					// author never considers indexing then gets correct
+					// output and merely pays some latency, instead of
+					// silently serving un-deduplicated data. Only the
+					// reference tools opt out -- getReferenceIndex takes no
+					// part in deduplication. Idempotent and memory-cached
+					// underneath, so a warm paper costs essentially nothing.
+					if (!LLMIntent.skipsIndexing(tool)) {
+						await LLMIndexPipeline.ensureIndexed(pdfItem, {
+							onMessage: (msg) => {
+								if (cancelled) return;
+								appendMessage("System", msg);
+							},
+						});
+						if (cancelled) return;
+					}
+
 					// Handled before _resolveIntentIndices below, which
 					// assumes an index-shaped intent (a user-named subset to
 					// map onto real element numbers). This tool has no such

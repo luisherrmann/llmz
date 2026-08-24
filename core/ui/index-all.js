@@ -57,14 +57,12 @@ LLMUIIndexAll = {
 	// only this.log() it already used.
 	async _indexItem(item, onMessage) {
 		try {
-			let text = await LLMPrompt.getAttachmentFullText(item);
-			// The text, preformatted, table, and equation indexes are built
-			// through the pipeline rather than individually, so they can be
-			// deduplicated against each other BEFORE any of them is written
-			// (see llm/index-pipeline.js) -- the same path llm/request.js
-			// takes, so a paper indexed here behaves identically to one
-			// indexed on demand mid-chat. Each index is still individually
-			// best-effort in there; one failing does not cost the others.
+			// Everything goes through the pipeline's own entry point rather
+			// than being orchestrated here, so a paper indexed in the
+			// background is deduplicated exactly like one indexed on demand
+			// mid-chat or listed by a tool -- see llm/index-pipeline.js's
+			// ensureIndexed. Each index inside it stays individually
+			// best-effort; one failing does not cost the others.
 			//
 			// The text half always builds BOTH sentence and paragraph
 			// chunks/embeddings together (see citation.js's own comment) --
@@ -88,11 +86,7 @@ LLMUIIndexAll = {
 			// deduplication (figures carry their own rendered images and are
 			// matched by caption, not geometry), so there is nothing to
 			// coordinate and they can run alongside.
-			await Promise.all([
-				LLMIndexPipeline.buildIndexes(item, text, { onMessage }).catch((e) => this.log(`buildIndexes failed for ${item.libraryKey}: ${e.message}`)),
-				LLMFigures.getFigureIndex(item, undefined, onMessage).catch((e) => this.log(`getFigureIndex failed for ${item.libraryKey}: ${e.message}`)),
-				LLMReferences.getReferenceIndex(item).catch((e) => this.log(`getReferenceIndex failed for ${item.libraryKey}: ${e.message}`)),
-			]);
+			await LLMIndexPipeline.ensureIndexed(item, { onMessage });
 			return { ok: true };
 		}
 		catch (e) {

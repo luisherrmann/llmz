@@ -46,6 +46,18 @@ LLMIntent = {
 		return this._registry.find(r => r.tool.name === name)?.key ?? null;
 	},
 
+	// Whether this tool opts OUT of the index-pipeline pass llm/request.js
+	// runs before dispatching (see its own comment there, and
+	// llm/index-pipeline.js's ensureIndexed). Default false -- a tool is
+	// indexed unless it says otherwise, so forgetting to think about it
+	// costs latency rather than correctness. Only the reference tools set
+	// it: a bibliography index takes no part in deduplication, so building
+	// this paper's tables/listings/equations to download reference 5 would
+	// be pure waste.
+	skipsIndexing(key) {
+		return !!this._registry.find(r => r.key === key)?.tool.skipIndexing;
+	},
+
 	// Returns the resolver bundle (see each intentTool's own `resolver`)
 	// for the tool llm/request.js is currently handling, keyed by the same
 	// short key detectIntent returns as `tool`.

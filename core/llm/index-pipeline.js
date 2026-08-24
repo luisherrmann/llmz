@@ -26,12 +26,62 @@
 // Callers should keep using those accessors afterwards: both are backed by
 // the same memoized objects this has already deduplicated.
 //
-// Callers: llm/request.js (a live chat turn) and ui/index-all.js ("Index"/
-// "Index All"), so both paths behave identically -- a paper indexed in the
-// background is deduplicated exactly like one indexed on demand mid-chat.
+// Callers go through ensureIndexed below rather than calling buildIndexes
+// directly: llm/request.js (both a live chat turn and any tool intent) and
+// ui/index-all.js ("Index"/"Index All"), so every path behaves identically
+// -- a paper indexed in the background is deduplicated exactly like one
+// indexed on demand mid-chat, or one merely being listed by a tool.
 LLMIndexPipeline = {
 	log(msg) {
 		Zotero.debug("LLM Chat Pane [IndexPipeline]: " + msg);
+	},
+
+	// The single "make this paper's indexes ready to read" entry point --
+	// buildIndexes below plus the two indexes that sit OUTSIDE deduplication
+	// (figures and references, see ui/index-all.js's own note on why they
+	// run alongside rather than inside the pipeline).
+	//
+	// Exists because the ordering invariant buildIndexes creates is easy to
+	// violate silently. Deduplication lives here, not in the per-module
+	// accessors, and it is also what rewrites each disk cache with the
+	// deduplicated arrays -- so calling getTableIndex/getPreformattedIndex/
+	// getEquationIndex BEFORE this has run for the item yields the raw,
+	// un-deduplicated extraction. That produced a real bug: listing a
+	// paper's tables from a tool intent (which returns before
+	// _handleNormalChat, the only chat path that ran the pipeline) reported
+	// every phantom table on a cold cache -- code listings SDT had typed
+	// `table` -- while the same request AFTER pressing "Index" looked
+	// correct, purely because indexing had rewritten the cache.
+	//
+	// Safe to call on every request: deduplication is idempotent (a second
+	// pass over already-deduplicated arrays removes nothing), and every
+	// accessor underneath is memory-cached per item, so a warm paper costs
+	// essentially nothing. Callers therefore do not need to track whether
+	// indexing has already happened.
+	//
+	// Best-effort throughout, like the steps it wraps: a failure here must
+	// not cost the caller its actual request, so it resolves rather than
+	// throwing, and the caller simply reads whatever the accessors give.
+	async ensureIndexed(item, { onEmbeddingStart = null, onMessage = null } = {}) {
+		if (!item) return;
+		let text;
+		try {
+			text = await LLMPrompt.getAttachmentFullText(item);
+		}
+		catch (e) {
+			this.log(`ensureIndexed: getAttachmentFullText failed for ${item.libraryKey}: ${e.message}`);
+		}
+		await Promise.all([
+			this.buildIndexes(item, text, { onEmbeddingStart, onMessage }).catch((e) => {
+				this.log(`ensureIndexed: buildIndexes failed for ${item.libraryKey}: ${e.message}`);
+			}),
+			LLMFigures.getFigureIndex(item, onEmbeddingStart, onMessage).catch((e) => {
+				this.log(`ensureIndexed: getFigureIndex failed for ${item.libraryKey}: ${e.message}`);
+			}),
+			LLMReferences.getReferenceIndex(item, onMessage).catch((e) => {
+				this.log(`ensureIndexed: getReferenceIndex failed for ${item.libraryKey}: ${e.message}`);
+			}),
+		]);
 	},
 
 	// Builds (deferred), deduplicates, and persists. Returns the raw indexes

@@ -560,3 +560,60 @@ export function nearestSection(sections, blockIndex) {
 	}
 	return best;
 }
+
+// Builds the "terse label prefix" regex for a caption keyword family --
+// `keywords` are the accepted spellings, longest first (e.g. ['table',
+// 'tbl', 'tab'] or ['figure', 'fig']). Matches the leading label token of
+// a caption ("Table 3", "Fig. D.1", "TABLE IV", "Table vii", "Table A")
+// and nothing after it, so a caption's descriptive sentence never ends up
+// in the label. Shared by extract-tables-sdt.js and extract-figures-sdt.js,
+// which previously each carried their own `\d+`-only copy.
+//
+// The enumerator accepts four forms, tried longest-first:
+//   1. an optional appendix letter + digits ("D.1", "3")
+//   2. an UPPERCASE roman numeral
+//   3. a lowercase roman numeral
+//   4. a single letter ("A", "b")
+//
+// Digits alone used to be the only accepted form, which meant every
+// roman-numbered caption fell through to the caller's "use the whole
+// caption as the label" fallback. That's the IEEE house style (TABLE I,
+// TABLE II, ...), so on such a paper EVERY table/figure got its entire
+// caption sentence as its label -- observed on Huang et al.'s ANS paper,
+// where one label reached 637 characters because SDT had additionally
+// fused that table's caption, body, and the following paragraph into a
+// single block, and the fallback copied all of it.
+//
+// Three separate guards keep the roman branches from eating an ordinary
+// word that merely happens to be spelled out of roman letters:
+//
+//   Single-case. The branches are written without the /i flag (hence the
+//   explicit per-character classes for the keyword itself), so a
+//   mixed-case word can't match: "Table Mix of methods" is rejected
+//   because M-i-x is neither all-upper nor all-lower.
+//
+//   Canonical form. The token must be a WELL-FORMED numeral, not merely
+//   letters drawn from the roman set -- this is what rejects "XML",
+//   "LCD", "MID" and "CIVIL". Necessary because case-consistency alone
+//   proves nothing in an ALL-CAPS caption, which is exactly the style
+//   roman numerals appear in.
+//
+//   I/V/X/L only. Dropping C/D/M caps the numeral at LXXXIX (89) -- far
+//   beyond any real table/figure count -- and removes the last realistic
+//   false positives, which were the canonical-but-absurd readings of
+//   "MIX" (1009), "DIV" (504) and "CIV" (104).
+//
+// The trailing lookahead requires the token to END at a delimiter or at
+// end-of-string, so "Table Illustrating..." and "Tabular data" can't
+// match a leading fragment of their own first word.
+export function buildLabelPrefixRe(keywords) {
+	// Case-insensitive without /i, which would defeat the single-case rule
+	// the roman branches depend on.
+	let kw = keywords
+		.map(w => [...w].map(c => `[${c.toUpperCase()}${c.toLowerCase()}]`).join(''))
+		.join('|');
+	let romanUpper = '(?=[LXVI])(?:XL|L?X{0,3})(?:IX|IV|V?I{0,3})';
+	let romanLower = '(?=[lxvi])(?:xl|l?x{0,3})(?:ix|iv|v?i{0,3})';
+	let enumerator = `(?:[A-Za-z]\\.)?\\d+|${romanUpper}|${romanLower}|[A-Za-z]`;
+	return new RegExp(`^((?:${kw})\\.?\\s*(?:${enumerator}))(?=[\\s.:|)\\u2013\\u2014,]|$)`);
+}

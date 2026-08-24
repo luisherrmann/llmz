@@ -100,7 +100,7 @@
 // than lazily on demand.
 
 import fs from 'fs';
-import { flattenText, pairWithCaptions, flattenOutline, nearestSection, iou, groupImagesByBoundary, extendCaptionText } from './match-captions.js';
+import { flattenText, pairWithCaptions, flattenOutline, nearestSection, iou, groupImagesByBoundary, extendCaptionText, buildLabelPrefixRe } from './match-captions.js';
 import { loadOrComputeStructure } from './structure-sdt.js';
 
 // How much IoU overlap (with an SDT-classified `type: 'image'` block on the
@@ -364,7 +364,7 @@ async function main() {
 	// used everywhere else, for a lettered-appendix caption. Plain-numbered
 	// ones don't need this (they get a synthesized `Figure ${figure_num}`
 	// below).
-	const LABEL_PREFIX_RE = /^((?:figure|fig)\.?\s*(?:[a-z]\.)?\d+)/i;
+	const LABEL_PREFIX_RE = buildLabelPrefixRe(['figure', 'fig']);
 	let output = [];
 	let extraCounter = 0;
 

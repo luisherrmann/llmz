@@ -61,7 +61,7 @@
 // unruled tables PyMuPDF's own find_tables() fails on).
 
 import fs from 'fs';
-import { flattenText, pairWithCaptions, flattenOutline, nearestSection, hasInterveningProse } from './match-captions.js';
+import { flattenText, pairWithCaptions, flattenOutline, nearestSection, hasInterveningProse, buildLabelPrefixRe } from './match-captions.js';
 import { loadOrComputeStructure } from './structure-sdt.js';
 
 // The terse "<word> <number>" prefix of a table caption, normalized so two
@@ -348,9 +348,12 @@ async function main() {
 	const PLAIN_NUMBER_RE = /^tab(?:le)?\.?\s*(\d+)\s*[.:|–—]/i;
 	// Terse label prefix only (e.g. "Table D.1", not the whole caption
 	// sentence) -- matches the "Table 1"/"Formula 8"-style terse labels used
-	// everywhere else, for a lettered-appendix caption. Plain-numbered ones
-	// don't need this (they get a synthesized `Table ${table_num}` below).
-	const LABEL_PREFIX_RE = /^((?:table|tbl|tab)\.?\s*(?:[a-z]\.)?\d+)/i;
+	// everywhere else, for a lettered-appendix, roman-numbered, or
+	// single-letter caption. Plain-numbered ones don't need this (they get a
+	// synthesized `Table ${table_num}` below). See buildLabelPrefixRe for
+	// which enumerator forms are accepted and why the roman branches are
+	// guarded the way they are.
+	const LABEL_PREFIX_RE = buildLabelPrefixRe(['table', 'tbl', 'tab']);
 	let output = [];
 	let extraCounter = 0;
 

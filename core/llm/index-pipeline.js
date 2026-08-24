@@ -124,18 +124,11 @@ LLMIndexPipeline = {
 				this.log(`getEquationIndex failed for ${item.libraryKey}: ${e.message}`);
 				return null;
 			}),
-			// Built here, deferred, but NOT yet passed to
-			// deduplicatePreformatted below -- figures still take no part in
-			// the contest. Bringing them onto this path first is the
-			// prerequisite for that: deduplication can only delete an entry
-			// before it has been persisted, so an index that persists
-			// eagerly (as figures.js did) cannot participate at all. The
-			// measured case for adding them is real -- on OSWorld 13
-			// preformatted regions sit >50% inside a figure, several at
-			// 90-100% (screenshot text bands) -- but the right operation
-			// there is absorbing the band into the figure's own rect rather
-			// than the delete-the-loser contest this runs, so it needs its
-			// own design rather than another entry in the same list.
+			// Built here, deferred, so deduplication below can drop a
+			// preformatted region that turns out to be a figure's own text
+			// before anything is written -- that pass can only delete an
+			// entry BEFORE it has been persisted, which is why figures had
+			// to move onto this path before they could take part at all.
 			LLMFigures.getFigureIndex(item, onEmbeddingStart, onMessage, defer).catch((e) => {
 				this.log(`getFigureIndex failed for ${item.libraryKey}: ${e.message}`);
 				return null;
@@ -155,6 +148,13 @@ LLMIndexPipeline = {
 			tables: tableIndex?.tables || [],
 			equations: equationIndex?.equations || [],
 			paragraphs: textIndex?.paragraphs || [],
+			// Figures never lose, so this only ever removes preformatted
+			// regions -- no figure is deleted and figureIndex needs no
+			// rewrite on its account (see persistIfNeeded below). The
+			// removals it does cause are counted in removed.preformatted
+			// like any other, so the existing renumbering path handles them
+			// unchanged.
+			figures: figureIndex?.figures || [],
 		});
 
 		// Which indexes still hold their vectors, captured BEFORE persisting
@@ -193,10 +193,10 @@ LLMIndexPipeline = {
 		persistIfNeeded(preformattedIndex, LLMPreformatted, removed.preformatted > 0);
 		persistIfNeeded(tableIndex, LLMTables, removed.tables > 0);
 		persistIfNeeded(equationIndex, LLMEquations, removed.equations > 0);
-		// `changed` is always false: nothing removes figures yet, so a
-		// figure index is only ever written when it was freshly built and
-		// still carries pendingPersist. Once figures join deduplication this
-		// becomes removed.figures > 0, like the others.
+		// `changed` is always false by construction: figures always win
+		// their overlaps, so deduplication never removes one and a figure
+		// index is only ever written when it was freshly built and still
+		// carries pendingPersist.
 		persistIfNeeded(figureIndex, LLMFigures, false);
 		await Promise.all(jobs);
 

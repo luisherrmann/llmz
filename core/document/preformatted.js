@@ -455,6 +455,22 @@ LLMPreformatted = {
 	// duplicate on this plugin's own test paper actually measured.
 	_duplicateOverlapThreshold: 0.5,
 
+	// Higher bar than _duplicateOverlapThreshold above, used only by the
+	// figure pass in deduplicatePreformatted. That pass has no contest to
+	// fall back on -- the figure wins outright -- so a marginal overlap
+	// deletes a listing with nothing to weigh against it, whereas the
+	// caption contest at 0.5 still has to find the other side genuinely
+	// captioned before it removes anything.
+	//
+	// 0.8 sits inside a wide empirical gap rather than being a round
+	// number: measured on OSWorld, the eleven preformatted groups that
+	// overlap a figure at all split into nine at 88-100% -- diagram labels,
+	// chart axis text, screenshot task instructions, all genuinely a
+	// figure's own content -- and two at 56%/62% that are not. Those two
+	// are a table's header row and six fragments of real agent code that
+	// merely sit near a figure, both of which 0.5 deleted.
+	_figureOverlapThreshold: 0.8,
+
 	_overlapFraction(a, b) {
 		let ix = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
 		let iy = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
@@ -467,11 +483,11 @@ LLMPreformatted = {
 
 	// True when two entries (each { pageIndex, rects }) share a page and any
 	// of their rects overlap past _duplicateOverlapThreshold.
-	_regionsOverlap(a, b) {
+	_regionsOverlap(a, b, threshold = this._duplicateOverlapThreshold) {
 		if (a.pageIndex == null || b.pageIndex == null || a.pageIndex !== b.pageIndex) return false;
 		for (let ra of a.rects || []) {
 			for (let rb of b.rects || []) {
-				if (this._overlapFraction(ra, rb) >= this._duplicateOverlapThreshold) return true;
+				if (this._overlapFraction(ra, rb) >= threshold) return true;
 			}
 		}
 		return false;
@@ -494,16 +510,19 @@ LLMPreformatted = {
 		return !!caption && !this._SYNTHETIC_LABEL_RE.test(caption);
 	},
 
-	// Deduplicates preformatted regions against tables/equations/paragraphs,
-	// which are all extracted by INDEPENDENT pipelines that never consult
-	// each other -- so one physical listing routinely comes back as both a
-	// preformatted region AND, say, an unlabelled table, and then appears
-	// twice in the model's context.
+	// Deduplicates preformatted regions against tables/equations/paragraphs/
+	// figures, which are all extracted by INDEPENDENT pipelines that never
+	// consult each other -- so one physical listing routinely comes back as
+	// both a preformatted region AND, say, an unlabelled table, and then
+	// appears twice in the model's context.
 	//
 	// For every geometric overlap (see _regionsOverlap) between a
 	// preformatted region A and a table/equation/paragraph B:
 	//   - if ONLY B is genuinely captioned, B is the real element -> A loses
 	//   - otherwise -> B loses
+	// Figures are settled separately, after that contest, and always win --
+	// see the second pass below for why the captioned-ness rule inverts for
+	// them.
 	// "Genuinely" excludes extraction-invented labels (see
 	// _hasGenuineCaption) -- without that, the rule inverts on real
 	// documents and deletes the listings it is meant to protect.
@@ -532,7 +551,7 @@ LLMPreformatted = {
 	// delete their rows). Persisting is the caller's job -- see
 	// llm/index-pipeline.js, which owns the whole build/dedup/write cycle,
 	// since each array is owned by a different module with its own cache.
-	deduplicatePreformatted({ preformatted = [], tables = [], equations = [], paragraphs = [] }) {
+	deduplicatePreformatted({ preformatted = [], tables = [], equations = [], paragraphs = [], figures = [] }) {
 		let empty = { preformatted: 0, tables: 0, equations: 0, paragraphs: 0, tableIds: [], equationIds: [] };
 		if (!preformatted.length) return empty;
 
@@ -599,6 +618,42 @@ LLMPreformatted = {
 					break;
 				}
 				doomedOthers.add(other.entry);
+			}
+		}
+
+		// Second pass, run AFTER the caption contest above so a listing
+		// already resolved there is left alone: a FIGURE always wins, with
+		// no contest at all.
+		//
+		// Deliberately not folded into `others` above. That rule turns on
+		// which side is genuinely captioned, and it inverts here: a
+		// screenshot's own text band is routinely captioned-looking while
+		// the figure containing it is not. Measured on OSWorld, where 13
+		// preformatted regions sit inside a figure -- one of them (a
+		// "Step 1: pyautogui.click(...)" row label, 90% inside Figure 20)
+		// carries a genuine caption, so the contest would have deleted
+		// Figure 20 and kept the band. The asymmetry is real rather than a
+		// tuning problem: a figure is a raster region that PyMuPDF saw as
+		// an actual image XObject, so text found inside its bounds is that
+		// image's own content, whatever it looks like to a caption test.
+		//
+		// _regionsOverlap does the work of "overlaps": it scores
+		// intersection over the SMALLER region's area (see
+		// _overlapFraction), so this asks how much of the band lies inside
+		// the figure rather than whether the two merely touch. At the
+		// higher _figureOverlapThreshold, since nothing here weighs against
+		// a wrong removal.
+		//
+		// Group-level like everything else here -- a listing split across a
+		// page break is one physical listing, so any fragment overlapping a
+		// figure condemns the whole id.
+		for (let pf of preformatted) {
+			if (doomedGroups.has(pf.preformatted_id)) continue;
+			let a = positionOf(pf);
+			for (let fig of figures) {
+				if (!this._regionsOverlap(a, positionOf(fig), this._figureOverlapThreshold)) continue;
+				doomedGroups.add(pf.preformatted_id);
+				break;
 			}
 		}
 

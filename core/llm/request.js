@@ -411,6 +411,61 @@ LLMRequest = {
 		}
 	},
 
+	// Renders tools/list-elements.js's numbered, linked list of every
+	// extracted element of one type into a single reply bubble. Unlike the
+	// other three handlers this involves no model call at all -- the list
+	// comes straight out of the extraction caches (see listElements' own
+	// comment for why that's the point, not a shortcut) -- so the only
+	// thing that can take a noticeable moment here is a COLD cache, whose
+	// extraction progress arrives via onMessage below.
+	//
+	// Rendered through the same chatPane._renderMarkdown +
+	// chat.renderMarkdownMessage pair a streamed reply ends with, so its
+	// ref: links get the identical click-to-navigate behavior (and the
+	// identical export/re-import round-trip, since setMessageText keeps
+	// export.js seeing the markdown rather than the rendered HTML). See
+	// the module-level comment for `ctx`.
+	async _handleListElements(intent, pdfItem, chatPane, ctx) {
+		let { appendMessage, chat, replyLabel, isCancelled } = ctx;
+
+		// Empty timestamp until the list is actually rendered below -- see
+		// ui/chat.js's appendMessage/setMessageTime.
+		let reply = appendMessage(replyLabel, "Listing elements...", "");
+		try {
+			let { markdown, linkIndex } = await LLMListElements.listElements(
+				intent.elementType,
+				pdfItem,
+				(msg) => {
+					if (isCancelled()) return;
+					appendMessage("System", msg);
+					chat.updateMessageText(reply, msg);
+				});
+			if (isCancelled()) return;
+
+			// Before rendering, so export.js's own exportTranscript() reads
+			// back the markdown rather than the rendered HTML that replaces
+			// it -- same ordering _handleNormalChat uses.
+			chat.setMessageText(reply, markdown);
+			// citationPositions is null: this list carries only ref: links,
+			// never a grounded find: citation (which is what that map
+			// pre-resolves).
+			let html = chatPane._renderMarkdown(markdown, linkIndex, null);
+			if (html) {
+				chat.renderMarkdownMessage(reply, html, markdown);
+			}
+			else {
+				chat.updateMessageText(reply, markdown);
+			}
+			chat.setMessageTime(reply, chat.formatTimestamp());
+		}
+		catch (e) {
+			if (isCancelled()) return;
+			this.log(`listElements failed: ${e.message}`);
+			chat.updateMessageText(reply, `Listing elements failed: ${e.message}`);
+			chat.setMessageTime(reply, chat.formatTimestamp());
+		}
+	},
+
 	// Awaits `tableIndexPromise`, runs table selection against `prompt`, and
 	// reports status along the way -- split out of _handleNormalChat so
 	// each of the five context-building steps (this, equations, notes,
@@ -1530,8 +1585,8 @@ LLMRequest = {
 			// reference N"/"export table N as CSV" request short-circuits
 			// the normal chat flow entirely, since the main model has
 			// nothing useful to add to a request this specific.
-			// LLMIntent.detectIntent (see llm/intent.js) owns deciding WHICH of
-			// the three tools (if any) applies, via native tool-calling.
+			// LLMIntent.detectIntent (see llm/intent.js) owns deciding WHICH
+			// registered tool (if any) applies, via native tool-calling.
 			//
 			// Sliced from `priorTranscript` (captured once above, before the
 			// "You" bubble) to just _RECENT_HISTORY_TURNS (see its own
@@ -1560,6 +1615,17 @@ LLMRequest = {
 					// mutually exclusive per request (a tool-intent match
 					// returns before _handleNormalChat would ever run), so
 					// there's no actual double-fetch in practice.
+					// Handled before _resolveIntentIndices below, which
+					// assumes an index-shaped intent (a user-named subset to
+					// map onto real element numbers). This tool has no such
+					// subset -- its answer is always every element of the
+					// requested type -- so it reads the caches directly
+					// instead. See tools/list-elements.js.
+					if (tool === "listElements") {
+						await this._handleListElements(intent, pdfItem, chatPane, ctx);
+						return;
+					}
+
 					let { pageNum } = await chatPane.getReaderPageText();
 					if (cancelled) return;
 

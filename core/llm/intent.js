@@ -29,6 +29,7 @@ LLMIntent = {
 		{ key: "download", tool: LLMReferenceRetrieval.intentTool },
 		{ key: "link", tool: LLMReferenceLinker.intentTool },
 		{ key: "tables", tool: LLMTableExport.intentTool },
+		{ key: "listElements", tool: LLMListElements.intentTool },
 	],
 
 	// Every registered tool's own {name, description, schema} descriptor,
@@ -80,11 +81,13 @@ LLMIntent = {
 	// correctly resolve to none at all on a decline -- without this, such a
 	// reply carries no table/reference identity of its own for ANY
 	// registered tool to match against.
-	// Returns { tool: "download"|"link"|"tables", intent: <six-shape intent
-	// object -- see llm/request.js's _resolveIntentIndices for how it's
-	// consumed, against whichever index (reference or table) the matched
-	// tool operates on> } or null if no tool applies (a normal chat
-	// message).
+	// Returns { tool: <_registry key>, intent: <the matched tool's own
+	// intent object> } or null if no tool applies (a normal chat message).
+	// For download/link/tables that intent is the six-shape object
+	// llm/request.js's _resolveIntentIndices consumes, against whichever
+	// index (reference or table) the matched tool operates on; a tool with
+	// its own toIntent returns its own shape instead (listElements: just
+	// { elementType }, which needs no resolution at all).
 	async detectIntent(prompt, onProgress, recentHistory = []) {
 		let messages = recentHistory.map(({ role, text }) => ({ role: role === "You" ? "user" : "assistant", content: text }));
 		messages.push({ role: "user", content: prompt });
@@ -102,7 +105,15 @@ LLMIntent = {
 			this.log(`detectIntent: unrecognized tool "${call.name}"`);
 			return null;
 		}
-		let intent = this._argumentsToIntent(call.arguments);
+		// Tools whose arguments aren't index-shaped supply their own
+		// validator instead of using the shared six-shape one below (see
+		// tools/list-elements.js's own toIntent) -- keeping _registry the
+		// single place a tool is registered, rather than making this
+		// function grow a per-tool special case by name.
+		let entry = this._registry.find(r => r.key === toolKey);
+		let intent = entry.tool.toIntent
+			? entry.tool.toIntent(call.arguments)
+			: this._argumentsToIntent(call.arguments);
 		if (!intent) return null;
 		onProgress?.(`Intent detection: called "${call.name}".`);
 		return { tool: toolKey, intent };
@@ -129,8 +140,9 @@ LLMIntent = {
 	// detection time to convert that into the table's real `table_id`; see
 	// tools/table-export.js's schema/resolver.single/resolver.list, which
 	// resolve the raw string against the real listing in a SECOND call
-	// instead). This validator is shared across all three tools'
-	// differently-shaped `index` fields, so it has to accept both.
+	// instead). This validator is shared across the differently-shaped
+	// `index` fields of every tool that HAS one, so it has to accept both
+	// (listElements has none -- see its own toIntent).
 	_isValidIndexToken(v) {
 		return Number.isInteger(v) || (typeof v === "string" && v.length > 0);
 	},

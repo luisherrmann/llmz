@@ -421,9 +421,13 @@ LLMPreformatted = {
 	// interleave a region among headings/paragraphs in true document order.
 	// `pageIndex`/`rects` are flattened up from extract-preformatted-sdt.js's
 	// own nested `position` field -- same flat shape citation.js's own
-	// _textRecord already gives paragraphs/headings, in case a future
-	// citation-link mechanism (there's no `<ref:preformatted:N>` yet) needs
-	// to navigate to a region the same way it already can for a paragraph.
+	// _textRecord already gives paragraphs/headings, so the citation-link
+	// mechanism can navigate to a region the same way it already can for a
+	// paragraph. That mechanism now exists: `<ref:preformatted:N>` is a
+	// first-class ref kind, keyed by preformatted_id rather than by the
+	// label's own number (llm/prompt.js's buildLinkIndex explains why), and
+	// resolves through the same generic linkIndex lookup every other ref
+	// kind uses.
 	async getPreformattedIndex(item, onEmbeddingStart, onMessage, { defer = false } = {}) {
 		let raw = await this._getRawIndex(item, onEmbeddingStart, onMessage, { defer });
 		if (!raw) return null;

@@ -34,6 +34,14 @@ LLMListElements = {
 
 	// One entry per element type the tool accepts. Each supplies:
 	//   plural/singular -- for the surrounding prose.
+	//   deduplicated    -- set when this index takes part in the cross-index
+	//                      deduplication LLMIndexPipeline runs (see
+	//                      listElements below for why that matters here).
+	//                      Figures deliberately do not: they carry their own
+	//                      rendered images and are matched by caption rather
+	//                      than geometry, so nothing needs coordinating --
+	//                      see ui/index-all.js's own note on keeping them
+	//                      out of the pipeline.
 	//   indexKey        -- this index's own parameter name in
 	//                      llm/prompt.js's buildLinkIndex, so the returned
 	//                      linkIndex can be built from the index already
@@ -70,6 +78,7 @@ LLMListElements = {
 			plural: "tables",
 			singular: "table",
 			indexKey: "tableIndex",
+			deduplicated: true,
 			getIndex: (item, onMessage) => LLMTables.getTableIndex(item, undefined, onMessage),
 			entries: index => index?.tables || [],
 			ref: t => (t.table_num !== null && t.table_num !== undefined
@@ -81,6 +90,7 @@ LLMListElements = {
 			plural: "equations",
 			singular: "equation",
 			indexKey: "equationIndex",
+			deduplicated: true,
 			getIndex: (item, onMessage) => LLMEquations.getEquationIndex(item, undefined, onMessage),
 			entries: index => index?.equations || [],
 			// equation_num is the paper's OWN printed "(3)"; everything else
@@ -96,6 +106,7 @@ LLMListElements = {
 			plural: "preformatted blocks",
 			singular: "preformatted block",
 			indexKey: "preformattedIndex",
+			deduplicated: true,
 			getIndex: (item, onMessage) => LLMPreformatted.getPreformattedIndex(item, undefined, onMessage),
 			entries: index => index?.sentences || [],
 			ref: pf => (pf.preformatted_id != null ? `preformatted:${pf.preformatted_id}` : null),
@@ -191,6 +202,34 @@ LLMListElements = {
 	async listElements(elementType, pdfItem, onMessage) {
 		let spec = this._TYPES[elementType];
 		if (!spec) throw new Error(`Unknown element type "${elementType}"`);
+
+		// The raw accessors below are only safe to call AFTER
+		// LLMIndexPipeline has run: cross-index deduplication lives there,
+		// not in the accessors, and the pipeline is what rewrites each disk
+		// cache with the deduplicated arrays (see llm/index-pipeline.js's
+		// _deduplicateAndPersist, and llm/request.js's own note above its
+		// buildIndexes call that the accessors afterwards hit the memoized,
+		// already-deduplicated objects).
+		//
+		// A tool intent returns before _handleNormalChat ever runs, so
+		// nothing else on this path would trigger it. Without this, asking
+		// to list tables on a cold cache re-extracts and reports every
+		// phantom table -- code listings that SDT classified as `table` --
+		// which deduplication exists specifically to drop. Observed on the
+		// ANS paper: four JSON listings, each ~96% coincident with a
+		// preformatted region, listed as tables.
+		//
+		// Non-fatal: if the pipeline fails, fall through and list whatever
+		// the accessor gives, rather than failing the request outright.
+		if (spec.deduplicated) {
+			try {
+				let text = await LLMPrompt.getAttachmentFullText(pdfItem);
+				await LLMIndexPipeline.buildIndexes(pdfItem, text, { onMessage });
+			}
+			catch (e) {
+				this.log(`buildIndexes failed, listing un-deduplicated: ${e.message}`);
+			}
+		}
 
 		let index = await spec.getIndex(pdfItem, onMessage);
 		let entries = spec.entries(index);

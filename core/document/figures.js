@@ -305,7 +305,7 @@ LLMFigures = {
 	// return value (e.g. a Logs entry's content element) is updated in
 	// place with a completion line once recomputation finishes, rather
 	// than logging start/done as two separate messages.
-	async getFigureIndex(item, onEmbeddingStart, onMessage) {
+	async getFigureIndex(item, onEmbeddingStart, onMessage, { defer = false } = {}) {
 		if (this._venvMissing) {
 			throw new Error(
 				"Python venv not found. Set it up with the \"venv\" button, or manually:\n"
@@ -340,37 +340,69 @@ LLMFigures = {
 		if (progress) progress.textContent = `Recomputed ${embedded.length} figure caption embedding${embedded.length === 1 ? "" : "s"} using ${embeddingProvider} ${embeddingModel}.`;
 		let index = { figures: embedded, scriptFingerprint: await this._scriptFingerprint(), embeddingProvider, embeddingModel };
 		this._indexCache.set(item.id, index);
+		if (defer) {
+			// Caller (see llm/index-pipeline.js) will call persistIndex once
+			// every index has been built -- same contract tables/equations/
+			// preformatted already follow, so that cross-index
+			// deduplication has somewhere to run before anything is
+			// written. Figures do not yet take part in that contest (see
+			// _deduplicateAndPersist), but they now build through the same
+			// path, which is the prerequisite for adding them.
+			index.pendingPersist = true;
+			return index;
+		}
+		await this.persistIndex(item, index, onMessage);
+		return index;
+	},
+
+	// Writes `index` to its disk cache and mirrors its embeddings into the
+	// embeddings DB. Split out of getFigureIndex so the index pipeline can
+	// defer both (see `defer` above); calling it twice is harmless, since
+	// both writes replace wholesale rather than append.
+	//
+	// The DB mirror (one .sqlite file per model, see
+	// core/llm/embeddings-db.js) uses source "figure_caption" -- matching
+	// document/tables.js's own "table_caption"/"table_content" naming
+	// convention, so a cross-library retrieval step querying across all
+	// three has a predictable, self-documenting source taxonomy to work
+	// from rather than a bare "figure" that reads ambiguously once tables
+	// have two sources of their own. source_id is figure_id (already a
+	// stable, always-present per-figure identifier, see
+	// extract-figures-sdt.js's own header comment), not array position,
+	// since that's the same handle callers already use to look a figure
+	// back up in this cache file -- and it means removing a figure during a
+	// future deduplication pass would leave every survivor addressable
+	// exactly as before. Filtered to figures that actually got a
+	// captionEmbedding -- _addCaptionEmbeddings' own try/catch means a
+	// total embedding-call failure leaves EVERY figure without one, not a
+	// partial set, but this stays defensive rather than assuming that.
+	// Best-effort, same reasoning as citation.js's own sync -- the disk
+	// cache is already the source of truth LLMFigures itself reads from;
+	// this DB is an additional, non-authoritative mirror for now.
+	async persistIndex(item, index, onMessage) {
+		delete index.pendingPersist;
 		await this._saveDiskCache(item, index);
-		// Mirrors the disk-cache write into the embeddings DB (one .sqlite
-		// file per model, see core/llm/embeddings-db.js) under source
-		// "figure_caption" -- matching document/tables.js's own
-		// "table_caption"/"table_content" naming convention, so a future
-		// cross-library retrieval step querying across all three has a
-		// predictable, self-documenting source taxonomy to work from rather
-		// than a bare "figure" that reads ambiguously once tables have two
-		// sources of their own. source_id is figure_id (already a stable,
-		// always-present per-figure identifier, see extract-figures-sdt.js's
-		// own header comment), not array position, since that's the same
-		// handle callers already use to look a figure back up in this cache
-		// file. Filtered to figures that actually got
-		// a captionEmbedding -- _addCaptionEmbeddings' own try/catch means a
-		// total embedding-call failure leaves EVERY figure without one, not
-		// a partial set, but this stays defensive rather than assuming that.
-		// Best-effort, same reasoning as citation.js's own sync -- the disk
-		// cache above is already the source of truth LLMFigures itself
-		// reads from; this DB is an additional, non-authoritative mirror
-		// for now.
 		try {
+			let embedded = index.figures || [];
+			// Mirrors document/tables.js's own persistIndex guard, and
+			// matters for the same reason now that the pipeline can call
+			// this with a CACHE-HIT index: such an index carries no vectors
+			// at all (_saveDiskCache strips them; the embeddings DB is the
+			// store of record), and replaceForPaper DELETES a source's rows
+			// before inserting -- so syncing an embedding-less index would
+			// wipe the very rows that are already correct. A genuinely EMPTY
+			// index still falls through, so a paper whose figures all
+			// disappeared does get its stale rows cleared.
+			if (embedded.length && !embedded.some(f => f.captionEmbedding)) return;
 			let withEmbeddings = embedded.filter(f => f.captionEmbedding);
-			await LLMEmbeddingsDB.replaceForPaper(item.id, embeddingModel, "figure_caption",
+			await LLMEmbeddingsDB.replaceForPaper(item.id, index.embeddingModel, "figure_caption",
 				withEmbeddings.map(f => ({ sourceId: f.figure_id, embedding: f.captionEmbedding })));
 			onMessage?.(`Synced ${withEmbeddings.length} figure embedding${withEmbeddings.length === 1 ? "" : "s"} to the embeddings DB for item ${item.id}.`);
 		}
 		catch (e) {
-			this.log(`getFigureIndex: failed to sync to embeddings DB: ${e.message}`);
+			this.log(`persistIndex: failed to sync to embeddings DB: ${e.message}`);
 			onMessage?.(`Failed to sync figure embeddings to the embeddings DB for item ${item.id}: ${e.message}`);
 		}
-		return index;
 	},
 
 	// Debug affordance ("Clear Cache" button) -- drops both the memory and

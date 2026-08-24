@@ -37,9 +37,10 @@ LLMIndexPipeline = {
 	},
 
 	// The single "make this paper's indexes ready to read" entry point --
-	// buildIndexes below plus the two indexes that sit OUTSIDE deduplication
-	// (figures and references, see ui/index-all.js's own note on why they
-	// run alongside rather than inside the pipeline).
+	// buildIndexes below (text, preformatted, tables, equations, figures)
+	// plus references, which is the only index still built outside it: a
+	// bibliography overlaps nothing geometrically, so it has no reason to
+	// join the deferred build/deduplicate/persist protocol.
 	//
 	// Exists because the ordering invariant buildIndexes creates is easy to
 	// violate silently. Deduplication lives here, not in the per-module
@@ -71,12 +72,14 @@ LLMIndexPipeline = {
 		catch (e) {
 			this.log(`ensureIndexed: getAttachmentFullText failed for ${item.libraryKey}: ${e.message}`);
 		}
+		// Figures are built INSIDE buildIndexes, not alongside it -- calling
+		// getFigureIndex here as well would start a second extraction for
+		// the same item concurrently with the pipeline's own (neither can
+		// see the other's memory-cache entry, since both begin before
+		// either finishes).
 		await Promise.all([
 			this.buildIndexes(item, text, { onEmbeddingStart, onMessage }).catch((e) => {
 				this.log(`ensureIndexed: buildIndexes failed for ${item.libraryKey}: ${e.message}`);
-			}),
-			LLMFigures.getFigureIndex(item, onEmbeddingStart, onMessage).catch((e) => {
-				this.log(`ensureIndexed: getFigureIndex failed for ${item.libraryKey}: ${e.message}`);
 			}),
 			LLMReferences.getReferenceIndex(item, onMessage).catch((e) => {
 				this.log(`ensureIndexed: getReferenceIndex failed for ${item.libraryKey}: ${e.message}`);
@@ -97,10 +100,10 @@ LLMIndexPipeline = {
 	// as when each module was called separately. A failed index comes back
 	// null and is simply skipped by deduplication.
 	async buildIndexes(item, text, { onEmbeddingStart = null, onMessage = null } = {}) {
-		if (!item) return { textIndex: null, preformattedIndex: null, tableIndex: null, equationIndex: null };
+		if (!item) return { textIndex: null, preformattedIndex: null, tableIndex: null, equationIndex: null, figureIndex: null };
 
 		let defer = { defer: true };
-		let [textIndex, preformattedIndex, tableIndex, equationIndex] = await Promise.all([
+		let [textIndex, preformattedIndex, tableIndex, equationIndex, figureIndex] = await Promise.all([
 			text && text.trim()
 				? LLMCitation.getTextIndex(item, text, onEmbeddingStart, onMessage, defer).catch((e) => {
 					this.log(`getTextIndex failed for ${item.libraryKey}: ${e.message}`);
@@ -121,15 +124,31 @@ LLMIndexPipeline = {
 				this.log(`getEquationIndex failed for ${item.libraryKey}: ${e.message}`);
 				return null;
 			}),
+			// Built here, deferred, but NOT yet passed to
+			// deduplicatePreformatted below -- figures still take no part in
+			// the contest. Bringing them onto this path first is the
+			// prerequisite for that: deduplication can only delete an entry
+			// before it has been persisted, so an index that persists
+			// eagerly (as figures.js did) cannot participate at all. The
+			// measured case for adding them is real -- on OSWorld 13
+			// preformatted regions sit >50% inside a figure, several at
+			// 90-100% (screenshot text bands) -- but the right operation
+			// there is absorbing the band into the figure's own rect rather
+			// than the delete-the-loser contest this runs, so it needs its
+			// own design rather than another entry in the same list.
+			LLMFigures.getFigureIndex(item, onEmbeddingStart, onMessage, defer).catch((e) => {
+				this.log(`getFigureIndex failed for ${item.libraryKey}: ${e.message}`);
+				return null;
+			}),
 		]);
 
-		let indexes = { textIndex, preformattedIndex, tableIndex, equationIndex };
+		let indexes = { textIndex, preformattedIndex, tableIndex, equationIndex, figureIndex };
 		await this._deduplicateAndPersist(item, indexes, onMessage);
 		return indexes;
 	},
 
 	async _deduplicateAndPersist(item, indexes, onMessage) {
-		let { textIndex, preformattedIndex, tableIndex, equationIndex } = indexes;
+		let { textIndex, preformattedIndex, tableIndex, equationIndex, figureIndex } = indexes;
 
 		let removed = LLMPreformatted.deduplicatePreformatted({
 			preformatted: preformattedIndex?.preformatted || [],
@@ -174,6 +193,11 @@ LLMIndexPipeline = {
 		persistIfNeeded(preformattedIndex, LLMPreformatted, removed.preformatted > 0);
 		persistIfNeeded(tableIndex, LLMTables, removed.tables > 0);
 		persistIfNeeded(equationIndex, LLMEquations, removed.equations > 0);
+		// `changed` is always false: nothing removes figures yet, so a
+		// figure index is only ever written when it was freshly built and
+		// still carries pendingPersist. Once figures join deduplication this
+		// becomes removed.figures > 0, like the others.
+		persistIfNeeded(figureIndex, LLMFigures, false);
 		await Promise.all(jobs);
 
 		await this._compactStaleEmbeddings(item, indexes, removed, hasVectors);

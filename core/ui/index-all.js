@@ -82,10 +82,14 @@ LLMUIIndexAll = {
 			// "Index All") is exactly the place that should pre-warm for BOTH
 			// use cases, not just the single-paper one.
 			//
-			// Figures and references stay separate: neither participates in
-			// deduplication (figures carry their own rendered images and are
-			// matched by caption, not geometry), so there is nothing to
-			// coordinate and they can run alongside.
+			// References are the only index built outside the pipeline's own
+			// deferred build/deduplicate/persist protocol -- a bibliography
+			// overlaps nothing geometrically, so it has no reason to join
+			// it. Figures DO build through the pipeline now, though they
+			// take no part in the deduplication contest yet; see
+			// llm/index-pipeline.js's buildIndexes for why that ordering
+			// (build through the pipeline first, contest later) is required
+			// rather than incidental.
 			await LLMIndexPipeline.ensureIndexed(item, { onMessage });
 			return { ok: true };
 		}

@@ -64,9 +64,9 @@ const { splitSentences } = require('./shared-patterns.js');
 // of the same JSON. The old denylist counted it as a genuine sentence, so
 // the two halves never merged and the first surfaced as its own
 // uncaptioned "Preformatted 3" entry alongside the captioned "Listing 7".
-// True when the block a region STARTS on is ordinary prose -- i.e. this
-// region opens with its own description and is therefore a new element, not
-// the previous one continuing.
+// True when the block a region STARTS on is its own descriptive line --
+// i.e. this region opens with a human-readable label or description and is
+// therefore a new element, not the previous one continuing.
 //
 // Companion to hasInterveningProse above, and needed because that test can
 // only see blocks strictly BETWEEN two regions. A region routinely absorbs
@@ -80,10 +80,17 @@ const { splitSentences } = require('./shared-patterns.js');
 // pages, with every "Agent > Human Task: ..." separator invisible to the
 // gap test for exactly this reason.
 //
-// Deliberately narrower than hasInterveningProse, which counts 'paragraph'
-// AND 'list': only 'paragraph' counts here. A region that BEGINS on a
-// numbered 'list' block is almost always code continuing -- the numbering
-// is why SDT typed it a list at all. Confirmed on ANS, whose pseudocode
+// Accepts 'paragraph' and 'caption', and deliberately NOT 'list' -- where
+// hasInterveningProse counts 'paragraph' and 'list'. Which of the two SDT
+// picks for a separator is not stable: OSWorld's appendix labels its
+// examples "Agent > Human Task: ..." on pages 46-48, typed 'paragraph', and
+// "Task w/o SoM: ..." / "Task w/ SoM: ..." on page 50, typed 'caption' --
+// the same kind of line, classified differently, so accepting only one of
+// them leaves half the separators invisible.
+//
+// 'list' stays out because a region that BEGINS on a numbered list block is
+// almost always code continuing -- the numbering is why SDT typed it a list
+// at all. Confirmed on ANS, whose pseudocode
 // listing spans pages 6-8 with continuations starting "17 // EndpointRecord:
 // {data, signature,Cert}18 ..." and "30 4. certChainValid = VerifyCertChain
 // (...)31 ...": both are 'list' blocks whose text clears the sentence-length
@@ -93,7 +100,7 @@ const { splitSentences } = require('./shared-patterns.js');
 // intended, not an oversight.
 export function startsWithProse(content, blockIndex) {
 	let block = content[blockIndex];
-	if (!block || block.type !== 'paragraph') return false;
+	if (!block || (block.type !== 'paragraph' && block.type !== 'caption')) return false;
 	let text = flattenText(block).replace(/\s+/g, ' ').trim();
 	if (!text) return false;
 	return splitSentences(text).some(s => s.length >= 20 && s.length <= 500);

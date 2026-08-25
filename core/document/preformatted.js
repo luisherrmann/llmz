@@ -566,7 +566,8 @@ LLMPreformatted = {
 	// see the second pass below for why the captioned-ness rule inverts for
 	// them. A third pass then removes any region left over that the
 	// surviving elements collectively cover, which the pairwise tests
-	// cannot detect.
+	// cannot detect. Both geometric passes act on individual fragments
+	// rather than whole groups; only the caption contest is group-level.
 	// "Genuinely" excludes extraction-invented labels (see
 	// _hasGenuineCaption) -- without that, the rule inverts on real
 	// documents and deletes the listings it is meant to protect.
@@ -647,6 +648,10 @@ LLMPreformatted = {
 
 		let doomedOthers = new Set();
 		let doomedGroups = new Set();
+		// Whole listings condemned by the caption contest (group-keyed)
+		// versus individual regions condemned by the geometric passes
+		// (entry-keyed) -- see each pass for why they differ.
+		let doomedFragments = new Set();
 		for (let pf of preformatted) {
 			if (doomedGroups.has(pf.preformatted_id)) continue;
 			let a = positionOf(pf);
@@ -688,15 +693,23 @@ LLMPreformatted = {
 		// higher _figureOverlapThreshold, since nothing here weighs against
 		// a wrong removal.
 		//
-		// Group-level like everything else here -- a listing split across a
-		// page break is one physical listing, so any fragment overlapping a
-		// figure condemns the whole id.
+		// Per FRAGMENT, unlike the contest above. That one is group-level
+		// because captioned-ness is inherited: a page-split listing carries
+		// its caption on exactly one fragment, so judging a continuation
+		// alone would read the whole listing as uncaptioned. Nothing is
+		// inherited here -- a fragment either lies inside a figure or it
+		// does not -- and propagating to the group actively destroys real
+		// content. Measured on OSWorld, where preformatted_id 10 spans
+		// pages 38-40 as five fragments: four have zero figure overlap
+		// (including two pyautogui code blocks and D.1's "Success Task"
+		// text) and the fifth sits 88% inside Figure 16, which under
+		// group-level removal deleted all five.
 		for (let pf of preformatted) {
 			if (doomedGroups.has(pf.preformatted_id)) continue;
 			let a = positionOf(pf);
 			for (let fig of figures) {
 				if (!this._regionsOverlap(a, positionOf(fig), this._figureOverlapThreshold)) continue;
-				doomedGroups.add(pf.preformatted_id);
+				doomedFragments.add(pf);
 				break;
 			}
 		}
@@ -723,7 +736,7 @@ LLMPreformatted = {
 		// duplicates.
 		let survivingCover = [...figures, ...tables, ...equations].filter(e => !doomedOthers.has(e));
 		for (let pf of preformatted) {
-			if (doomedGroups.has(pf.preformatted_id)) continue;
+			if (doomedGroups.has(pf.preformatted_id) || doomedFragments.has(pf)) continue;
 			let a = positionOf(pf);
 			if (a.pageIndex == null) continue;
 			let cover = [];
@@ -735,7 +748,9 @@ LLMPreformatted = {
 			if (!cover.length) continue;
 			for (let ra of a.rects || []) {
 				if (this._coveredFraction(ra, cover) >= this._unionCoverageThreshold) {
-					doomedGroups.add(pf.preformatted_id);
+					// Per fragment, for the same reason as the figure pass
+					// above.
+					doomedFragments.add(pf);
 					break;
 				}
 			}
@@ -753,7 +768,7 @@ LLMPreformatted = {
 		let equationIds = equations.filter(eq => doomedOthers.has(eq)).map(eq => eq.equation_id).filter(id => id != null);
 
 		let result = {
-			preformatted: removeFrom(preformatted, pf => doomedGroups.has(pf.preformatted_id)),
+			preformatted: removeFrom(preformatted, pf => doomedGroups.has(pf.preformatted_id) || doomedFragments.has(pf)),
 			tables: removeFrom(tables, t => doomedOthers.has(t)),
 			equations: removeFrom(equations, eq => doomedOthers.has(eq)),
 			paragraphs: removeFrom(paragraphs, p => doomedOthers.has(p)),

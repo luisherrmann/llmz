@@ -471,6 +471,17 @@ LLMPreformatted = {
 	// merely sit near a figure, both of which 0.5 deleted.
 	_figureOverlapThreshold: 0.8,
 
+	// How much of a preformatted region's own area has to be accounted for
+	// by the UNION of the other elements on its page before it is treated
+	// as their content rather than a listing of its own. See
+	// deduplicatePreformatted's third pass -- this catches a region that no
+	// single element contains, but several together do.
+	//
+	// Also 0.8, and also chosen from a measured gap rather than by analogy:
+	// on OSWorld the one region this actually removes is 96% covered, while
+	// the highest-covered survivor reaches 51%.
+	_unionCoverageThreshold: 0.8,
+
 	_overlapFraction(a, b) {
 		let ix = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
 		let iy = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
@@ -479,6 +490,37 @@ LLMPreformatted = {
 		let areaB = (b[2] - b[0]) * (b[3] - b[1]);
 		let smaller = Math.min(areaA, areaB);
 		return smaller > 0 ? (ix * iy) / smaller : 0;
+	},
+
+	// Fraction of `rect` covered by the UNION of `others`, which may
+	// overlap each other freely. Decomposes the region on every other
+	// rect's edges and counts the cells that fall inside at least one --
+	// summing pairwise intersections instead would double-count wherever
+	// two of `others` overlap, and on a real page they routinely do (a
+	// figure and its own caption block, say). Same coordinate-compression
+	// idea scripts/extract-preformatted-sdt.js's own unionArea uses.
+	_coveredFraction(rect, others) {
+		let total = (rect[2] - rect[0]) * (rect[3] - rect[1]);
+		if (total <= 0 || !others.length) return 0;
+		let xs = new Set([rect[0], rect[2]]);
+		let ys = new Set([rect[1], rect[3]]);
+		for (let o of others) {
+			for (let v of [o[0], o[2]]) if (v > rect[0] && v < rect[2]) xs.add(v);
+			for (let v of [o[1], o[3]]) if (v > rect[1] && v < rect[3]) ys.add(v);
+		}
+		let X = [...xs].sort((a, b) => a - b);
+		let Y = [...ys].sort((a, b) => a - b);
+		let covered = 0;
+		for (let i = 0; i < X.length - 1; i++) {
+			for (let j = 0; j < Y.length - 1; j++) {
+				let cx = (X[i] + X[i + 1]) / 2;
+				let cy = (Y[j] + Y[j + 1]) / 2;
+				if (others.some(o => cx >= o[0] && cx <= o[2] && cy >= o[1] && cy <= o[3])) {
+					covered += (X[i + 1] - X[i]) * (Y[j + 1] - Y[j]);
+				}
+			}
+		}
+		return covered / total;
 	},
 
 	// True when two entries (each { pageIndex, rects }) share a page and any
@@ -522,7 +564,9 @@ LLMPreformatted = {
 	//   - otherwise -> B loses
 	// Figures are settled separately, after that contest, and always win --
 	// see the second pass below for why the captioned-ness rule inverts for
-	// them.
+	// them. A third pass then removes any region left over that the
+	// surviving elements collectively cover, which the pairwise tests
+	// cannot detect.
 	// "Genuinely" excludes extraction-invented labels (see
 	// _hasGenuineCaption) -- without that, the rule inverts on real
 	// documents and deletes the listings it is meant to protect.
@@ -654,6 +698,46 @@ LLMPreformatted = {
 				if (!this._regionsOverlap(a, positionOf(fig), this._figureOverlapThreshold)) continue;
 				doomedGroups.add(pf.preformatted_id);
 				break;
+			}
+		}
+
+		// Third pass: a region that no SINGLE element contains can still be
+		// entirely accounted for by several of them TOGETHER, and the
+		// pairwise tests above cannot see that -- each one asks only "how
+		// much of this sits inside that one element".
+		//
+		// Observed on OSWorld p.9: an 86x267pt vertical strip whose text is
+		// plainly a benchmark-comparison table's ("# Instances (# Templates)
+		// ... GAIA [36] 466 ...") straddles the boundary between Figure 4
+		// below it and Table 4 above it -- 56% inside the figure, ~40%
+		// inside the table, under the bar for both, so it survived as a
+		// listing while being neither. Measured against the union it is 96%
+		// covered.
+		//
+		// Only elements that actually survived count toward the union: a
+		// table already doomed above is not a real element, so letting it
+		// vouch for covering something would let one phantom justify
+		// deleting another. Paragraphs stay out entirely -- prose is
+		// everywhere, and a listing genuinely interleaved with it would be
+		// covered by neighbours it merely sits between rather than
+		// duplicates.
+		let survivingCover = [...figures, ...tables, ...equations].filter(e => !doomedOthers.has(e));
+		for (let pf of preformatted) {
+			if (doomedGroups.has(pf.preformatted_id)) continue;
+			let a = positionOf(pf);
+			if (a.pageIndex == null) continue;
+			let cover = [];
+			for (let other of survivingCover) {
+				let b = positionOf(other);
+				if (b.pageIndex !== a.pageIndex) continue;
+				cover.push(...(b.rects || []));
+			}
+			if (!cover.length) continue;
+			for (let ra of a.rects || []) {
+				if (this._coveredFraction(ra, cover) >= this._unionCoverageThreshold) {
+					doomedGroups.add(pf.preformatted_id);
+					break;
+				}
 			}
 		}
 

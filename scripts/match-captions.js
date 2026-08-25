@@ -64,6 +64,41 @@ const { splitSentences } = require('./shared-patterns.js');
 // of the same JSON. The old denylist counted it as a genuine sentence, so
 // the two halves never merged and the first surfaced as its own
 // uncaptioned "Preformatted 3" entry alongside the captioned "Listing 7".
+// True when the block a region STARTS on is ordinary prose -- i.e. this
+// region opens with its own description and is therefore a new element, not
+// the previous one continuing.
+//
+// Companion to hasInterveningProse above, and needed because that test can
+// only see blocks strictly BETWEEN two regions. A region routinely absorbs
+// the descriptive line printed directly above its body (PyMuPDF draws the
+// region from that line down through the code, since they sit in the same
+// visual block), which makes the separator the LATER region's own first
+// block rather than something between the two -- so the gap test finds
+// nothing and the two merge. Observed on OSWorld's appendix, whose whole
+// structure is "task description, code, task description, code": four
+// listings of six regions each collapsed into one entry spanning three
+// pages, with every "Agent > Human Task: ..." separator invisible to the
+// gap test for exactly this reason.
+//
+// Deliberately narrower than hasInterveningProse, which counts 'paragraph'
+// AND 'list': only 'paragraph' counts here. A region that BEGINS on a
+// numbered 'list' block is almost always code continuing -- the numbering
+// is why SDT typed it a list at all. Confirmed on ANS, whose pseudocode
+// listing spans pages 6-8 with continuations starting "17 // EndpointRecord:
+// {data, signature,Cert}18 ..." and "30 4. certChainValid = VerifyCertChain
+// (...)31 ...": both are 'list' blocks whose text clears the sentence-length
+// bar, so counting lists here would split a genuine three-page listing into
+// three. The two questions really are different -- "what separates two
+// regions" versus "what a region begins with" -- so the asymmetry is
+// intended, not an oversight.
+export function startsWithProse(content, blockIndex) {
+	let block = content[blockIndex];
+	if (!block || block.type !== 'paragraph') return false;
+	let text = flattenText(block).replace(/\s+/g, ' ').trim();
+	if (!text) return false;
+	return splitSentences(text).some(s => s.length >= 20 && s.length <= 500);
+}
+
 export function hasInterveningProse(content, afterBlockIndex, beforeBlockIndex) {
 	for (let i = afterBlockIndex + 1; i < beforeBlockIndex; i++) {
 		let block = content[i];

@@ -92,7 +92,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
-import { flattenText, unionRect, pairWithCaptions, hasInterveningProse } from './match-captions.js';
+import { flattenText, unionRect, pairWithCaptions, hasInterveningProse, startsWithProse } from './match-captions.js';
 import { loadOrComputeStructure } from './structure-sdt.js';
 
 // Two rects are merged (unioned) whenever extending EACH by this many points
@@ -621,7 +621,7 @@ async function main() {
 	// assumption match-captions.js's own pairWithCaptions already makes for
 	// its `dominantArrangement` -- so one document-wide decision is enough.
 	//
-	// Two adjacent regions join the same group only if BOTH:
+	// Two adjacent regions join the same group only if ALL of:
 	//   - the CONTINUATION one has no caption of its own. Which side that
 	//     is flips with the convention: for captions AFTER a listing the
 	//     continuation is the EARLIER region (its label only shows up
@@ -634,6 +634,23 @@ async function main() {
 	//     heading label (or nothing) between them doesn't count, but a
 	//     genuine explanatory paragraph does, and means the two are
 	//     separate content that merely happens to sit adjacently.
+	//   - startsWithProse says the LATER region does not itself OPEN with a
+	//     prose paragraph. hasInterveningProse alone cannot catch that: a
+	//     region routinely swallows the descriptive line printed directly
+	//     above its body, so the separator ends up being the later region's
+	//     own first block rather than anything between the two, leaving the
+	//     gap test with an empty range to inspect. See startsWithProse for
+	//     the measured case (OSWorld's appendix, where four listings of six
+	//     regions each merged into one entry spanning three pages) and for
+	//     why it counts only 'paragraph' where hasInterveningProse also
+	//     counts 'list'.
+	//
+	// A distance bound was considered instead and does not work: measured
+	// across both test papers, the WRONG merges sit 8-14pt apart -- tighter
+	// than the right ones (66pt, 94pt) -- because a task description
+	// genuinely sits about one line above its code, exactly like a
+	// continuation would. Half of them also cross a page break, where no
+	// geometric gap exists to measure at all.
 	//
 	// Each decision is purely pairwise, so a single pass in document order
 	// suffices and a chain of several consecutive uncaptioned fragments
@@ -643,7 +660,9 @@ async function main() {
 		let earlier = output[i];
 		let later = output[i + 1];
 		let continuation = captionsPrecedeListings ? later : earlier;
-		if (!continuation.caption && !hasInterveningProse(structure.content, earlier.maxBlockIndex, later.blockIndex)) {
+		if (!continuation.caption
+				&& !hasInterveningProse(structure.content, earlier.maxBlockIndex, later.blockIndex)
+				&& !startsWithProse(structure.content, later.blockIndex)) {
 			sameGroupAsNext[i] = true;
 		}
 	}

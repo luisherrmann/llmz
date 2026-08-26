@@ -62,7 +62,8 @@
 // Python scripts, so it costs that caller nothing extra to pass them
 // through here too.
 // Output: JSON array of
-//   { preformatted_id, blockIndex, page_num, bbox, text, caption, position }.
+//   { preformatted_id, blockIndex, page_num, bbox, text, caption, sectionTitle,
+//   position }.
 // preformatted_id is a sequential id in document (block) order, same
 // "always-unambiguous integer identifier" convention table_id/figure_id
 // already use (see extract-tables-sdt.js's own comment on why) -- EXCEPT
@@ -92,7 +93,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
-import { flattenText, unionRect, pairWithCaptions, hasInterveningProse } from './match-captions.js';
+import { flattenText, unionRect, pairWithCaptions, hasInterveningProse, flattenOutline, nearestSection } from './match-captions.js';
 import { loadOrComputeStructure } from './structure-sdt.js';
 
 // Two rects are merged (unioned) whenever extending EACH by this many points
@@ -604,6 +605,13 @@ async function main() {
 	// entry and links split listings by a shared preformatted_id, so letting
 	// a captioned region swallow a neighbour's rect would leave the two
 	// overlapping rather than merged. See pairWithCaptions' own comment.
+	// Nearest preceding section per region, carried through to
+	// core/document/preformatted.js so it can name a listing the paper never
+	// labelled ("D.2 Prompt Templates, Preformatted 3"). Resolved here
+	// because the outline only exists on the structure, which the plugin
+	// side no longer has by the time it labels a cached index.
+	let sections = flattenOutline(structure.catalog?.outline || [], structure);
+
 	let { matched } = pairWithCaptions(bodies, captions, { absorbLeftovers: false });
 	let matchedByBlockIndex = new Map(matched.map(m => [m.blockIndex, m]));
 
@@ -645,6 +653,7 @@ async function main() {
 			position: { pageIndex: body.page_num - 1, rects: body.rects.length > 1 ? body.rects : [bbox] },
 			blockIndex: body.blockIndex,
 			maxBlockIndex: body.maxBlockIndex,
+			sectionTitle: nearestSection(sections, body.blockIndex)?.title || null,
 		};
 	});
 	output.sort((a, b) => a.blockIndex - b.blockIndex);

@@ -441,7 +441,31 @@ LLMPreformatted = {
 				usedSoFar.set(label, n);
 				label = `${label} ${n}`;
 			}
-			if (!label) label = `Preformatted ${++unlabeledCount}`;
+			if (!label) {
+				// A listing the paper never labelled. Named for the section
+				// it sits in, the way extract-figures-sdt.js/
+				// extract-tables-sdt.js already name an uncaptioned
+				// figure/table -- but with a GLOBAL counter rather than one
+				// restarting per section.
+				//
+				// Restarting per section makes the number ambiguous on its
+				// own: OSWorld's unlabelled figures yield "Unlabelled Figure
+				// 1" twice, in different sections, so only the full label
+				// distinguishes them -- which loses whenever it is
+				// abbreviated in conversation, or truncated for display,
+				// since the section prefix comes first and the number is
+				// what gets cut. A global counter keeps the trailing number
+				// unique paper-wide while the section still supplies
+				// context.
+				//
+				// The section comes from the group's FIRST fragment, since
+				// a listing spanning a page break belongs to the section it
+				// starts in. Falls back to the bare name when the paper has
+				// no outline entry before it.
+				let n = ++unlabeledCount;
+				let section = regions.find(r => keyOf(r) === key)?.sectionTitle;
+				label = section ? `${section}, Preformatted ${n}` : `Preformatted ${n}`;
+			}
 			labelByGroup.set(key, label);
 		}
 		return regions.map(pf => ({

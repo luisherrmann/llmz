@@ -103,6 +103,39 @@ export function startsWithProse(content, blockIndex) {
 	if (!block || (block.type !== 'paragraph' && block.type !== 'caption')) return false;
 	let text = flattenText(block).replace(/\s+/g, ' ').trim();
 	if (!text) return false;
+	// A comment line is part of the listing, not a description of it,
+	// however SDT happens to type it -- and it does mistype them: OSWorld
+	// p.42 ends its GIMP example with "# ... More Wrong Duplicate Actions;
+	// Can not find the right coordination.", typed 'paragraph' and long
+	// enough to pass the sentence test below, which split that listing away
+	// from its own first two pages.
+	//
+	// This is knowingly narrow -- it catches a mistyped COMMENT, not a
+	// mistyped code line in general. Two broader rules were measured and
+	// both rejected:
+	//
+	//   Text statistics cannot work at all here. That line IS English
+	//   prose, written as a sentence by a human; only its ROLE (an
+	//   annotation inside the code output) makes it code. Measured against
+	//   the real separators it is indistinguishable -- 40% stopwords, 1%
+	//   symbols, 92% letters, versus 43%/1%/92% for "Libreoffice calc Task:
+	//   I now want to count ..." -- and one real separator scores LOWER on
+	//   stopwords than it does. No lexical or n-gram classifier separates
+	//   them, because linguistically there is nothing to separate.
+	//
+	//   Typography (code is monospaced, so one advance width covers most of
+	//   its glyphs) does separate them -- 73% for that comment against
+	//   26-35% for every real separator. It was dropped anyway: it fixes
+	//   exactly the same cases this marker test does, measured across both
+	//   papers, while assuming preformatted content is always monospaced.
+	//   A paper setting its descriptions in a monospaced font would be
+	//   silently over-merged, so it added a failure mode for no coverage.
+	//
+	// A mistyped code line that is neither a comment nor caught upstream
+	// would still split a listing. That case has not been observed; the
+	// signal for it is contextual (what surrounds the line), not anything
+	// readable from the line itself.
+	if (/^\s*(#|\/\/|\/\*)/.test(text)) return false;
 	return splitSentences(text).some(s => s.length >= 20 && s.length <= 500);
 }
 

@@ -21,6 +21,7 @@
 // module's own cache/embeddings.
 LLMPreformatted = {
 	_sdtScriptName: "extract-preformatted-sdt.js",
+	_sharedScriptName: "match-captions.js",
 	// PyMuPDF background-fill+font detection (see its own header comment) --
 	// deployed into the writable LLMz/scripts/ dir by this module's own
 	// init() below, same as document/figures.js's own list_page_images.py/
@@ -122,6 +123,15 @@ LLMPreformatted = {
 			parts.push(`${sdtStat.size}:${sdtStat.lastModified}`);
 			let pyStat = await IOUtils.stat(this._scriptPath(this._pyScriptName));
 			parts.push(`${pyStat.size}:${pyStat.lastModified}`);
+	// The shared caption/geometry toolkit every SDT extractor imports. Stat'd
+	// alongside the extractor's own script because a change to it changes
+	// what that script produces just as surely -- and in practice most of
+	// the churn lands here, since pairWithCaptions and its helpers are
+	// common to tables, figures and preformatted. Three commits in a row
+	// (58c5761, 9fddf96, c30fd6b) touched only this file, so without it
+	// every cached index silently kept its pre-change contents.
+			let sharedStat = await IOUtils.stat(this._nodeScriptPath(this._sharedScriptName));
+			parts.push(`${sharedStat.size}:${sharedStat.lastModified}`);
 			return parts.join("|");
 		}
 		catch (e) {

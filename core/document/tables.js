@@ -8,6 +8,7 @@ LLMTables = {
 	// already does, rather than deploying a second copy of sdt/ itself --
 	// see LLMReferences' _siblingScriptNames.
 	_sdtScriptName: "extract-tables-sdt.js",
+	_sharedScriptName: "match-captions.js",
 	// Renders a table's own cropped JPEG on demand (see renderMissingImages
 	// below) -- split out of the old extract_tables.py, which used to
 	// render every table's image unconditionally as part of detection
@@ -122,7 +123,15 @@ LLMTables = {
 			// shouldn't affect cache validity since it only ever fills in
 			// image_data lazily, on demand, after the index is already built.
 			let stat = await IOUtils.stat(this._nodeScriptPath(this._sdtScriptName));
-			return `v${this._cacheVersion}|${stat.size}:${stat.lastModified}`;
+	// The shared caption/geometry toolkit every SDT extractor imports. Stat'd
+	// alongside the extractor's own script because a change to it changes
+	// what that script produces just as surely -- and in practice most of
+	// the churn lands here, since pairWithCaptions and its helpers are
+	// common to tables, figures and preformatted. Three commits in a row
+	// (58c5761, 9fddf96, c30fd6b) touched only this file, so without it
+	// every cached index silently kept its pre-change contents.
+			let sharedStat = await IOUtils.stat(this._nodeScriptPath(this._sharedScriptName));
+			return `v${this._cacheVersion}|${stat.size}:${stat.lastModified}|${sharedStat.size}:${sharedStat.lastModified}`;
 		}
 		catch (e) {
 			return null;

@@ -375,7 +375,16 @@ LLMPreformatted = {
 	// numbering.
 	_captionLabel(caption) {
 		let m = /^\s*([A-Za-z]+)\.?\s+[(\[{<]?(\d+)[)\]}>.:]?/.exec(caption || "");
-		return m ? `${m[1]} ${m[2]}` : "";
+		if (m) return `${m[1]} ${m[2]}`;
+		// A NAMED label, for a paper that titles its listings instead of
+		// numbering them ("Libreoffice calc Task: ...", "Agent > Human
+		// Task: ..."). The label is everything before the colon; the
+		// description after it stays in `caption`. Kept in step with
+		// scripts/match-captions.js's NAMED_CAPTION_RE, which is what
+		// decides such a line IS a caption at all -- this only has to split
+		// one that already got through.
+		let named = /^\s*([A-Z][^:]{2,40}):\s+\S/.exec(caption || "");
+		return named ? named[1].trim() : "";
 	},
 
 	// Assigns each GROUP (see extract-preformatted-sdt.js's own grouping
@@ -396,15 +405,42 @@ LLMPreformatted = {
 	_assignLabels(regions) {
 		let labelByGroup = new Map();
 		let unlabeledCount = 0;
+		let keyOf = pf => pf.preformatted_id ?? `__ungrouped_${pf.blockIndex}`;
+		// A group's caption sits on exactly ONE of its fragments (the
+		// grouping pass only ever extends an UNcaptioned region forward),
+		// but which one isn't fixed -- scan the whole group rather than
+		// assuming it's the first-seen fragment.
+		let captionOf = key => regions.find(r => keyOf(r) === key && r.caption)?.caption;
+
+		// A paper that NAMES its listings rather than numbering them reuses
+		// the same name freely: OSWorld prints "Task Instruction" eight
+		// times and "Agent > Human Task" three. Number those, so every
+		// listing can still be referred to individually ("Agent > Human
+		// Task 1", "Agent > Human Task 2"). Counted over GROUPS rather than
+		// fragments, since a listing split across pages is one entry.
+		//
+		// Only a repeated name gets a number -- a name used once reads
+		// better bare, and a trailing "1" would imply a second one exists.
+		let baseCounts = new Map();
+		let counted = new Set();
 		for (let pf of regions) {
-			let key = pf.preformatted_id ?? `__ungrouped_${pf.blockIndex}`;
+			let key = keyOf(pf);
+			if (counted.has(key)) continue;
+			counted.add(key);
+			let base = this._captionLabel(captionOf(key));
+			if (base) baseCounts.set(base, (baseCounts.get(base) || 0) + 1);
+		}
+		let usedSoFar = new Map();
+
+		for (let pf of regions) {
+			let key = keyOf(pf);
 			if (labelByGroup.has(key)) continue;
-			// A group's caption sits on exactly ONE of its fragments (the
-			// grouping pass only ever extends an UNcaptioned region
-			// forward), but which one isn't fixed -- scan the whole group
-			// rather than assuming it's this first-seen fragment.
-			let caption = regions.find(r => (r.preformatted_id ?? `__ungrouped_${r.blockIndex}`) === key && r.caption)?.caption;
-			let label = this._captionLabel(caption);
+			let label = this._captionLabel(captionOf(key));
+			if (label && baseCounts.get(label) > 1) {
+				let n = (usedSoFar.get(label) || 0) + 1;
+				usedSoFar.set(label, n);
+				label = `${label} ${n}`;
+			}
 			if (!label) label = `Preformatted ${++unlabeledCount}`;
 			labelByGroup.set(key, label);
 		}

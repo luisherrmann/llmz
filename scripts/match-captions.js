@@ -475,7 +475,7 @@ export function captionArrangement(bodyBbox, captionBbox) {
 // For a cross-page pair specifically, `bbox` is the body's OWN bbox alone
 // (not unioned with the caption's, which lives on a different page and
 // isn't a meaningful union target) -- see the final mapping step below.
-export function pairWithCaptions(bodies, captions, { absorbMargin = EXTEND_MARGIN } = {}) {
+export function pairWithCaptions(bodies, captions, { absorbMargin = EXTEND_MARGIN, absorbLeftovers = true } = {}) {
 	let unmatchedBodies = bodies.map((b, i) => ({ ...b, _i: i }));
 	let unmatchedCaptions = captions.map((c, i) => ({ ...c, _i: i }));
 	let takenB = new Set(), takenC = new Set();
@@ -618,8 +618,23 @@ export function pairWithCaptions(bodies, captions, { absorbMargin = EXTEND_MARGI
 	}));
 	let leftoverBodies = unmatchedBodies.filter(b => !takenB.has(b._i));
 
+	// Absorbing a leftover body means unioning its rect into the captioned
+	// body it belongs to, so ONE highlight covers a region whose caption
+	// landed on a different fragment. That suits a caller which then drops
+	// the absorbed body -- extract-tables-sdt.js reads unmatchedBodies and
+	// only keeps what comes back.
+	//
+	// A caller that emits EVERY body regardless gets both halves instead:
+	// the absorbed region survives as its own entry AND its area sits
+	// inside the absorber's rect, so the two overlap. That is
+	// extract-preformatted-sdt.js, which represents a split listing by
+	// sharing a preformatted_id across fragments that each keep their own
+	// bbox -- see its own header on why it deliberately does not combine
+	// them into one entry. Unioning rects is not just redundant there, it
+	// manufactures the overlap. Measured on OSWorld: 9 of 40 regions had a
+	// bbox larger than any region PyMuPDF actually found.
 	let stillUnmatched = [];
-	for (let b of leftoverBodies) {
+	for (let b of absorbLeftovers ? leftoverBodies : []) {
 		let ext = extendRect(b.bbox, absorbMargin);
 		let best = null, bestIoU = 0;
 		for (let m of matched) {
@@ -637,6 +652,7 @@ export function pairWithCaptions(bodies, captions, { absorbMargin = EXTEND_MARGI
 			stillUnmatched.push(b);
 		}
 	}
+	if (!absorbLeftovers) stillUnmatched = leftoverBodies;
 
 	return { matched, unmatchedBodies: stillUnmatched };
 }

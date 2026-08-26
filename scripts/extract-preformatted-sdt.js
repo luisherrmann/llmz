@@ -264,6 +264,25 @@ function isCaptionForOtherContent(text) {
 // above), but the leading-word requirement already rules that specific
 // case out on its own; adding a length cutoff on top would just as easily
 // reject a real long caption.
+// A NAMED caption label -- "Libreoffice calc Task: ...", "Agent > Human
+// Task: ...", "Task w/o SoM: ..." -- as opposed to the enumerated form
+// looksLikeCaptionLabel below recognizes ("Listing 6.", "Algorithm 2:").
+// Papers that label their listings by name rather than by number are common
+// enough to matter: OSWorld labels all 23 of its appendix listings this way,
+// and none of them carry a number for the enumerated pattern to find.
+//
+// Deliberately only ever applied to a region's OWN FIRST BLOCK (see main()),
+// never scanned across the document the way looksLikeCaptionLabel is. The
+// pattern is far looser -- any short capitalised phrase before a colon --
+// and measured across the test papers it matches 24 blocks in ANS and 23
+// non-region-opening blocks in OSWorld that are NOT captions at all: data
+// type definitions ("AgentID: Agent Identifier"), paper titles, prose with a
+// mid-sentence colon ("We implement three kinds of observation: ..."), and
+// figure-internal annotations ("Step 1: pyautogui.click(...)"). Restricted
+// to region-opening blocks it matches none of those, and every one of the 23
+// it does match is a genuine label.
+const NAMED_CAPTION_RE = /^\s*([A-Z][^:]{2,40}):\s+\S/;
+
 function looksLikeCaptionLabel(text) {
 	return /^\s*[A-Za-z]+\.?\s+[(\[{<]?\d+[)\]}>.:]?(?=\s*[A-Za-z])/.test(text);
 }
@@ -426,6 +445,7 @@ async function main() {
 	// ("TABLE I", "Table 1:") could still pass through undetected by this
 	// check alone.
 	let bodies = [];
+	let namedCaptions = [];
 	for (let [pageNum, regions] of regionsByPage) {
 		for (let r = 0; r < regions.length; r++) {
 			let key = `${pageNum}:${r}`;
@@ -458,6 +478,41 @@ async function main() {
 			}
 			if (!claimed.length) continue;
 			claimed.sort((a, b) => a.blockIndex - b.blockIndex);
+
+			// A region routinely swallows the label line printed directly
+			// above its body, because the two sit in one visual block and
+			// PyMuPDF draws the region across both -- so the label arrives
+			// here as the region's own FIRST claimed block rather than as
+			// something beside it. Split it back out: it is the listing's
+			// caption, not part of its content.
+			//
+			// This is what lets everything downstream work unchanged.
+			// `blockIndex` keeps its meaning (the region's first block),
+			// but that is now the body's first block, so a caption paired
+			// to it satisfies captionBlockIndex < blockIndex and the
+			// captions-precede-listings tally reads the arrangement
+			// correctly. Leaving the label inside the body instead makes
+			// the two indices EQUAL, which that tally counts as
+			// captions-following -- and the grouping pass then treats the
+			// labelled fragment as the continuation, refusing to attach its
+			// own continuation on the next page. Measured on OSWorld, that
+			// shattered every cross-page listing: 29 groups became 38.
+			//
+			// Requires at least two claimed blocks, so a region that is
+			// nothing BUT a label keeps it and stays a body of its own
+			// rather than becoming empty.
+			let namedCaption = null;
+			if (claimed.length > 1) {
+				let firstText = flattenText(structure.content[claimed[0].blockIndex] || {}).replace(/\s+/g, ' ').trim();
+				if (firstText && !isCaptionForOtherContent(firstText) && NAMED_CAPTION_RE.test(firstText)) {
+					let pos = blockPageRectBbox(structure.content[claimed[0].blockIndex]);
+					if (pos) {
+						namedCaption = { blockIndex: claimed[0].blockIndex, page_num: pos.pageIndex + 1, bbox: pos.bbox, text: firstText };
+						namedCaptions.push(namedCaption);
+						claimed = claimed.slice(1);
+					}
+				}
+			}
 
 			let text = '';
 			for (let b of claimed) {
@@ -499,7 +554,9 @@ async function main() {
 	// same shape+exclusion checks the old search used. blockIndex here is
 	// the candidate's own raw structure.content index (pairWithCaptions
 	// only needs it for its own cross-page block-adjacency pass).
-	let captions = [];
+	// Label lines split off their own region above -- folded into `captions`
+	// below so they pair through the same path as any other caption.
+	let captions = [...namedCaptions];
 	for (let i = 0; i < structure.content.length; i++) {
 		let block = structure.content[i];
 		if (block.type !== 'heading' && block.type !== 'caption' && block.type !== 'paragraph') continue;
@@ -543,7 +600,11 @@ async function main() {
 		bodies = bodies.filter(b => !mergedInto.has(b)).sort((a, b) => a.blockIndex - b.blockIndex);
 	}
 
-	let { matched } = pairWithCaptions(bodies, captions);
+	// absorbLeftovers: false -- this module keeps every region as its own
+	// entry and links split listings by a shared preformatted_id, so letting
+	// a captioned region swallow a neighbour's rect would leave the two
+	// overlapping rather than merged. See pairWithCaptions' own comment.
+	let { matched } = pairWithCaptions(bodies, captions, { absorbLeftovers: false });
 	let matchedByBlockIndex = new Map(matched.map(m => [m.blockIndex, m]));
 
 	// Does this paper put a listing's label BEFORE the listing ("Listing 4.

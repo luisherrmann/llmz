@@ -492,6 +492,39 @@ export function pairWithCaptions(bodies, captions, { absorbMargin = EXTEND_MARGI
 			candidates.push({ b, c, dist });
 		}
 	}
+	// Only MUTUALLY NEAREST pairs survive: this body must be the closest
+	// body to that caption AND that caption the closest caption to this
+	// body, measured against every candidate on the page rather than only
+	// the ones still unclaimed.
+	//
+	// Without it the loop below never declines a match, so once the nearest
+	// pairing is made the leftovers are simply distributed -- each remaining
+	// body takes whatever caption is still free, at any distance. Measured
+	// on OSWorld p.45, where all four "Step N: pyautogui..." annotation rows
+	// sit INSIDE one region (the figure's own annotation grid, distance 0
+	// from it): that region can absorb only one of them, and the other three
+	// were handed to the two genuine code listings below, one of them 371pt
+	// away -- which unioned the caption's rect into the body's and inflated
+	// that listing from 107pt to 483pt tall, swallowing the listing above it.
+	//
+	// Measured against both test papers before adopting: ANS keeps all ten
+	// of its real "Listing N." captions, on the same regions with the same
+	// text, while OSWorld drops five of eight bogus ones. The three that
+	// survive there sit on regions that are themselves figure content and
+	// get removed by deduplication anyway, so no "Step N" label reaches the
+	// final index. It also REPAIRS two merges those bogus captions were
+	// suppressing via the `continuation.caption` test in
+	// extract-preformatted-sdt.js's grouping pass -- both single code
+	// examples continuing across a page break.
+	let nearestDist = (rect, list) => list.reduce((min, x) => Math.min(min, rectDistance(rect, x.bbox)), Infinity);
+	candidates = candidates.filter(({ b, c }) => {
+		let d = rectDistance(b.bbox, c.bbox);
+		// EPSILON, not equality: several candidates legitimately tie at
+		// distance 0 when a caption sits inside a body, and a strict `<`
+		// would then reject every one of them.
+		return d <= nearestDist(b.bbox, captions.filter(x => x.page_num === b.page_num)) + 1e-6
+			&& d <= nearestDist(c.bbox, bodies.filter(x => x.page_num === c.page_num)) + 1e-6;
+	});
 	candidates.sort((a, b) => a.dist - b.dist);
 	for (let { b, c } of candidates) {
 		if (takenB.has(b._i) || takenC.has(c._i)) continue;

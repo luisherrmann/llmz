@@ -411,6 +411,54 @@ LLMRequest = {
 		}
 	},
 
+	// Renders tools/list-elements.js's numbered, linked list of every
+	// extracted element of one type into a single reply bubble. Unlike the
+	// other three handlers this involves no model call at all -- the list
+	// comes straight out of the extraction caches (see listElements' own
+	// comment for why that's the point, not a shortcut) -- so the only
+	// thing that can take a noticeable moment here is a COLD cache, whose
+	// extraction progress arrives via onMessage below.
+	async _handleListElements(intent, pdfItem, chatPane, ctx) {
+		let { appendMessage, chat, replyLabel, isCancelled } = ctx;
+
+		// Empty timestamp until the list is actually rendered below -- see
+		// ui/chat.js's appendMessage/setMessageTime.
+		let reply = appendMessage(replyLabel, "Listing elements...", "");
+		try {
+			let { markdown, linkIndex } = await LLMListElements.listElements(
+				intent.elementType,
+				pdfItem,
+				(msg) => {
+					if (isCancelled()) return;
+					appendMessage("System", msg);
+					chat.updateMessageText(reply, msg);
+				});
+			if (isCancelled()) return;
+
+			// Before rendering, so export.js's own exportTranscript() reads
+			// back the markdown rather than the rendered HTML that replaces
+			// it -- same ordering _handleNormalChat uses.
+			chat.setMessageText(reply, markdown);
+			// citationPositions is null: this list carries only ref: links,
+			// never a grounded find: citation (which is what that map
+			// pre-resolves).
+			let html = chatPane._renderMarkdown(markdown, linkIndex, null);
+			if (html) {
+				chat.renderMarkdownMessage(reply, html, markdown);
+			}
+			else {
+				chat.updateMessageText(reply, markdown);
+			}
+			chat.setMessageTime(reply, chat.formatTimestamp());
+		}
+		catch (e) {
+			if (isCancelled()) return;
+			this.log(`listElements failed: ${e.message}`);
+			chat.updateMessageText(reply, `Listing elements failed: ${e.message}`);
+			chat.setMessageTime(reply, chat.formatTimestamp());
+		}
+	},
+
 	// Awaits `tableIndexPromise`, runs table selection against `prompt`, and
 	// reports status along the way -- split out of _handleNormalChat so
 	// each of the five context-building steps (this, equations, notes,
@@ -520,10 +568,20 @@ LLMRequest = {
 	// linkIndex's ref:note:KEY resolution.
 	async _buildNoteContext(notesPromise, prompt, recentHistory, readerContext, ctx) {
 		let { appendMessage, makeMessageClickable, isCancelled } = ctx;
-		let notes = await notesPromise;
+		// Only notes the user actually wrote something on (a non-empty
+		// `comment`) are offered to selectNotesWithLLM -- a bare highlight/
+		// underline with no comment carries no authorial intent of its own
+		// to select FOR (as opposed to _joinParagraphsWithNoteContext's
+		// separate inline injection in llm/prompt.js, which still surfaces
+		// every highlight/underline regardless of comment, since there the
+		// highlighted text itself is the signal, not a comment on it). A
+		// 'note' (sticky note) annotation always has a comment already --
+		// formatAnnotation drops one with neither comment nor highlighted
+		// text -- so this only ever narrows the highlight/underline side.
+		let notes = (await notesPromise).filter(n => n.comment);
 		if (isCancelled()) return { notes: [], addition: "" };
 		if (!notes.length) {
-			appendMessage("System", "Notes: no highlights, underlines, or notes found on this PDF.");
+			appendMessage("System", "Notes: no annotated highlights, underlines, or notes found on this PDF.");
 			return { notes: [], addition: "" };
 		}
 		let selectedNotes = [];
@@ -908,7 +966,76 @@ LLMRequest = {
 				};
 			};
 			let onStructureMessage = (text) => appendMessage("System", text);
-			let { prompt: modelPrompt, systemPrompt, contextInfo, item: pdfItem } = await LLMPrompt.buildPromptWithActivePDFContext(prompt, selectedText, pageText, onEmbeddingStart, onStructureMessage);
+
+			// The active PDF, its full text, and the two SDT-derived indexes
+			// are resolved here. getAttachmentFullText is a read of Zotero's
+			// own full-text cache file in the normal case, so hoisting it here
+			// costs nothing.
+			let activeItem = LLMChatPane.getActiveReaderAttachment();
+			let isPDF = !!activeItem && activeItem.isPDFAttachment();
+			// null (not merely falsy-ish) for a non-PDF attachment, matching
+			// what buildPromptWithActivePDFContext used to hand back as
+			// `item` -- every `if (pdfItem)` guard below depends on that,
+			// and getActiveReaderAttachment on its own is truthy for a
+			// non-PDF reader tab (e.g. an EPUB/snapshot).
+			let pdfItem = isPDF ? activeItem : null;
+			let pdfText = isPDF ? await LLMPrompt.getAttachmentFullText(activeItem) : undefined;
+			if (isCancelled()) return;
+
+			let paragraphIndex = null;
+			let preformattedIndex = null;
+			if (pdfItem) {
+				// Builds the text, preformatted, table, and equation indexes
+				// TOGETHER, deduplicates them against one another, and only
+				// then writes any of them -- see llm/index-pipeline.js for why
+				// that has to happen before anything is persisted. The
+				// getTableIndex/getEquationIndex calls further down then hit
+				// the memoized, already-deduplicated objects instead of
+				// rebuilding anything, so this is not extra work moved
+				// earlier, just the same work ordered so dedup can happen.
+				await LLMIndexPipeline.ensureIndexed(pdfItem, {
+					onEmbeddingStart,
+					onMessage: onStructureMessage,
+				});
+				if (isCancelled()) return;
+				// Re-fetched through the normal accessors rather than read off
+				// the pipeline's own return value: both of these are reshaped VIEWS
+				// over a raw index (paragraph-level chunks; regions with
+				// resolved positions/labels), and both are backed by the same
+				// memoized objects the pipeline just deduplicated -- so these
+				// are cache hits, not rebuilds.
+				if (pdfText && pdfText.trim()) {
+					try {
+						paragraphIndex = await LLMCitation.getParagraphIndex(pdfItem, pdfText, onEmbeddingStart, onStructureMessage);
+					}
+					catch (e) {
+						this.log(`getParagraphIndex failed: ${e.message}`);
+					}
+				}
+				try {
+					preformattedIndex = await LLMPreformatted.getPreformattedIndex(pdfItem, onEmbeddingStart, onStructureMessage);
+				}
+				catch (e) {
+					this.log(`getPreformattedIndex failed: ${e.message}`);
+				}
+			}
+			if (isCancelled()) return;
+
+			let { prompt: modelPrompt, systemPrompt, contextInfo } = await LLMPrompt.buildPromptWithActivePDFContext({
+				userPrompt: prompt,
+				selectedText,
+				pageText,
+				onEmbeddingStart,
+				onMessage: onStructureMessage,
+				// activeItem, not pdfItem -- this function does its own
+				// "not a PDF attachment" early return, and passing the
+				// nulled-out version would make it take the "no reader tab
+				// open at all" path instead.
+				item: activeItem,
+				text: pdfText,
+				paragraphIndex,
+				preformattedIndex,
+			});
 			if (isCancelled()) return;
 			let tableIndexPromise = pdfItem
 				? LLMTables.getTableIndex(pdfItem, onEmbeddingStart, onStructureMessage).catch((e) => {
@@ -1023,6 +1150,11 @@ LLMRequest = {
 				figureIndex: imageResult.index,
 				referenceIndex: referenceResult.index,
 				equationIndex: equationResult.index,
+				// Reuses the index already built above for the prompt's own
+				// <PREFORMATTED> blocks -- it used to be re-fetched here,
+				// back when buildPromptWithActivePDFContext resolved it
+				// internally and never handed it back.
+				preformattedIndex,
 				notes: noteResult.notes,
 			});
 
@@ -1441,8 +1573,8 @@ LLMRequest = {
 			// reference N"/"export table N as CSV" request short-circuits
 			// the normal chat flow entirely, since the main model has
 			// nothing useful to add to a request this specific.
-			// LLMIntent.detectIntent (see llm/intent.js) owns deciding WHICH of
-			// the three tools (if any) applies, via native tool-calling.
+			// LLMIntent.detectIntent (see llm/intent.js) owns deciding WHICH
+			// registered tool (if any) applies, via native tool-calling.
 			//
 			// Sliced from `priorTranscript` (captured once above, before the
 			// "You" bubble) to just _RECENT_HISTORY_TURNS (see its own
@@ -1471,6 +1603,37 @@ LLMRequest = {
 					// mutually exclusive per request (a tool-intent match
 					// returns before _handleNormalChat would ever run), so
 					// there's no actual double-fetch in practice.
+					// Every tool reads the per-paper extraction caches, and
+					// those are only correct once the pipeline has
+					// deduplicated them (see llm/index-pipeline.js's
+					// ensureIndexed -- deduplication lives there, not in the
+					// accessors). A tool intent returns before
+					// _handleNormalChat, the only other chat path that runs
+					// it, so without this a tool on a cold cache reads the
+					// raw extraction: listing this paper's tables reported
+					// every phantom table, while the same request after
+					// pressing "Index" looked right.
+					if (!LLMIntent.skipsIndexing(tool)) {
+						await LLMIndexPipeline.ensureIndexed(pdfItem, {
+							onMessage: (msg) => {
+								if (cancelled) return;
+								appendMessage("System", msg);
+							},
+						});
+						if (cancelled) return;
+					}
+
+					// Handled before _resolveIntentIndices below, which
+					// assumes an index-shaped intent (a user-named subset to
+					// map onto real element numbers). This tool has no such
+					// subset -- its answer is always every element of the
+					// requested type -- so it reads the caches directly
+					// instead. See tools/list-elements.js.
+					if (tool === "listElements") {
+						await this._handleListElements(intent, pdfItem, chatPane, ctx);
+						return;
+					}
+
 					let { pageNum } = await chatPane.getReaderPageText();
 					if (cancelled) return;
 

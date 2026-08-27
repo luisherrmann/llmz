@@ -264,6 +264,19 @@ LLMEmbeddingsDB = {
 		return this.insert(paperId, model, items.map(item => ({ ...item, source })));
 	},
 
+	// Removes rows for a paper and, where the source is array-indexed,
+	// renumbers whatever survives -- WITHOUT recomputing any vector (they
+	// live in the vec0 table keyed by rowid; only the plain table's own
+	// source_id column moves). Used by llm/index-pipeline.js after
+	// cross-index deduplication deletes entries from an index that was
+	// ALREADY persisted, whose rows would otherwise still be numbered for
+	// the pre-deduplication array. Each survivor is renumbered to its position
+	// in the resulting list. See scripts/db.py's own `compact` for the full rationale.
+	async compactForPaper(paperId, model, sources) {
+		if (!sources || !Object.keys(sources).length) return { deleted: 0, remapped: 0 };
+		return this._run("compact", model, { paper_id: paperId, sources });
+	},
+
 	// Cheap existence check -- mirrors the hasCache(item) pattern already
 	// used throughout this plugin (LLMCitation.hasCache and friends, see
 	// ui/advanced.js's getIndexStatus) for the library-index-status bar.

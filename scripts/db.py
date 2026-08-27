@@ -27,9 +27,15 @@ Schema (per file):
     cache file actually holds the text/content itself (e.g. a citation
     sentence's position in LLMCitation's own chunk list) -- this table only
     ever stores the embedding + enough to look the real content back up,
-    never the content itself. `created_at`/`updated_at` are ISO 8601 UTC
-    strings, set automatically (see _connect's own comment) -- nothing in
-    this script sets them explicitly.
+    never the content itself. pageIndex/rects (a chunk's PDF location) live
+    ONLY in each kind's own JSON disk cache, not here -- benchmarked writing
+    them to this table (subprocess + sqlite insert) against a plain JSON
+    file write for the same data and JSON won -- 60-100x faster to write, and
+    even to read back (a `python3 db.py` subprocess's fixed per-invocation
+    cost dwarfs an indexed SQL lookup at this table's current size).
+    `created_at`/`updated_at` are ISO 8601 UTC strings, set automatically
+    (see _connect's own comment) -- nothing in this script sets them
+    explicitly.
   vec_embeddings(rowid, embedding) -- the one vec0 virtual table this file
     has. `rowid` is always the SAME value as the matching row's `id` in
     `embeddings` (set explicitly on insert, never left to autoincrement on
@@ -76,6 +82,24 @@ def _connect(db_path):
     # still matters for concurrent papers under the SAME model.
     db.execute('PRAGMA journal_mode=WAL')
     db.execute('PRAGMA busy_timeout=5000')
+    # Some Python builds' sqlite3 module is compiled without loadable-
+    # extension support at all (both methods missing outright rather than
+    # raising) -- notably pyenv-built interpreters compiled against a
+    # SQLite without that API, and macOS's /usr/bin/python3. sqlite_vec.load
+    # below calls load_extension() unconditionally, so without this check
+    # the failure would surface as a bare "'Connection' object has no
+    # attribute 'load_extension'" with no indication of the actual cause or
+    # fix. python-setup.js's _findPython3 is supposed to screen candidates
+    # for this before a venv is ever built from them, so hitting this here
+    # means an existing venv predates that check.
+    if not (hasattr(db, 'enable_load_extension') and hasattr(db, 'load_extension')):
+        raise RuntimeError(
+            f'{sys.executable} was built without SQLite loadable-extension '
+            'support, so sqlite-vec cannot be loaded. Delete the venv '
+            '(rm -rf the "venv" folder next to this script\'s data '
+            'directory) and re-run setup so it picks a working Python '
+            '(e.g. Homebrew\'s python3), not this one.'
+        )
     db.enable_load_extension(True)
     sqlite_vec.load(db)
     db.enable_load_extension(False)
@@ -342,12 +366,77 @@ def _cmd_has(db, data):
     return {'has': count > 0, 'count': count}
 
 
+# Input: { paper_id, sources: { "<source>": {"delete": [source_id, ...]}
+#                             | {"keep":   [source_id, ...]} } }
+# Output: { deleted: int, remapped: int }
+#
+# Drops specific rows for a paper, and (for `keep`) renumbers whatever
+# survives. Exists because two different source_id conventions coexist in
+# this table (see core/document/preformatted.js's own deduplication):
+#   - "delete": the source_id is a STABLE id (table_id, equation_id), so
+#     removing some rows leaves the rest addressable exactly as before --
+#     just drop the listed ones.
+#   - "keep": the source_id is an ARRAY INDEX into the caller's own cached
+#     array (sentence/paragraph/heading/preformatted_*), so removing an
+#     entry shifts every later one. `keep` is the surviving source_ids IN
+#     THEIR NEW ORDER: anything absent is deleted, and each survivor is
+#     renumbered to its POSITION in that list. That re-keys the existing
+#     vectors in place rather than re-embedding them -- the vectors live in
+#     the vec0 virtual table keyed by rowid, untouched here; only the plain
+#     table's own source_id column moves.
+#
+# Renumbering updates by primary key rather than by (paper_id, source,
+# source_id): mapping e.g. 5 -> 4 while row 4 still holds source_id 4 would
+# otherwise leave two rows briefly sharing a source_id (there is no unique
+# constraint to catch it), and the next update for 4 would then match BOTH.
+# Reading the rows up front and writing back by `id` avoids that entirely.
+def _cmd_compact(db, data):
+    paper_id = data['paper_id']
+    deleted = 0
+    remapped = 0
+
+    def drop(row_ids):
+        if not row_ids:
+            return 0
+        placeholders = ','.join('?' * len(row_ids))
+        db.execute(f'DELETE FROM {VEC_TABLE} WHERE rowid IN ({placeholders})', row_ids)
+        db.execute(f'DELETE FROM embeddings WHERE id IN ({placeholders})', row_ids)
+        return len(row_ids)
+
+    for source, spec in (data.get('sources') or {}).items():
+        rows = db.execute(
+            'SELECT id, source_id FROM embeddings WHERE paper_id = ? AND source = ?',
+            [paper_id, source],
+        ).fetchall()
+        if not rows:
+            continue
+
+        if 'delete' in spec:
+            doomed = set(spec['delete'])
+            deleted += drop([row_id for (row_id, source_id) in rows if source_id in doomed])
+            continue
+
+        if 'keep' in spec:
+            keep = spec['keep']
+            new_index = {source_id: position for position, source_id in enumerate(keep)}
+            deleted += drop([row_id for (row_id, source_id) in rows if source_id not in new_index])
+            for row_id, source_id in rows:
+                target = new_index.get(source_id)
+                if target is not None and target != source_id:
+                    db.execute('UPDATE embeddings SET source_id = ? WHERE id = ?', [target, row_id])
+                    remapped += 1
+
+    db.commit()
+    return {'deleted': deleted, 'remapped': remapped}
+
+
 COMMANDS = {
     'insert': _cmd_insert,
     'query': _cmd_query,
     'query_batch': _cmd_query_batch,
     'delete': _cmd_delete,
     'has': _cmd_has,
+    'compact': _cmd_compact,
 }
 
 

@@ -27,7 +27,23 @@ LLMReferences = {
 	// not something _runNode ever invokes directly, but it still has to
 	// land in the same deployed scripts/ directory for that require() to
 	// resolve.
-	_siblingScriptNames: ["extract-equations.js", "extract-tables-sdt.js", "extract-figures-sdt.js", "match-captions.js", "compute-document-structure.js", "structure-sdt.js", "shared-patterns.js"],
+	// extract-preformatted-sdt.js IS run directly via _runNode (by
+	// core/document/preformatted.js, mirroring extract-tables-sdt.js/
+	// extract-figures-sdt.js) -- its own Python half
+	// (extract_preformatted.py) is deployed separately by that module's own
+	// init(), the same way document/figures.js deploys its own
+	// list_page_images.py/render_crops.py, since a Python script needs to
+	// land in the writable LLMz/scripts/ dir, not this module's own
+	// sdt-deployed/scripts/ dir.
+	_siblingScriptNames: ["extract-equations.js", "extract-tables-sdt.js", "extract-figures-sdt.js", "extract-preformatted-sdt.js", "match-captions.js", "compute-document-structure.js", "structure-sdt.js", "shared-patterns.js"],
+	// core/geometry.js is a createRequire'd dependency of match-captions.js
+	// (see that file's own comment, and core/geometry.js's own header
+	// comment for why the plugin-runtime-side rect-geometry primitives live
+	// under core/ rather than scripts/) -- unlike _siblingScriptNames above,
+	// this has to land at destDir/core/<name>, not destDir/scripts/<name>,
+	// so match-captions.js's own relative `require('../core/geometry.js')`
+	// resolves the same way it does for an unpacked (dev) install.
+	_siblingCoreFileNames: ["geometry.js"],
 	_cacheVersion: 1, // bump when the cached index schema changes (JS-side, not just the script/model)
 	_indexCache: new Map(),
 	_extensionRoot: null,
@@ -89,6 +105,7 @@ LLMReferences = {
 				await IOUtils.makeDirectory(PathUtils.join(destDir, ...entry.split("/")), { ignoreExisting: true, createAncestors: true });
 			}
 			await IOUtils.makeDirectory(PathUtils.join(destDir, "scripts"), { ignoreExisting: true, createAncestors: true });
+			await IOUtils.makeDirectory(PathUtils.join(destDir, "core"), { ignoreExisting: true, createAncestors: true });
 
 			let files = zipReader.findEntries("sdt/*");
 			while (files.hasMore()) {
@@ -100,6 +117,12 @@ LLMReferences = {
 				zipReader.extract(
 					"scripts/" + name,
 					Zotero.File.pathToFile(PathUtils.join(destDir, "scripts", name))
+				);
+			}
+			for (let name of this._siblingCoreFileNames) {
+				zipReader.extract(
+					"core/" + name,
+					Zotero.File.pathToFile(PathUtils.join(destDir, "core", name))
 				);
 			}
 

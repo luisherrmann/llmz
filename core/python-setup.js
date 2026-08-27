@@ -17,19 +17,48 @@ LLMPythonSetup = {
 		this._rootURI = rootURI;
 	},
 
+	// Some Python builds compile their sqlite3 module without loadable-
+	// extension support at all -- notably pyenv-built interpreters compiled
+	// against a SQLite lacking that API, and macOS's /usr/bin/python3. A
+	// venv built from one of those can never load sqlite-vec (see db.py's
+	// own _connect check, which fails loudly for anyone who ends up with
+	// such a venv already). Screening candidates here means we just skip
+	// to the next candidate instead of ever building a broken venv.
+	async _supportsLoadExtension(pythonPath) {
+		try {
+			let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
+			let proc = await Subprocess.call({
+				command: pythonPath,
+				arguments: ["-c", "import sqlite3; c = sqlite3.connect(':memory:'); assert hasattr(c, 'enable_load_extension') and hasattr(c, 'load_extension')"],
+				stderr: "stdout",
+			});
+			let { exitCode } = await proc.wait();
+			return exitCode === 0;
+		}
+		catch (e) {
+			return false;
+		}
+	},
+
 	// Mirrors LLMReferences._nodePath's own resolution strategy (see its
 	// comment) -- Subprocess.pathSearch first (cross-platform, honors
 	// PATHEXT/PATH), then a short list of common install locations for a
 	// GUI app that doesn't inherit a login shell's PATH. Windows's own
 	// python.org installer puts "python" on PATH, not "python3" (unlike
-	// Homebrew/most Linux distros), hence trying both names there.
+	// Homebrew/most Linux distros), hence trying both names there. Each
+	// candidate is screened with _supportsLoadExtension before being
+	// accepted -- see that method's own comment for why.
 	async _findPython3() {
 		let { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
+		let tried = [];
 		let names = Zotero.isWin ? ["python", "python3"] : ["python3"];
 		for (let name of names) {
 			try {
 				let found = await Subprocess.pathSearch(name);
-				if (found) return found;
+				if (found) {
+					tried.push(found);
+					if (await this._supportsLoadExtension(found)) return found;
+				}
 			}
 			catch (e) {
 				// Not on PATH under this name -- try the next name, or fall
@@ -40,7 +69,13 @@ LLMPythonSetup = {
 			? ["C:\\Python313\\python.exe", "C:\\Python312\\python.exe", "C:\\Python311\\python.exe"]
 			: ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"];
 		for (let path of candidates) {
-			if (await IOUtils.exists(path)) return path;
+			if (await IOUtils.exists(path) && !tried.includes(path)) {
+				tried.push(path);
+				if (await this._supportsLoadExtension(path)) return path;
+			}
+		}
+		if (tried.length) {
+			throw new Error(`Found Python 3 at ${tried.join(", ")}, but none of them support SQLite loadable extensions (required for sqlite-vec). Install Python from python.org or Homebrew (not pyenv, and not macOS's /usr/bin/python3) and try again.`);
 		}
 		throw new Error("Python 3 not found -- install it from python.org (Windows) or your system package manager, then try again.");
 	},
@@ -109,6 +144,16 @@ LLMPythonSetup = {
 	async setup(dir, onMessage) {
 		let pythonPath = await this._findPython3();
 		let venvDir = this.venvDir(dir);
+
+		// An existing venv predates _findPython3's own load-extension check
+		// (or was built before this check existed) -- rebuild it from the
+		// now-vetted pythonPath rather than silently keep reusing a venv
+		// that can never load sqlite-vec (see db.py's _connect for what
+		// that failure looks like downstream).
+		if (await IOUtils.exists(venvDir) && !await this._supportsLoadExtension(this._venvPythonPath(venvDir))) {
+			onMessage?.(`Existing virtual environment at ${venvDir} lacks SQLite extension support -- rebuilding it...\n`);
+			await IOUtils.remove(venvDir, { recursive: true });
+		}
 
 		if (!await IOUtils.exists(venvDir)) {
 			onMessage?.(`Creating virtual environment at ${venvDir}...\n`);

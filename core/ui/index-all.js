@@ -1,7 +1,8 @@
 // "Index All" -- runs the full extraction pipeline (tables, figures,
-// references, equations, citation/paragraph embeddings) for a PDF
-// attachment, so a user can pre-warm a paper's caches in one go instead of
-// paying the extraction cost the first time they ask a question about it.
+// references, equations, preformatted/listings, citation/paragraph
+// embeddings) for a PDF attachment, so a user can pre-warm a paper's caches
+// in one go instead of paying the extraction cost the first time they ask a
+// question about it.
 //
 // _indexItem (the actual per-paper extraction work) is reused directly by
 // ui/advanced.js's Cache section "Index All" button, which runs it over
@@ -56,36 +57,22 @@ LLMUIIndexAll = {
 	// only this.log() it already used.
 	async _indexItem(item, onMessage) {
 		try {
-			let text = await LLMPrompt.getAttachmentFullText(item);
-			if (text.trim()) {
-				// getTextIndex always builds BOTH sentence and paragraph
-				// chunks/embeddings together (see citation.js's own comment) --
-				// unlike buildPromptWithActivePDFContext's own chunking
-				// condition (which only retrieves paragraph-level chunks for
-				// THIS paper's own single-paper context when its full text
-				// exceeds maxPDFContextChars -- a short paper just gets shown
-				// in full there, no retrieval needed), the paragraph half is
-				// still built here regardless of paper length, since
-				// LLMCitation.getCrossLibraryChunks (cross-library retrieval,
-				// see llm/prompt.js's shouldIncludeCrossLibraryWithLLM) only
-				// ever searches source:"paragraph" embeddings -- confirmed
-				// concretely that gating this the same way as the single-
-				// paper path left every paper short enough to fit under
-				// maxPDFContextChars permanently unfindable via cross-library
-				// search, even after a full (re-)index. Indexing (this
-				// function, via either "Index" or "Index All") is exactly the
-				// place that should pre-warm for BOTH use cases, not just the
-				// single-paper one.
-				await LLMCitation.getTextIndex(item, text, undefined, onMessage).catch((e) => {
-					this.log(`getTextIndex failed for ${item.libraryKey}: ${e.message}`);
-				});
-			}
-			await Promise.all([
-				LLMTables.getTableIndex(item, undefined, onMessage).catch((e) => this.log(`getTableIndex failed for ${item.libraryKey}: ${e.message}`)),
-				LLMFigures.getFigureIndex(item, undefined, onMessage).catch((e) => this.log(`getFigureIndex failed for ${item.libraryKey}: ${e.message}`)),
-				LLMReferences.getReferenceIndex(item).catch((e) => this.log(`getReferenceIndex failed for ${item.libraryKey}: ${e.message}`)),
-				LLMEquations.getEquationIndex(item, undefined, onMessage).catch((e) => this.log(`getEquationIndex failed for ${item.libraryKey}: ${e.message}`)),
-			]);
+			// Everything goes through the pipeline's own entry point rather
+			// than being orchestrated here, so a paper indexed in the
+			// background is deduplicated exactly like one indexed on demand
+			// mid-chat or listed by a tool -- see llm/index-pipeline.js's
+			// ensureIndexed. Each index inside it stays individually
+			// best-effort; one failing does not cost the others.
+			//
+			// References are the only index built outside the pipeline's own
+			// deferred build/deduplicate/persist protocol -- a bibliography
+			// overlaps nothing geometrically, so it has no reason to join
+			// it. Figures DO build through the pipeline now, though they
+			// take no part in the deduplication contest yet; see
+			// llm/index-pipeline.js's buildIndexes for why that ordering
+			// (build through the pipeline first, contest later) is required
+			// rather than incidental.
+			await LLMIndexPipeline.ensureIndexed(item, { onMessage });
 			return { ok: true };
 		}
 		catch (e) {

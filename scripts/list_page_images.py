@@ -57,21 +57,15 @@ TILE_GAP_TOLERANCE = 2.0
 # both ~1000-1400 sq pt) that get picked up by get_image_info() just like a
 # real figure would, but aren't one -- surfacing them as candidate figure
 # bodies in extract-figures-sdt.js produced spurious "figures" with no real
-# caption anywhere nearby. Real figures observed so far run 85,000+ sq pt
-# (roughly 250x340pt, a bit under half a page), so this threshold has wide
-# margin on both sides -- generous enough not to exclude a genuinely small
-# figure/inset, strict enough to exclude anything decorative.
-MIN_IMAGE_AREA = 10000
-
-# Maximum ratio between a merged region's longer and shorter side -- excludes
-# decorative horizontal/vertical rules and divider lines (observed on
-# Scutteri et al.: a section-divider strip came back as an 983x75 PIXEL,
-# ~472x36 POINT image -- a ~13:1 aspect ratio -- comfortably above
-# MIN_IMAGE_AREA, so the area filter alone let it through as a spurious
-# "figure" with no real caption anywhere nearby). Every real figure
-# observed so far runs under 1.5:1 (mostly close to square or portrait), so
-# this threshold has wide margin against genuine multi-panel figures too.
-MAX_IMAGE_ASPECT_RATIO = 5.0
+# caption anywhere nearby.
+#
+# What this filters is TILES, not whole figures. A multi-panel figure whose
+# panels sit more than TILE_GAP_TOLERANCE apart is never merged here at all
+# -- the merge above only closes sub-point seams -- so each panel arrives as
+# its own small region and extract-figures-sdt.js's own groupImagesByBoundary
+# assembles them into one figure downstream. Anything rejected here is
+# therefore withheld from that grouping, not merely from the output.
+MIN_IMAGE_AREA = 5000
 
 
 def _merge_touching_rects(rects, gap_tolerance=TILE_GAP_TOLERANCE):
@@ -162,10 +156,6 @@ def list_page_images(pdf_path):
             merged = _merge_touching_rects(raw_bboxes)
             merged = _dedupe_contained_rects(merged)
             merged = [b for b in merged if (b[2] - b[0]) * (b[3] - b[1]) >= MIN_IMAGE_AREA]
-            merged = [
-                b for b in merged
-                if max(b[2] - b[0], b[3] - b[1]) / max(1e-6, min(b[2] - b[0], b[3] - b[1])) <= MAX_IMAGE_ASPECT_RATIO
-            ]
             if not merged:
                 continue
             height = page.rect.height

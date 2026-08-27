@@ -159,12 +159,6 @@ LLMUIProviderModelSelect = {
 			try {
 				// force = true -- the dropdown deliberately bypasses the
 				// model-list cache (see LLMInterfaces._cachedModelList).
-				// This is the one place the user is explicitly asking
-				// "what models exist right now" (opening the panel,
-				// switching provider, or clicking Refresh), so it must
-				// reflect models added server-side since the cache filled
-				// -- unlike the per-request resolvers, which want the
-				// cached answer.
 				let models = await LLMInterfaces._withTimeout(listModels(true), 15000, "listModels");
 				if (provider !== getProvider()) return; // provider changed while fetching
 				modelSelect.replaceChildren();

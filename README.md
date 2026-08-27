@@ -79,6 +79,7 @@ Click any text / table / figure / equation / reference / page-number link in a r
 1. Open **`Preferences` → `LLMz`** (or the pane's own **`Providers`** panel) and pick a provider.
    - For a local server (Ollama/LM Studio/LiteLLM), set its host/port if it isn't running on the default.
    - For OpenAI/Anthropic, enter an API key.
+
 2. Open **`Embeddings`** and select the provider and embedding model that you want to use. ⚠️ **Ideally, this will only be done ONCE.** Every time you switch the embedding model, you will still be able to answer questions about the active PDF, but you will have to re-index your library to support cross-library references.
    <p align="center"><img src="res/img/embeddings.png" alt="Library Index" width="700px"></p>
 

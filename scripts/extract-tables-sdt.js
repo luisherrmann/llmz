@@ -85,14 +85,6 @@ function captionLabelKey(caption) {
 	return m ? `${(m[1] || '').toLowerCase()}${m[2]}` : null;
 }
 
-// Deliberately NOT paired with a "continued"/"cont'd" keyword test. The
-// number is the robust half of that signal and the wording is the fragile
-// one: it is phrasing- and language-dependent ("continued from previous
-// page", "cont'd", "Fortsetzung"), and papers that repeat a caption header
-// without any such word are perfectly common. Two DIFFERENT tables in one
-// document do not share a number, so a repeated number is already saying
-// "this is the same table" on its own.
-
 // Collapses a group's fragments into ONE reader position. Mirrors
 // llm/prompt.js's own buildLinkIndex window for page-split listings, for
 // the same reason: the reader's position format supports exactly two
@@ -101,13 +93,6 @@ function captionLabelKey(caption) {
 // page are unioned into `rects`, ones on the next page into
 // `nextPageRects`, and a table spanning 3+ pages shows only that two-page
 // window.
-//
-// Anchored on the page carrying the table's own CAPTION so the jump frames
-// the labeled end; since nextPageRects only extends FORWARD, an anchor
-// that is already the last page steps back one (when genuinely adjacent)
-// so the window covers the final two pages instead of running off the end.
-// A single-fragment table comes out as plain { pageIndex, rects: [bbox] },
-// exactly as before this pass existed.
 function buildGroupPosition(fragments, captionFragment) {
 	let rectsByPage = new Map();
 	for (let f of fragments) {
@@ -184,12 +169,7 @@ async function main() {
 		// table mid-sentence (e.g. "As shown in Table 2, ...") -- only a
 		// block whose text literally STARTS with "Table"/"Tbl"/"Tab"
 		// matches at all, which is already a strong caption-like signal on
-		// its own regardless of the source block's classified type. "Tab"
-		// is accepted because papers really do abbreviate that far ("Tab. 1
-		// - continued"), and without it such a caption is invisible to the
-		// pairing algorithm entirely, leaving a perfectly well-labeled table
-		// stored as an "Unlabelled Table N". The `\b` keeps it tight: it
-		// matches "Tab." and "Tab 1" but never "Tabular"/"Tabulated".
+		// its own regardless of the source block's classified type.
 		let text = flattenText(block).replace(/\s+/g, ' ').trim();
 		if (/^(table|tbl|tab)\b/i.test(text)) {
 			captions.push({ blockIndex: i, page_num: pageRect[0] + 1, bbox: pageRect.slice(1), text });
@@ -205,13 +185,6 @@ async function main() {
 	// merged back together, exactly as page-split listings do in
 	// extract-preformatted-sdt.js (see its own grouping pass, and
 	// hasInterveningProse in match-captions.js for the shared test).
-	//
-	// Captioned and uncaptioned fragments are merged from ONE list rather
-	// than handled in the two separate loops below, because the two halves
-	// of a split table routinely land on opposite sides of that split: the
-	// first page's portion gets the real caption, the rest gets none (or a
-	// repeated "continued" header). Merging has to happen before the
-	// captioned/uncaptioned distinction is acted on at all.
 	let fragments = [
 		...matched.map(m => ({
 			blockIndex: m.blockIndex, page_num: m.page_num, bbox: m.bbox, content: m.content,
@@ -229,16 +202,6 @@ async function main() {
 	// than assumed, by majority over the captions actually matched, the same
 	// way extract-preformatted-sdt.js and match-captions.js's own
 	// dominantArrangement already do.
-	//
-	// A fragment matched to a caption that IS its own block (a longtable's
-	// repeated "Table 1 - continued from previous page" header, which opens
-	// the very block it heads) is skipped: it sits at distance zero on
-	// neither side and says nothing about where this paper puts its
-	// captions. Counting those was actively wrong -- on a table split across
-	// three or more pages the self-captioned continuations OUTVOTE the one
-	// real caption, flipping the orientation, which then picks a
-	// "continued from previous page" repeat as the merged table's caption
-	// instead of the caption that actually names it.
 	let captionsPrecedeTables = (() => {
 		let before = 0;
 		let after = 0;
@@ -263,22 +226,6 @@ async function main() {
 	//      prose separates the two -- the implicit case, where a table simply
 	//      spills onto the next page with nothing repeated.
 	//
-	// Rule 1 exists because rule 2's prose test is not survivable across a
-	// real page break. Between the two halves of OSWorld's Table 9 sit
-	// "Continued on next page" (22 chars -- just over the >=20 sentence
-	// filter) and "Chrome Google Chrome Help https://support.google.com/
-	// chrome", a table ROW that SDT classified as a paragraph. Neither is
-	// explanatory body text, but both read as a sentence, so the halves
-	// stayed split even though both captions say "Table 9". Its Table 12
-	// repeats the same "Continued on next page" footer between all four of
-	// its pages.
-	//
-	// The comparison is against the GROUP's established label rather than
-	// just the previous fragment's, because a long table's interior
-	// fragments carry no caption of their own: Table 12 runs
-	// captioned/uncaptioned/captioned/uncaptioned..., so pairing a bare
-	// interior fragment with the next "continued" header would compare
-	// against null and never match.
 	let groups = [];
 	let current = null;
 	let currentKey = null;
@@ -350,9 +297,7 @@ async function main() {
 	// sentence) -- matches the "Table 1"/"Formula 8"-style terse labels used
 	// everywhere else, for a lettered-appendix, roman-numbered, or
 	// single-letter caption. Plain-numbered ones don't need this (they get a
-	// synthesized `Table ${table_num}` below). See buildLabelPrefixRe for
-	// which enumerator forms are accepted and why the roman branches are
-	// guarded the way they are.
+	// synthesized `Table ${table_num}` below).
 	const LABEL_PREFIX_RE = buildLabelPrefixRe(['table', 'tbl', 'tab']);
 	let output = [];
 	let extraCounter = 0;

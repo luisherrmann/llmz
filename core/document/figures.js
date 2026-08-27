@@ -149,13 +149,14 @@ LLMFigures = {
 			// this cache anyway (see _saveDiskCache), so its own mtime has no
 			// bearing on whether this cache is still valid -- same reasoning
 			// as document/tables.js's own _scriptFingerprint.
-	// The shared caption/geometry toolkit every SDT extractor imports. Stat'd
-	// alongside the extractor's own script because a change to it changes
-	// what that script produces just as surely -- and in practice most of
-	// the churn lands here, since pairWithCaptions and its helpers are
-	// common to tables, figures and preformatted. Three commits in a row
-	// (58c5761, 9fddf96, c30fd6b) touched only this file, so without it
-	// every cached index silently kept its pre-change contents.
+			
+			// The shared caption/geometry toolkit every SDT extractor imports. Stat'd
+			// alongside the extractor's own script because a change to it changes
+			// what that script produces just as surely -- and in practice most of
+			// the churn lands here, since pairWithCaptions and its helpers are
+			// common to tables, figures and preformatted. Three commits in a row
+			// (58c5761, 9fddf96, c30fd6b) touched only this file, so without it
+			// every cached index silently kept its pre-change contents.
 			let sharedStat = await IOUtils.stat(this._nodeScriptPath(this._sharedScriptName));
 			parts.push(`${sharedStat.size}:${sharedStat.lastModified}`);
 			let stat = await IOUtils.stat(this._scriptPath(this._imageListScriptName));

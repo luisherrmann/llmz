@@ -48,12 +48,7 @@ LLMIntent = {
 
 	// Whether this tool opts OUT of the index-pipeline pass llm/request.js
 	// runs before dispatching (see its own comment there, and
-	// llm/index-pipeline.js's ensureIndexed). Default false -- a tool is
-	// indexed unless it says otherwise, so forgetting to think about it
-	// costs latency rather than correctness. Only the reference tools set
-	// it: a bibliography index takes no part in deduplication, so building
-	// this paper's tables/listings/equations to download reference 5 would
-	// be pure waste.
+	// llm/index-pipeline.js's ensureIndexed). Default false.
 	skipsIndexing(key) {
 		return !!this._registry.find(r => r.key === key)?.tool.skipIndexing;
 	},
@@ -93,13 +88,11 @@ LLMIntent = {
 	// correctly resolve to none at all on a decline -- without this, such a
 	// reply carries no table/reference identity of its own for ANY
 	// registered tool to match against.
-	// Returns { tool: <_registry key>, intent: <the matched tool's own
-	// intent object> } or null if no tool applies (a normal chat message).
-	// For download/link/tables that intent is the six-shape object
-	// llm/request.js's _resolveIntentIndices consumes, against whichever
-	// index (reference or table) the matched tool operates on; a tool with
-	// its own toIntent returns its own shape instead (listElements: just
-	// { elementType }, which needs no resolution at all).
+	// Returns { tool: "download"|"link"|"tables", intent: <six-shape intent
+	// object -- see llm/request.js's _resolveIntentIndices for how it's
+	// consumed, against whichever index (reference or table) the matched
+	// tool operates on> } or null if no tool applies (a normal chat
+	// message). A tool with its own toIntent returns its own shape.
 	async detectIntent(prompt, onProgress, recentHistory = []) {
 		let messages = recentHistory.map(({ role, text }) => ({ role: role === "You" ? "user" : "assistant", content: text }));
 		messages.push({ role: "user", content: prompt });
@@ -119,9 +112,7 @@ LLMIntent = {
 		}
 		// Tools whose arguments aren't index-shaped supply their own
 		// validator instead of using the shared six-shape one below (see
-		// tools/list-elements.js's own toIntent) -- keeping _registry the
-		// single place a tool is registered, rather than making this
-		// function grow a per-tool special case by name.
+		// tools/list-elements.js's own toIntent).
 		let entry = this._registry.find(r => r.key === toolKey);
 		let intent = entry.tool.toIntent
 			? entry.tool.toIntent(call.arguments)

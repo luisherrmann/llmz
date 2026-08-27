@@ -148,11 +148,7 @@ LLMEmbeddingsDB = {
 	// param rather than repeated per item. `model` routes to that model's
 	// own .sqlite file (see _dbPath) -- no longer stored per-row, since a
 	// file only ever holds one model's embeddings. Returns the assigned
-	// ids, same order as `items`. Deliberately carries NO pageIndex/rects --
-	// benchmarked storing those here (subprocess + sqlite insert) against
-	// each kind's own JSON disk cache for the same data, and JSON won by
-	// 60-100x on writes and (via its real per-invocation subprocess cost)
-	// on reads too, so position data lives ONLY in the JSON caches now.
+	// ids, same order as `items`.
 	async insert(paperId, model, items) {
 		let result = await this._run("insert", model, {
 			items: items.map(item => ({
@@ -274,16 +270,8 @@ LLMEmbeddingsDB = {
 	// source_id column moves). Used by llm/index-pipeline.js after
 	// cross-index deduplication deletes entries from an index that was
 	// ALREADY persisted, whose rows would otherwise still be numbered for
-	// the pre-deduplication array.
-	//
-	// `sources` is { "<source>": {delete: [sourceId, ...]}
-	//              | {keep: [sourceId, ...]} } -- `delete` for stable-id
-	// sources (table_*, equation_context), where removing rows leaves the
-	// rest addressable as before; `keep` for array-indexed ones
-	// (sentence/paragraph/heading, preformatted_*), listing the surviving
-	// source_ids IN THEIR NEW ORDER, so anything absent is dropped and each
-	// survivor is renumbered to its position in that list. See
-	// scripts/db.py's own `compact` for the full rationale.
+	// the pre-deduplication array. Each survivor is renumbered to its position
+	// in the resulting list. See scripts/db.py's own `compact` for the full rationale.
 	async compactForPaper(paperId, model, sources) {
 		if (!sources || !Object.keys(sources).length) return { deleted: 0, remapped: 0 };
 		return this._run("compact", model, { paper_id: paperId, sources });

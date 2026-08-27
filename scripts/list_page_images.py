@@ -65,33 +65,7 @@ TILE_GAP_TOLERANCE = 2.0
 # its own small region and extract-figures-sdt.js's own groupImagesByBoundary
 # assembles them into one figure downstream. Anything rejected here is
 # therefore withheld from that grouping, not merely from the output.
-#
-# 10000 was measured against papers whose figures are single large images
-# (85,000+ sq pt) and broke exactly the tiled case: on OSWorld, Figure 21's
-# six screenshot panels are 9,417 sq pt each and Figures 19/20's are ~5,200,
-# so every panel fell below the floor and all three figures were either
-# missing outright or reduced to the fragment SDT happened to see. 5000
-# clears the smallest observed real panel while keeping a 3.5x margin over
-# the largest observed decorative image (~1,400 sq pt).
 MIN_IMAGE_AREA = 5000
-
-# There was a MAX_IMAGE_ASPECT_RATIO = 5.0 filter here, rejecting any merged
-# region whose longer side exceeded 5x its shorter one. It was introduced for a
-# single observed case -- a 472x36pt image on Scutteri et al. p37, described at
-# the time as a "section-divider strip" that the area filter alone let through
-# as a spurious figure.
-#
-# Removed because that description was wrong. Rendering the region shows a
-# display equation (that paper's multistate-design fitness function) set as a
-# flattened raster: the sentence above it ends in a colon introducing it, and
-# get_text() returns zero characters inside its rect while the line above it
-# extracts normally. It is a genuine, caption-less image, so reporting it as an
-# unlabelled figure is the correct outcome, not the failure it was taken for.
-#
-# The filter also cost real figures. A row of side-by-side panels is inherently
-# 6-10:1 (OSWorld Figure 20's rows assemble at 7.1:1 and 6.0:1), so it discarded
-# them -- and since _dedupe_contained_rects had already dropped the panels those
-# rows absorbed, the panels went with them.
 
 
 def _merge_touching_rects(rects, gap_tolerance=TILE_GAP_TOLERANCE):

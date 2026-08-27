@@ -207,18 +207,10 @@ LLMEquations = {
 	// can defer both until after deduplication (see `defer` above);
 	// calling it twice is harmless, since both writes replace wholesale.
 	//
-	// source_id is equation_id (a stable, always-present per-equation
-	// identifier regardless of which of the equation_num/formula_num series
-	// it landed in, see extract-equations.js's own header comment), not
-	// array position, so removing an equation during deduplication leaves
-	// the survivors addressable exactly as before. Filtered to equations
-	// that actually got an embedding -- _addContextEmbeddings' own
-	// try/catch means a total embedding-call failure leaves EVERY equation
-	// without one, not a partial set, but this stays defensive rather than
-	// assuming that. Best-effort, same reasoning as citation.js's/
-	// tables.js's own sync -- the disk cache is already the source of truth
-	// LLMEquations itself reads from; this DB is an additional,
-	// non-authoritative mirror.
+	// Rows are keyed by equation_id -- stable per equation, unlike array
+	// position -- so removing one during deduplication leaves the survivors
+	// addressable as before. The DB sync is best-effort: the disk cache is
+	// what LLMEquations itself reads from.
 	async persistIndex(item, index, onMessage) {
 		delete index.pendingPersist;
 		await this._saveDiskCache(item, index);

@@ -64,24 +64,6 @@ LLMUIIndexAll = {
 			// ensureIndexed. Each index inside it stays individually
 			// best-effort; one failing does not cost the others.
 			//
-			// The text half always builds BOTH sentence and paragraph
-			// chunks/embeddings together (see citation.js's own comment) --
-			// unlike buildPromptWithActivePDFContext's own chunking condition
-			// (which only retrieves paragraph-level chunks for THIS paper's
-			// own single-paper context when its full text exceeds
-			// maxPDFContextChars -- a short paper just gets shown in full
-			// there, no retrieval needed), the paragraph half is still built
-			// here regardless of paper length, since
-			// LLMCitation.getCrossLibraryChunks (cross-library retrieval, see
-			// llm/prompt.js's shouldIncludeCrossLibraryWithLLM) only ever
-			// searches source:"paragraph" embeddings -- confirmed concretely
-			// that gating this the same way as the single-paper path left
-			// every paper short enough to fit under maxPDFContextChars
-			// permanently unfindable via cross-library search, even after a
-			// full (re-)index. Indexing (this function, via either "Index" or
-			// "Index All") is exactly the place that should pre-warm for BOTH
-			// use cases, not just the single-paper one.
-			//
 			// References are the only index built outside the pipeline's own
 			// deferred build/deduplicate/persist protocol -- a bibliography
 			// overlaps nothing geometrically, so it has no reason to join

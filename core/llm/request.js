@@ -418,13 +418,6 @@ LLMRequest = {
 	// comment for why that's the point, not a shortcut) -- so the only
 	// thing that can take a noticeable moment here is a COLD cache, whose
 	// extraction progress arrives via onMessage below.
-	//
-	// Rendered through the same chatPane._renderMarkdown +
-	// chat.renderMarkdownMessage pair a streamed reply ends with, so its
-	// ref: links get the identical click-to-navigate behavior (and the
-	// identical export/re-import round-trip, since setMessageText keeps
-	// export.js seeing the markdown rather than the rendered HTML). See
-	// the module-level comment for `ctx`.
 	async _handleListElements(intent, pdfItem, chatPane, ctx) {
 		let { appendMessage, chat, replyLabel, isCancelled } = ctx;
 
@@ -975,14 +968,9 @@ LLMRequest = {
 			let onStructureMessage = (text) => appendMessage("System", text);
 
 			// The active PDF, its full text, and the two SDT-derived indexes
-			// are resolved HERE rather than inside
-			// buildPromptWithActivePDFContext (which used to do all four
-			// itself) so that every index a request needs is built in one
-			// place -- see that function's own comment on
-			// paragraphIndex/preformattedIndex. getAttachmentFullText is a
-			// read of Zotero's own full-text cache file in the normal case,
-			// so hoisting it here costs nothing; it's passed through below
-			// rather than re-read.
+			// are resolved here. getAttachmentFullText is a read of Zotero's
+			// own full-text cache file in the normal case, so hoisting it here
+			// costs nothing.
 			let activeItem = LLMChatPane.getActiveReaderAttachment();
 			let isPDF = !!activeItem && activeItem.isPDFAttachment();
 			// null (not merely falsy-ish) for a non-PDF attachment, matching
@@ -1005,14 +993,6 @@ LLMRequest = {
 				// the memoized, already-deduplicated objects instead of
 				// rebuilding anything, so this is not extra work moved
 				// earlier, just the same work ordered so dedup can happen.
-				//
-				// ensureIndexed rather than buildIndexes: it additionally
-				// pre-warms figures and references, which this function
-				// fetches a little further down anyway, so that is a
-				// reordering rather than extra work -- and it is the one
-				// entry point every other caller (ui/index-all.js, the tool
-				// dispatch below) shares, which is what keeps them from
-				// drifting apart again.
 				await LLMIndexPipeline.ensureIndexed(pdfItem, {
 					onEmbeddingStart,
 					onMessage: onStructureMessage,
@@ -1633,15 +1613,6 @@ LLMRequest = {
 					// raw extraction: listing this paper's tables reported
 					// every phantom table, while the same request after
 					// pressing "Index" looked right.
-					//
-					// Default-on, opt-out via the tool's own skipIndexing
-					// (see llm/intent.js) rather than opt-in: a tool whose
-					// author never considers indexing then gets correct
-					// output and merely pays some latency, instead of
-					// silently serving un-deduplicated data. Only the
-					// reference tools opt out -- getReferenceIndex takes no
-					// part in deduplication. Idempotent and memory-cached
-					// underneath, so a warm paper costs essentially nothing.
 					if (!LLMIntent.skipsIndexing(tool)) {
 						await LLMIndexPipeline.ensureIndexed(pdfItem, {
 							onMessage: (msg) => {

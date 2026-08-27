@@ -140,38 +140,10 @@ const MAX_IMAGE_ASPECT_RATIO = 5.0;
 // How far pairWithCaptions may reach when absorbing an uncaptioned image
 // region into the captioned figure it belongs to (its own EXTEND_MARGIN
 // default is 10, tuned for bodies whose fragments nearly touch).
-//
-// A multi-panel figure needs much more: list_page_images.py only merges
-// vertically stacked, horizontally OVERLAPPING rects, so a row of
-// side-by-side panels never merges (their gutters make the overlap
-// negative), and consecutive rows are held apart by the per-row label line
-// the paper prints between them. Only the panel beside the caption gets
-// matched; the rest arrive here as leftovers tens of points away.
-// Confirmed on OSWorld Figure 20, a 3x4 screenshot grid that came out as
-// one captioned row plus five loose panels.
-//
-// Output is stable from 40 through 140 on both test papers (identical
-// figures, none exceeding 60% of a page), so 60 sits mid-plateau rather
-// than at an edge; below 30 the far rows stop being reached.
 const FIGURE_ABSORB_MARGIN = 60;
 
 // Document order for figure bodies: blockIndex first, then geometry as a
 // TIEBREAK only.
-//
-// blockIndex alone is not enough because a PyMuPDF-sourced candidate has no
-// real one -- it is given the midpoint of its page's block-index range (see
-// syntheticBlockIndex below), which is IDENTICAL for every image on that
-// page. Every such candidate therefore ties, and a stable sort falls back to
-// insertion order, i.e. whatever order list_page_images.py happened to emit
-// (its own _dedupe_contained_rects sorts by area, so the order is area rank,
-// not position). Observed on OSWorld p31, where the five Table 12 panels came
-// out numbered bottom-most-first.
-//
-// Geometry only breaks ties, so genuine SDT-sourced figures -- which carry
-// real, distinct block indices -- keep the ordering they already have. y
-// descends because these rects are in PDF-native space where y grows UPWARD,
-// so the largest y is the top of the page; x ascends after it, giving
-// row-major reading order.
 function compareReadingOrder(a, b) {
 	if (a.blockIndex !== b.blockIndex) return a.blockIndex - b.blockIndex;
 	if (a.page_num !== b.page_num) return a.page_num - b.page_num;

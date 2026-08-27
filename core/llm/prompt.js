@@ -871,13 +871,8 @@ LLMPrompt = {
 					position: eq.position,
 					caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
 				}])),
-			// Keyed by preformatted_id -- unlike table/figure above, there's
-			// no table_num/table_extra_num-style split here: a listing's own
-			// paper-printed number ("Listing 6") is NOT usable as a key,
-			// since a paper is free to number "Listing 1" and "Algorithm 1"
-			// independently and both would collide on 1. preformatted_id is
-			// this plugin's own always-present, collision-free id, so it
-			// keys every entry regardless of whether the paper labeled it --
+			// preformatted_id is this plugin's own always-present, collision-free id, 
+			// so it keys every entry regardless of whether the paper labeled it --
 			// the paper's own label survives as the visible link TEXT
 			// (`label`, see LLMPreformatted._assignLabels) rather than as
 			// the key.
@@ -1016,18 +1011,7 @@ LLMPrompt = {
 	// for the separate note-SELECTION feature) since this is injected
 	// inline, once per overlapping paragraph, and can repeat several times
 	// for one note that spans more than one paragraph. Deliberately a
-	// DIFFERENT tag than the top-level <NOTE_CONTEXT> block
-	// (_formatNoteContext/selectNotesWithLLM below, assembled by
-	// llm/request.js's _buildNoteContext) even though both ultimately come
-	// from the same LLMNotes annotation data -- that other block's own
-	// system-prompt instructions (see _systemPrompt above) tell the model
-	// to CITE/LINK it via a numbered "Note N (...) [key: ...]:" prefix this
-	// shape doesn't have at all (no key, no number -- see
-	// _systemPrompt's own <INLINE_NOTE_CONTEXT> line for what the model is
-	// told about THIS shape instead: context only, nothing to link). A
-	// later pass may consolidate the two into one shape; kept separate for
-	// now specifically to avoid the model trying to link one of these
-	// against instructions that don't apply to it.
+	// DIFFERENT tag than the top-level <NOTE_CONTEXT> block.
 	_formatInlineNoteContext(note) {
 		return [
 			"<INLINE_NOTE_CONTEXT>",
@@ -1045,16 +1029,19 @@ LLMPrompt = {
 	// already re-sorted into document order there) back into ONE true
 	// document-order sequence, using each side's own `order` (see
 	// LLMCitation._buildTextElementsFromStructure) -- the three are
-	// otherwise unrelated arrays with no shared index of their own. A
-	// heading renders as `<HEADING>text</HEADING>`; a paragraph renders as
+	// otherwise unrelated arrays with no shared index of their own.
+	// 
+	// A heading renders as `<HEADING>text</HEADING>`; a paragraph renders as
 	// its own text, followed by an <INLINE_NOTE_CONTEXT> block for each
 	// overlapping note (repeated after EVERY paragraph a note overlaps, not
-	// just the first -- see _findOverlappingNotes); a preformatted block
-	// renders as `<PREFORMATTED>text</PREFORMATTED>` (no note-overlap
-	// injection for these -- not asked for, and a code/JSON listing's own
-	// raw whitespace is kept intact rather than collapsed, see
-	// _buildTextElementsFromStructure's own comment on why). Whenever two
-	// headings end up ADJACENT in this merged sequence (no paragraph OR
+	// just the first -- see _findOverlappingNotes)
+	// 
+	// A preformatted block renders as `<PREFORMATTED>text</PREFORMATTED>`
+	// (no note-overlap injection for these -- not asked for, and a code/JSON
+	// listing's own raw whitespace is kept intact rather than collapsed, see
+	// _buildTextElementsFromStructure's own comment on why).
+	// 
+	// Whenever two headings end up ADJACENT in this merged sequence (no paragraph OR
 	// preformatted block selected between them -- either because none
 	// exists there, or because RAG didn't pick one from that section), a
 	// bare "..." placeholder is inserted between them, so the model can
@@ -1065,16 +1052,7 @@ LLMPrompt = {
 		// that's how a single logical listing split across a page break is
 		// represented (see extract-preformatted-sdt.js's own grouping pass:
 		// each fragment stays its own entry, keeping its own page/rects for
-		// highlighting, and they're tied together by a shared id). For
-		// PROMPT purposes that split is pure noise -- worse, actively
-		// misleading, since only ONE fragment per group carries the
-		// matched caption, so the others would render as unlabeled orphans
-		// while their own label sits on a different block entirely.
-		// Collapsed back into one entry per group here: texts concatenated
-		// in document (`order`) order, the group's own caption taken from
-		// whichever single fragment actually has one, and `order` taken
-		// from the EARLIEST fragment so the combined block still lands in
-		// the right place relative to surrounding headings/paragraphs.
+		// highlighting, and they're tied together by a shared id).
 		let groups = new Map();
 		for (let pf of preformatted) {
 			// A missing/undefined id (older cache, or a caller passing
@@ -1183,14 +1161,6 @@ LLMPrompt = {
 	// it's naturally query-dependent (retrieved chunks, selected text,
 	// etc.) rather than something that'd make sense to send once for a
 	// whole conversation.
-	// Takes an options object rather than a positional list: `item`/`text`
-	// and the two indexes are now supplied by the caller (see the comment
-	// on paragraphIndex/preformattedIndex below for why), which would
-	// otherwise push this past seven positional parameters. `item` and
-	// `text` are optional -- omitted, they're resolved here exactly as
-	// before, which keeps this callable on its own (e.g. from a future
-	// caller that just wants a prompt and has no index pipeline of its
-	// own).
 	async buildPromptWithActivePDFContext({
 		userPrompt,
 		selectedText = null,

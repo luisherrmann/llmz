@@ -29,6 +29,7 @@ LLMIntent = {
 		{ key: "download", tool: LLMReferenceRetrieval.intentTool },
 		{ key: "link", tool: LLMReferenceLinker.intentTool },
 		{ key: "tables", tool: LLMTableExport.intentTool },
+		{ key: "listElements", tool: LLMListElements.intentTool },
 	],
 
 	// Every registered tool's own {name, description, schema} descriptor,
@@ -43,6 +44,13 @@ LLMIntent = {
 	// back to the short key llm/request.js switches on.
 	_keyForName(name) {
 		return this._registry.find(r => r.tool.name === name)?.key ?? null;
+	},
+
+	// Whether this tool opts OUT of the index-pipeline pass llm/request.js
+	// runs before dispatching (see its own comment there, and
+	// llm/index-pipeline.js's ensureIndexed). Default false.
+	skipsIndexing(key) {
+		return !!this._registry.find(r => r.key === key)?.tool.skipIndexing;
 	},
 
 	// Returns the resolver bundle (see each intentTool's own `resolver`)
@@ -84,7 +92,7 @@ LLMIntent = {
 	// object -- see llm/request.js's _resolveIntentIndices for how it's
 	// consumed, against whichever index (reference or table) the matched
 	// tool operates on> } or null if no tool applies (a normal chat
-	// message).
+	// message). A tool with its own toIntent returns its own shape.
 	async detectIntent(prompt, onProgress, recentHistory = []) {
 		let messages = recentHistory.map(({ role, text }) => ({ role: role === "You" ? "user" : "assistant", content: text }));
 		messages.push({ role: "user", content: prompt });
@@ -102,7 +110,13 @@ LLMIntent = {
 			this.log(`detectIntent: unrecognized tool "${call.name}"`);
 			return null;
 		}
-		let intent = this._argumentsToIntent(call.arguments);
+		// Tools whose arguments aren't index-shaped supply their own
+		// validator instead of using the shared six-shape one below (see
+		// tools/list-elements.js's own toIntent).
+		let entry = this._registry.find(r => r.key === toolKey);
+		let intent = entry.tool.toIntent
+			? entry.tool.toIntent(call.arguments)
+			: this._argumentsToIntent(call.arguments);
 		if (!intent) return null;
 		onProgress?.(`Intent detection: called "${call.name}".`);
 		return { tool: toolKey, intent };
@@ -129,8 +143,9 @@ LLMIntent = {
 	// detection time to convert that into the table's real `table_id`; see
 	// tools/table-export.js's schema/resolver.single/resolver.list, which
 	// resolve the raw string against the real listing in a SECOND call
-	// instead). This validator is shared across all three tools'
-	// differently-shaped `index` fields, so it has to accept both.
+	// instead). This validator is shared across the differently-shaped
+	// `index` fields of every tool that HAS one, so it has to accept both
+	// (listElements has none -- see its own toIntent).
 	_isValidIndexToken(v) {
 		return Number.isInteger(v) || (typeof v === "string" && v.length > 0);
 	},

@@ -8,6 +8,74 @@
 // is table- or figure-specific; see each call site's own comments for that
 // part.
 
+import { createRequire } from 'module';
+
+// core/geometry.js is a plain CommonJS module (module.exports, no
+// import/export syntax) -- require()'d via Node's ESM-to-CommonJS bridge
+// rather than imported. Re-exported below so this module's own existing
+// importers (extract-tables-sdt.js, extract-figures-sdt.js,
+// extract-preformatted-sdt.js) don't need to know unionRect actually lives
+// in core/geometry.js.
+const require = createRequire(import.meta.url);
+const { unionRect } = require('../core/geometry.js');
+export { unionRect };
+
+// See shared-patterns.js's own header comment for why this is require()'d
+// (via Node's ESM-to-CommonJS bridge) rather than imported -- same as
+// extract-equations.js's own use of splitSentences.
+const { splitSentences } = require('./shared-patterns.js');
+
+// A body region with NO caption of its own is very often not a distinct
+// element at all, but a CONTINUATION of a neighbouring captioned one --
+// one logical listing or table that a page break (or, for listings,
+// PyMuPDF's own background-fill detection) happened to split into several
+// separate regions. This decides whether two ADJACENT regions (in
+// document/block order) are safe to merge back into one, by checking
+// whether any block strictly BETWEEN their own block-index range contains
+// a real sentence -- reuses LLMPatterns.splitSentences (shared-patterns.js,
+// the SAME sentence-boundary split core/citation.js's own
+// splitIntoSentences applies its own 20-500 char length filter on top of
+// -- applied here too, so "genuine sentence" means the same thing here it
+// already does everywhere else in this plugin) rather than a bespoke
+// check.
+//
+// Only 'paragraph'/'list' blocks can qualify, as an ALLOWLIST rather than
+// skipping a handful of known labels. Every other type is structurally
+// incapable of being the explanatory body text this is looking for:
+// 'heading'/'caption' are labels (the element's own caption, or an
+// unrelated section heading the two fragments happen to straddle), 'image'
+// has no prose at all, and -- the case that matters most here --
+// 'preformatted' and 'table' are the element's OWN CONTENT.
+//
+// That last one is why a denylist was wrong. An element's own rows are
+// typed 'preformatted' and 'table' (SDT routinely classifies code rows as
+// 'table' -- exactly where this plugin's phantom "Unlabelled Table N"
+// duplicates come from, see core/document/preformatted.js's
+// deduplicatePreformatted), so when one region ends mid-element, the very
+// next block is the SAME element continuing, not prose separating two of
+// them. A long table's continuation rows on the next page are the same
+// case (see extract-tables-sdt.js's own merge pass).
+//
+// Confirmed on this plugin's own test paper. Listing 7 is a single JSON
+// object spanning blocks 172-176 (types table/preformatted/table/
+// preformatted/table) that PyMuPDF split into two regions -- one covering
+// blocks 172-174, one starting at 176. That leaves exactly one block
+// strictly between them: 175, typed 'preformatted', and nothing but more
+// of the same JSON. The old denylist counted it as a genuine sentence, so
+// the two halves never merged and the first surfaced as its own
+// uncaptioned "Preformatted 3" entry alongside the captioned "Listing 7".
+export function hasInterveningProse(content, afterBlockIndex, beforeBlockIndex) {
+	for (let i = afterBlockIndex + 1; i < beforeBlockIndex; i++) {
+		let block = content[i];
+		if (!block || (block.type !== 'paragraph' && block.type !== 'list')) continue;
+		let text = flattenText(block).replace(/\s+/g, ' ').trim();
+		if (!text) continue;
+		let sentences = splitSentences(text).filter(s => s.length >= 20 && s.length <= 500);
+		if (sentences.length) return true;
+	}
+	return false;
+}
+
 // Flattens a structure node's nested `content` array (text spans, possibly
 // nested inside further content-bearing nodes) into a single plain string.
 export function flattenText(node) {
@@ -154,10 +222,6 @@ export function rectDistance(a, b) {
 	return Math.sqrt(dx * dx + dy * dy);
 }
 
-export function unionRect(a, b) {
-	return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
-}
-
 export function extendRect(a, m) {
 	return [a[0] - m, a[1] - m, a[2] + m, a[3] + m];
 }
@@ -172,6 +236,21 @@ export function iou(a, b) {
 	return inter / (areaA + areaB - inter);
 }
 
+// Default reach for pairWithCaptions' own final step, which absorbs a
+// leftover UNCAPTIONED body into the captioned one it belongs to (see that
+// loop below). A body is extended by this much and tested for overlap
+// against each already-matched body on the page, so it bounds how far a
+// stray fragment may sit from the element it is part of.
+//
+// 10pt suits a body whose fragments are essentially touching -- a listing
+// split by a column break, a table continued on the next page. A caller
+// whose bodies are legitimately spread out passes its own value instead
+// (see extract-figures-sdt.js: a multi-panel figure prints a label line
+// under every row, so its panels sit tens of points apart). It is NOT
+// raised globally: at 30 the listings on this plugin's own test paper
+// balloon across the page gutter -- Listing 6 goes from 55k to 240k sq pt
+// -- because a column-width body that grows sideways is simply wrong,
+// whereas a figure genuinely spans the page.
 export const EXTEND_MARGIN = 10;
 
 // Groups `images` (a page's `type: 'image'` SDT blocks) into clusters using
@@ -321,7 +400,7 @@ export function captionArrangement(bodyBbox, captionBbox) {
 // For a cross-page pair specifically, `bbox` is the body's OWN bbox alone
 // (not unioned with the caption's, which lives on a different page and
 // isn't a meaningful union target) -- see the final mapping step below.
-export function pairWithCaptions(bodies, captions) {
+export function pairWithCaptions(bodies, captions, { absorbMargin = EXTEND_MARGIN, absorbLeftovers = true } = {}) {
 	let unmatchedBodies = bodies.map((b, i) => ({ ...b, _i: i }));
 	let unmatchedCaptions = captions.map((c, i) => ({ ...c, _i: i }));
 	let takenB = new Set(), takenC = new Set();
@@ -371,6 +450,39 @@ export function pairWithCaptions(bodies, captions) {
 			candidates.push({ b, c, dist });
 		}
 	}
+	// Only MUTUALLY NEAREST pairs survive: this body must be the closest
+	// body to that caption AND that caption the closest caption to this
+	// body, measured against every candidate on the page rather than only
+	// the ones still unclaimed.
+	//
+	// Without it the loop below never declines a match, so once the nearest
+	// pairing is made the leftovers are simply distributed -- each remaining
+	// body takes whatever caption is still free, at any distance. Measured
+	// on OSWorld p.45, where all four "Step N: pyautogui..." annotation rows
+	// sit INSIDE one region (the figure's own annotation grid, distance 0
+	// from it): that region can absorb only one of them, and the other three
+	// were handed to the two genuine code listings below, one of them 371pt
+	// away -- which unioned the caption's rect into the body's and inflated
+	// that listing from 107pt to 483pt tall, swallowing the listing above it.
+	//
+	// Measured against both test papers before adopting: ANS keeps all ten
+	// of its real "Listing N." captions, on the same regions with the same
+	// text, while OSWorld drops five of eight bogus ones. The three that
+	// survive there sit on regions that are themselves figure content and
+	// get removed by deduplication anyway, so no "Step N" label reaches the
+	// final index. It also REPAIRS two merges those bogus captions were
+	// suppressing via the `continuation.caption` test in
+	// extract-preformatted-sdt.js's grouping pass -- both single code
+	// examples continuing across a page break.
+	let nearestDist = (rect, list) => list.reduce((min, x) => Math.min(min, rectDistance(rect, x.bbox)), Infinity);
+	candidates = candidates.filter(({ b, c }) => {
+		let d = rectDistance(b.bbox, c.bbox);
+		// EPSILON, not equality: several candidates legitimately tie at
+		// distance 0 when a caption sits inside a body, and a strict `<`
+		// would then reject every one of them.
+		return d <= nearestDist(b.bbox, captions.filter(x => x.page_num === b.page_num)) + 1e-6
+			&& d <= nearestDist(c.bbox, bodies.filter(x => x.page_num === c.page_num)) + 1e-6;
+	});
 	candidates.sort((a, b) => a.dist - b.dist);
 	for (let { b, c } of candidates) {
 		if (takenB.has(b._i) || takenC.has(c._i)) continue;
@@ -419,13 +531,36 @@ export function pairWithCaptions(bodies, captions) {
 			: p.body.bbox,
 		label: p.caption.text,
 		caption: p.caption.text,
+		// The matched caption's OWN block index, alongside the body's
+		// `blockIndex` above -- lets a caller tell whether this paper puts
+		// captions BEFORE or AFTER what they caption, which the bboxes
+		// alone can no longer answer here (they've been unioned together by
+		// this point). Purely additive: extract-tables-sdt.js/
+		// extract-figures-sdt.js ignore it; extract-preformatted-sdt.js
+		// uses it to pick a merge direction for split listings.
+		captionBlockIndex: p.caption.blockIndex,
 		content: p.body.content,
 	}));
 	let leftoverBodies = unmatchedBodies.filter(b => !takenB.has(b._i));
 
+	// Absorbing a leftover body means unioning its rect into the captioned
+	// body it belongs to, so ONE highlight covers a region whose caption
+	// landed on a different fragment. That suits a caller which then drops
+	// the absorbed body -- extract-tables-sdt.js reads unmatchedBodies and
+	// only keeps what comes back.
+	//
+	// A caller that emits EVERY body regardless gets both halves instead:
+	// the absorbed region survives as its own entry AND its area sits
+	// inside the absorber's rect, so the two overlap. That is
+	// extract-preformatted-sdt.js, which represents a split listing by
+	// sharing a preformatted_id across fragments that each keep their own
+	// bbox -- see its own header on why it deliberately does not combine
+	// them into one entry. Unioning rects is not just redundant there, it
+	// manufactures the overlap. Measured on OSWorld: 9 of 40 regions had a
+	// bbox larger than any region PyMuPDF actually found.
 	let stillUnmatched = [];
-	for (let b of leftoverBodies) {
-		let ext = extendRect(b.bbox, EXTEND_MARGIN);
+	for (let b of absorbLeftovers ? leftoverBodies : []) {
+		let ext = extendRect(b.bbox, absorbMargin);
 		let best = null, bestIoU = 0;
 		for (let m of matched) {
 			if (m.page_num !== b.page_num) continue;
@@ -442,6 +577,7 @@ export function pairWithCaptions(bodies, captions) {
 			stillUnmatched.push(b);
 		}
 	}
+	if (!absorbLeftovers) stillUnmatched = leftoverBodies;
 
 	return { matched, unmatchedBodies: stillUnmatched };
 }
@@ -472,4 +608,61 @@ export function nearestSection(sections, blockIndex) {
 		}
 	}
 	return best;
+}
+
+// Builds the "terse label prefix" regex for a caption keyword family --
+// `keywords` are the accepted spellings, longest first (e.g. ['table',
+// 'tbl', 'tab'] or ['figure', 'fig']). Matches the leading label token of
+// a caption ("Table 3", "Fig. D.1", "TABLE IV", "Table vii", "Table A")
+// and nothing after it, so a caption's descriptive sentence never ends up
+// in the label. Shared by extract-tables-sdt.js and extract-figures-sdt.js,
+// which previously each carried their own `\d+`-only copy.
+//
+// The enumerator accepts four forms, tried longest-first:
+//   1. an optional appendix letter + digits ("D.1", "3")
+//   2. an UPPERCASE roman numeral
+//   3. a lowercase roman numeral
+//   4. a single letter ("A", "b")
+//
+// Digits alone used to be the only accepted form, which meant every
+// roman-numbered caption fell through to the caller's "use the whole
+// caption as the label" fallback. That's the IEEE house style (TABLE I,
+// TABLE II, ...), so on such a paper EVERY table/figure got its entire
+// caption sentence as its label -- observed on Huang et al.'s ANS paper,
+// where one label reached 637 characters because SDT had additionally
+// fused that table's caption, body, and the following paragraph into a
+// single block, and the fallback copied all of it.
+//
+// Three separate guards keep the roman branches from eating an ordinary
+// word that merely happens to be spelled out of roman letters:
+//
+//   Single-case. The branches are written without the /i flag (hence the
+//   explicit per-character classes for the keyword itself), so a
+//   mixed-case word can't match: "Table Mix of methods" is rejected
+//   because M-i-x is neither all-upper nor all-lower.
+//
+//   Canonical form. The token must be a WELL-FORMED numeral, not merely
+//   letters drawn from the roman set -- this is what rejects "XML",
+//   "LCD", "MID" and "CIVIL". Necessary because case-consistency alone
+//   proves nothing in an ALL-CAPS caption, which is exactly the style
+//   roman numerals appear in.
+//
+//   I/V/X/L only. Dropping C/D/M caps the numeral at LXXXIX (89) -- far
+//   beyond any real table/figure count -- and removes the last realistic
+//   false positives, which were the canonical-but-absurd readings of
+//   "MIX" (1009), "DIV" (504) and "CIV" (104).
+//
+// The trailing lookahead requires the token to END at a delimiter or at
+// end-of-string, so "Table Illustrating..." and "Tabular data" can't
+// match a leading fragment of their own first word.
+export function buildLabelPrefixRe(keywords) {
+	// Case-insensitive without /i, which would defeat the single-case rule
+	// the roman branches depend on.
+	let kw = keywords
+		.map(w => [...w].map(c => `[${c.toUpperCase()}${c.toLowerCase()}]`).join(''))
+		.join('|');
+	let romanUpper = '(?=[LXVI])(?:XL|L?X{0,3})(?:IX|IV|V?I{0,3})';
+	let romanLower = '(?=[lxvi])(?:xl|l?x{0,3})(?:ix|iv|v?i{0,3})';
+	let enumerator = `(?:[A-Za-z]\\.)?\\d+|${romanUpper}|${romanLower}|[A-Za-z]`;
+	return new RegExp(`^((?:${kw})\\.?\\s*(?:${enumerator}))(?=[\\s.:|)\\u2013\\u2014,]|$)`);
 }

@@ -203,6 +203,7 @@ LLMChatPane = {
 		this._configureMarkdown();
 		await LLMFigures.init(this.rootURI);
 		await LLMTables.init(this.rootURI);
+		await LLMPreformatted.init(this.rootURI);
 		try {
 			let hljsCss = await Zotero.File.getContentsFromURL(this.rootURI + "vendor/atom-one-dark.min.css");
 			let markdownCss = await Zotero.File.getContentsFromURL(this.rootURI + "styles/style.css");
@@ -1017,11 +1018,12 @@ LLMChatPane = {
 								appendMessage("System", text);
 								if (reply) chat.updateMessageText(reply, text);
 							};
-							let [tableIndex, figureIndex, referenceIndex, equationIndex, notes] = await Promise.all([
+							let [tableIndex, figureIndex, referenceIndex, equationIndex, preformattedIndex, notes] = await Promise.all([
 								LLMTables.getTableIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
 								LLMFigures.getFigureIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
 								LLMReferences.getReferenceIndex(pdfItem, onStructureMessage).catch(() => null),
 								LLMEquations.getEquationIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
+								LLMPreformatted.getPreformattedIndex(pdfItem, undefined, onStructureMessage).catch(() => null),
 								// ALL current annotations, not just some
 								// message's selected subset -- there's no way
 								// to know which ones the original (historical)
@@ -1031,7 +1033,7 @@ LLMChatPane = {
 								// any of them can resolve a match.
 								LLMNotes.getNotes(pdfItem).catch(() => []),
 							]);
-							linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes });
+							linkIndex = LLMPrompt.buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, preformattedIndex, notes });
 
 							// Keep history/import rendering aligned with fresh replies:
 							// pre-resolve grounded citation find: payloads to concrete

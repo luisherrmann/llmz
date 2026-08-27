@@ -19,6 +19,7 @@ var LLMCitation;
 var LLMSemanticHistory;
 var LLMFigures;
 var LLMTables;
+var LLMPreformatted;
 var LLMReferences;
 var LLMEquations;
 var LLMNotes;
@@ -26,9 +27,11 @@ var LLMCitationPosition;
 var LLMReferenceRetrieval;
 var LLMReferenceLinker;
 var LLMTableExport;
+var LLMListElements;
 var LLMInterfaces;
 var LLMIntent;
 var LLMPrompt;
+var LLMIndexPipeline;
 var LLMPythonSetup;
 
 function log(msg) {
@@ -64,6 +67,13 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "core/document/tables.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/references.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/structure-sdt.js");
+	// Combines SDT structure (LLMStructureSDT) with an independent PyMuPDF
+	// detection pass -- see its own header comment. References
+	// LLMPythonSetup/LLMInterfaces inside method bodies only (resolved at
+	// CALL time against this shared global scope, same as every other
+	// core/*.js module here), so load order relative to those two doesn't
+	// matter the way it does for LLMPatterns/core/citation.js above.
+	Services.scriptloader.loadSubScript(rootURI + "core/document/preformatted.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/equations.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/notes.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/document/citations.js");
@@ -71,9 +81,16 @@ async function startup({ id, version, rootURI }) {
 	Services.scriptloader.loadSubScript(rootURI + "tools/reference-retrieval.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/reference-linker.js");
 	Services.scriptloader.loadSubScript(rootURI + "tools/table-export.js");
+	Services.scriptloader.loadSubScript(rootURI + "tools/list-elements.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/llm/interfaces.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/llm/intent.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/llm/prompt.js");
+	// Orchestrates every per-paper index together so they can be
+	// deduplicated against each other before anything is written (see
+	// its own header comment) -- references the four index modules
+	// inside method bodies only, so load order relative to them does
+	// not matter.
+	Services.scriptloader.loadSubScript(rootURI + "core/llm/index-pipeline.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/icon.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/logs.js");
 	Services.scriptloader.loadSubScript(rootURI + "core/ui/chat.js");

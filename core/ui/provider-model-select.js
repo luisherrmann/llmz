@@ -115,7 +115,7 @@ LLMUIProviderModelSelect = {
 		saveProvider = provider => LLMInterfaces.saveProvider(provider),
 		getSelectedModel = provider => LLMInterfaces._selectedModel[provider],
 		saveSelectedModel = (provider, model) => LLMInterfaces.saveSelectedModel(provider, model),
-		listModels = () => LLMInterfaces.listModels(),
+		listModels = force => LLMInterfaces.listModels(force),
 		// Fires with (provider, model) whenever the selected pair actually
 		// changes -- both from an explicit model pick (modelSelect's own
 		// "change" listener below) and from switching provider (which
@@ -157,7 +157,9 @@ LLMUIProviderModelSelect = {
 			loadingOption.textContent = "Loading models…";
 			modelSelect.appendChild(loadingOption);
 			try {
-				let models = await LLMInterfaces._withTimeout(listModels(), 15000, "listModels");
+				// force = true -- the dropdown deliberately bypasses the
+				// model-list cache (see LLMInterfaces._cachedModelList).
+				let models = await LLMInterfaces._withTimeout(listModels(true), 15000, "listModels");
 				if (provider !== getProvider()) return; // provider changed while fetching
 				modelSelect.replaceChildren();
 				if (!models.length) {

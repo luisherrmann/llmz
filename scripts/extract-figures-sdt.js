@@ -100,7 +100,7 @@
 // than lazily on demand.
 
 import fs from 'fs';
-import { flattenText, pairWithCaptions, flattenOutline, nearestSection, iou, groupImagesByBoundary, extendCaptionText } from './match-captions.js';
+import { flattenText, pairWithCaptions, flattenOutline, nearestSection, iou, groupImagesByBoundary, extendCaptionText, buildLabelPrefixRe } from './match-captions.js';
 import { loadOrComputeStructure } from './structure-sdt.js';
 
 // How much IoU overlap (with an SDT-classified `type: 'image'` block on the
@@ -136,6 +136,26 @@ const PYMUPDF_DUPLICATE_IOU = 0.5;
 // comment already established.
 const MIN_IMAGE_AREA = 10000;
 const MAX_IMAGE_ASPECT_RATIO = 5.0;
+
+// How far pairWithCaptions may reach when absorbing an uncaptioned image
+// region into the captioned figure it belongs to (its own EXTEND_MARGIN
+// default is 10, tuned for bodies whose fragments nearly touch).
+const FIGURE_ABSORB_MARGIN = 60;
+
+// Document order for figure bodies: blockIndex first, then geometry as a
+// TIEBREAK only.
+function compareReadingOrder(a, b) {
+	if (a.blockIndex !== b.blockIndex) return a.blockIndex - b.blockIndex;
+	if (a.page_num !== b.page_num) return a.page_num - b.page_num;
+	// Called on BOTH shapes: a raw body candidate (carries `bbox`) and a
+	// finished output entry (carries `position.rects`), so read whichever
+	// this one has.
+	let ra = a.bbox || a.position?.rects?.[0];
+	let rb = b.bbox || b.position?.rects?.[0];
+	if (!ra || !rb) return 0;
+	if (ra[3] !== rb[3]) return rb[3] - ra[3];
+	return ra[0] - rb[0];
+}
 
 async function main() {
 	let [, , pdfPath, outputPath, pymupdfImagesPath, structureCachePath] = process.argv;
@@ -303,7 +323,7 @@ async function main() {
 	}
 
 	let sections = flattenOutline(structure.catalog?.outline || [], structure);
-	let { matched, unmatchedBodies: unmatchedImages } = pairWithCaptions(images, captions);
+	let { matched, unmatchedBodies: unmatchedImages } = pairWithCaptions(images, captions, { absorbMargin: FIGURE_ABSORB_MARGIN });
 
 	// Plain numeric caption ("Figure 3: ...") -> figure_num; anything else
 	// (lettered-appendix caption, or no caption at all) -> figure_extra_num,
@@ -316,7 +336,7 @@ async function main() {
 	// used everywhere else, for a lettered-appendix caption. Plain-numbered
 	// ones don't need this (they get a synthesized `Figure ${figure_num}`
 	// below).
-	const LABEL_PREFIX_RE = /^((?:figure|fig)\.?\s*(?:[a-z]\.)?\d+)/i;
+	const LABEL_PREFIX_RE = buildLabelPrefixRe(['figure', 'fig']);
 	let output = [];
 	let extraCounter = 0;
 
@@ -347,7 +367,7 @@ async function main() {
 	// Group unmatched (uncaptioned) images by nearest preceding section, in
 	// block order within each section, numbering them "Unlabelled Figure i".
 	let bySection = new Map();
-	for (let im of unmatchedImages.sort((a, b) => a.blockIndex - b.blockIndex)) {
+	for (let im of unmatchedImages.sort(compareReadingOrder)) {
 		let section = nearestSection(sections, im.blockIndex);
 		let key = section ? section.title : '(no preceding section)';
 		if (!bySection.has(key)) bySection.set(key, []);
@@ -377,7 +397,7 @@ async function main() {
 	// don't interleave in block order on their own (all captioned figures
 	// are pushed first, then all uncaptioned ones, regardless of where each
 	// actually falls in the document).
-	output.sort((a, b) => a.blockIndex - b.blockIndex);
+	output.sort(compareReadingOrder);
 	output.forEach((f, i) => {
 		f.figure_id = i + 1;
 		delete f.blockIndex;

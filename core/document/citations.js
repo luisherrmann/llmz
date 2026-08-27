@@ -228,6 +228,34 @@ LLMCitationPosition = {
 		return str.toLowerCase().replace(re, "");
 	},
 
+	// Walks a single node's own text/content, building:
+	//  - text: concatenation of every leaf descendant's raw .text
+	//  - offsetMap: parallel array, offsetMap[i] = { node, localOffset }
+	// Shared by _buildFullTextWithOffsetMap below (which calls this once per
+	// TOP-LEVEL block and stitches the results together with inter-block
+	// separators) and citation.js's own buildBlockTextIndex() use (which
+	// calls this on a single paragraph block directly -- no separators
+	// needed, since citation.js only ever wants character-exact offsets
+	// WITHIN one block, never across several).
+	_walkNodeWithOffsetMap(node) {
+		let text = "";
+		let offsetMap = [];
+		let walk = (n) => {
+			if (typeof n.text === "string") {
+				for (let j = 0; j < n.text.length; j++) {
+					offsetMap.push({ node: n, localOffset: j });
+				}
+				text += n.text;
+				return;
+			}
+			if (Array.isArray(n.content)) {
+				for (let child of n.content) walk(child);
+			}
+		};
+		walk(node);
+		return { text, offsetMap };
+	},
+
 	// Walks all leaf text nodes in document order, building:
 	//  - fullText: concatenation of every leaf node's raw .text
 	//  - offsetMap: parallel array, offsetMap[i] = { node, localOffset } (or
@@ -244,22 +272,11 @@ LLMCitationPosition = {
 			}
 		};
 
-		let walk = (node) => {
-			if (typeof node.text === "string") {
-				for (let j = 0; j < node.text.length; j++) {
-					offsetMap.push({ node, localOffset: j });
-				}
-				fullText += node.text;
-				return;
-			}
-			if (Array.isArray(node.content)) {
-				for (let child of node.content) walk(child);
-			}
-		};
-
 		for (let block of structure.content) {
 			appendSeparator();
-			walk(block);
+			let { text, offsetMap: blockOffsetMap } = this._walkNodeWithOffsetMap(block);
+			fullText += text;
+			offsetMap.push(...blockOffsetMap);
 		}
 
 		return { fullText, offsetMap };
@@ -458,9 +475,22 @@ LLMCitationPosition = {
 
 		let matchStart = posMap[best.start];
 		let matchEnd = posMap[best.start + best.len - 1] + 1;
+		return this._getPositionForOffsetRange(offsetMap, matchStart, matchEnd);
+	},
 
+	// Given a char range [start, end) into an `offsetMap` (as produced by
+	// _walkNodeWithOffsetMap/_buildFullTextWithOffsetMap), groups it back
+	// into per-node LOCAL ranges -- a match can span more than one leaf node
+	// -- and resolves each through _getRectsForNodeRange, then keeps only
+	// the FIRST page's rects (a range straddling a page break highlights
+	// just its first page, same rule a table/figure position already
+	// follows). Shared by both _resolveQueryAgainstTextIndex variants above
+	// (a matched range from text search) and citation.js's own
+	// getPositionForRange() below (an ALREADY-KNOWN range -- a sentence's
+	// own offsets within its block -- with no search involved).
+	_getPositionForOffsetRange(offsetMap, start, end) {
 		let nodeRanges = new Map();
-		for (let i = matchStart; i < matchEnd; i++) {
+		for (let i = start; i < end; i++) {
 			let entry = offsetMap[i];
 			if (!entry) continue;
 			let r = nodeRanges.get(entry.node);
@@ -497,31 +527,35 @@ LLMCitationPosition = {
 
 		let matchStart = posMap[idx];
 		let matchEnd = posMap[idx + normQuery.length - 1] + 1;
+		return this._getPositionForOffsetRange(offsetMap, matchStart, matchEnd);
+	},
 
-		let nodeRanges = new Map();
-		for (let i = matchStart; i < matchEnd; i++) {
-			let entry = offsetMap[i];
-			if (!entry) continue;
-			let r = nodeRanges.get(entry.node);
-			if (!r) {
-				nodeRanges.set(entry.node, { min: entry.localOffset, max: entry.localOffset + 1 });
-			}
-			else {
-				r.min = Math.min(r.min, entry.localOffset);
-				r.max = Math.max(r.max, entry.localOffset + 1);
-			}
-		}
+	// ---- Public API used by citation.js's indexing-time position calc ----
 
-		let allRects = [];
-		for (let [node, range] of nodeRanges) {
-			allRects.push(...this._getRectsForNodeRange(node, range.min, range.max));
-		}
-		if (!allRects.length) return null;
+	// Builds { text, offsetMap } for a SINGLE block -- e.g. one 'paragraph'-
+	// type SDT block, citation.js's own indexing unit -- rather than the
+	// whole-document fullText/offsetMap _buildTextIndex builds for query
+	// resolution. `text` here is character-for-character identical to
+	// LLMCitation._flattenBlockText(block) (same leaf-text concatenation,
+	// no inter-block separators since there's only one block), so a caller
+	// that independently computes sentence offsets against ITS OWN
+	// whitespace-collapsed copy of that same text can still translate those
+	// offsets back against this raw offsetMap, as long as it tracks its own
+	// collapse mapping (see citation.js's _collapseWhitespaceWithMap).
+	buildBlockTextIndex(block) {
+		return this._walkNodeWithOffsetMap(block);
+	},
 
-		allRects.sort((a, b) => a.pageIndex - b.pageIndex || b.y1 - a.y1);
-		let pageIndex = allRects[0].pageIndex;
-		let rects = allRects.filter(r => r.pageIndex === pageIndex).map(r => [r.x1, r.y1, r.x2, r.y2]);
-		return { pageIndex, rects };
+	// Resolves an ALREADY-KNOWN [start, end) character range (against the
+	// `offsetMap` half of a buildBlockTextIndex()/_buildTextIndex() result)
+	// straight to a position -- no text search involved, unlike
+	// _resolveQueryAgainstTextIndex's own query-string matching. Used by
+	// citation.js to get a sentence/paragraph's OWN exact rects at indexing
+	// time, with the same per-character precision _resolveQueryAgainstTextIndex
+	// gets for a citation click -- returns null (never a coarser
+	// approximation) when nothing can be resolved.
+	getPositionForRange(offsetMap, start, end) {
+		return this._getPositionForOffsetRange(offsetMap, start, end);
 	},
 
 	// ---- Public API ----

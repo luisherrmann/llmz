@@ -252,9 +252,15 @@ LLMPrompt = {
 		"A <NOTE_CONTEXT> block, if present, contains one or more of the user's own annotations on this PDF -- each either a sticky note they wrote, or a passage they highlighted/underlined (quoted verbatim from the PDF) together with any comment they added on it. Any 'Note:' text in it is the user's own authoritative commentary, distinct from the paper's own claims -- don't confuse the two.",
 		"Each entry in <NOTE_CONTEXT> starts with 'Note N (...) [key: XXXXXXXX]:' -- when you mention it, wrap it in a link so the reader can jump to it: [Note N](<ref:note:XXXXXXXX>). Use 'Note N' (that entry's display number) as the visible label, but the link target itself must be the exact key shown in brackets, not N -- copy the key exactly, character for character; never use N or invent a key.",
 		"Example: for an entry 'Note 1 (Highlight, p. 4) [key: AB12CD34]: ...', write 'Your highlight on this point [Note 1](<ref:note:AB12CD34>) is directly relevant here.' -- 'Note 1' is the label, 'AB12CD34' (that note's own key) is the link target.",
+		"An <INLINE_NOTE_CONTEXT> block appearing right after a paragraph inside <PDF_CONTEXT> means the user highlighted or underlined that passage (and may have added a comment on it) -- unlike <NOTE_CONTEXT> above, this is NOT something to cite or link; treat it purely as a signal that the preceding paragraph, and specifically the highlighted/underlined text quoted inside the block, is noteworthy to the user, and weigh it accordingly when answering.",
+		"Inside <PDF_CONTEXT>, every section heading from the paper's own outline is always included, wrapped as <HEADING>Section Title</HEADING>, interleaved with the paragraph text in true document order -- this holds even when only a relevant SUBSET of paragraphs is shown (the full PDF was too large to include whole), so you always have a complete structural overview of the paper regardless of how much body text made it in. A <HEADING> is structural context only -- never cite or link it, and never invent your own headings. A bare '...' appearing between two consecutive <HEADING> blocks means no paragraph or preformatted text was included between them (either none was relevant to the question, or none exists there) -- it does NOT mean that section is empty in the actual paper, only that its body text isn't shown to you here.",
+		"A <PREFORMATTED> block inside <PDF_CONTEXT> is whitespace-significant text from the paper that isn't ordinary prose -- typically source code, JSON/algorithm listings, or similar formatted content -- reproduced with its original line breaks and indentation intact rather than collapsed into a single line like a paragraph. Read its contents literally (spacing and structure are meaningful there, unlike in prose), and treat it as a normal part of the PDF's content when it's relevant to the question.",
+		"Each <PREFORMATTED> block opens with its own header line of the form '<label>: cite as ref:preformatted:N' -- when you mention that block, wrap the mention in a link using its EXACT label as the visible text and its EXACT ref copied verbatim: [<label>](<ref:preformatted:N>). Most labels are the paper's own (e.g. 'Listing 6', 'Algorithm 2'), but a block the paper never labeled gets a synthetic 'Preformatted N' label instead -- cite it exactly the same way, using that label as given. Never invent, renumber, or count your own N here, and never cite a preformatted block by a number you inferred from its contents.",
+		"Example: 'The registration payload is shown in [Listing 4](<ref:preformatted:6>).'",
+		"If the paper labeled the block, its FULL caption (e.g. 'Listing 6. A2A Capability Verification Example') follows the header line, before the block's actual content -- that caption is real content describing what the listing does; the short label from the header is what goes inside the link.",
 		"Whenever you mention a specific page of the PDF by number (e.g. 'on page 5', 'see page 12'), wrap the page number in a link so the reader can jump straight there: [page N](<ref:page:N>), where N is the page number -- this works for any page, not just ones with a table/figure/equation/note on them, and is separate from those ref: formats above.",
 		"Example: 'The methodology is described in more detail on [page 7](<ref:page:7>).'",
-		"NEVER put any of the link formats above -- [CITE](<find:...>), [CITE](<find:PAPER_ID:...>), [Table N](<ref:table:N>), [<label>](<ref:tableExtra:N>), [Figure N](<ref:figure:N>), [<label>](<ref:figureExtra:N>), [Equation N](<ref:equation:N>), [Formula N](<ref:formula:N>), [N](<ref:reference:N>), [Note N](<ref:note:...>), [page N](<ref:page:N>), [Title](<ref:library:paper_id>), or a cross-library [PAPER_ID Table N](<ref:PAPER_ID:table:N>)/[PAPER_ID Figure N](<ref:PAPER_ID:figure:N>)/[PAPER_ID Formula N](<ref:PAPER_ID:formula:N>)-style link -- inside a math environment ($<formula>$ or $$<formula>$$). Links only work in plain text; a $...$/$$...$$ formula must contain ONLY the formula itself, never a link. This does not apply to Markdown table cells (which are plain text, not math) -- links work normally there.",
+		"NEVER put any of the link formats above -- [CITE](<find:...>), [CITE](<find:PAPER_ID:...>), [Table N](<ref:table:N>), [<label>](<ref:tableExtra:N>), [Figure N](<ref:figure:N>), [<label>](<ref:figureExtra:N>), [Equation N](<ref:equation:N>), [Formula N](<ref:formula:N>), [<label>](<ref:preformatted:N>), [N](<ref:reference:N>), [Note N](<ref:note:...>), [page N](<ref:page:N>), [Title](<ref:library:paper_id>), or a cross-library [PAPER_ID Table N](<ref:PAPER_ID:table:N>)/[PAPER_ID Figure N](<ref:PAPER_ID:figure:N>)/[PAPER_ID Formula N](<ref:PAPER_ID:formula:N>)-style link -- inside a math environment ($<formula>$ or $$<formula>$$). Links only work in plain text; a $...$/$$...$$ formula must contain ONLY the formula itself, never a link. This does not apply to Markdown table cells (which are plain text, not math) -- links work normally there.",
 		"If a $...$/$$...$$ formula needs to reference a table/figure/equation/note, write its plain label as ordinary text immediately next to the formula instead, not inside it -- e.g. 'the result in Equation 1: $x = \\phi_s(s)$' with the link on 'Equation 1', not inside the $...$.",
 	].join(" "),
 
@@ -797,7 +803,7 @@ LLMPrompt = {
 	// paper-native number instead, for the same reason: they resolve
 	// identically whether the message is live or imported, as long as the
 	// same PDF's cached extraction indexes are passed in.
-	buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, notes = [] }) {
+	buildLinkIndex({ tableIndex, figureIndex, referenceIndex, equationIndex, preformattedIndex, notes = [] }) {
 		return {
 			// Real numbered tables ("Table 3:") key on table_num (the paper's
 			// own printed number, cited via ref:table:N); tables with no real
@@ -865,6 +871,87 @@ LLMPrompt = {
 					position: eq.position,
 					caption: eq.text.split(/\s+/).slice(0, 8).join(" "),
 				}])),
+			// preformatted_id is this plugin's own always-present, collision-free id, 
+			// so it keys every entry regardless of whether the paper labeled it --
+			// the paper's own label survives as the visible link TEXT
+			// (`label`, see LLMPreformatted._assignLabels) rather than as
+			// the key.
+			//
+			// Several fragments of one page-split listing share an id (see
+			// extract-preformatted-sdt.js's grouping pass), so a link has to
+			// highlight a region that may span pages. The reader's own
+			// position format supports exactly two adjacent pages: `rects`
+			// draws on `pageIndex`, and the optional `nextPageRects` draws
+			// on `pageIndex + 1` (see reader/src/pdf/page.js's own
+			// _drawHighlight / its highlightedPosition check) -- a field
+			// that exists precisely for content straddling a page break.
+			// There is no general N-page form, so:
+			//   - every fragment on the anchor page is unioned into `rects`
+			//     (fixes the same-page multi-fragment case outright),
+			//   - fragments on the immediately following page go into
+			//     `nextPageRects`,
+			//   - a listing spanning 3+ pages shows only that two-page
+			//     window; the rest is unreachable in one jump by
+			//     construction.
+			// The window is anchored on the page carrying the listing's own
+			// CAPTION, so the jump always frames the labeled end -- and
+			// since `nextPageRects` only ever extends FORWARD, an anchor
+			// that's already the listing's last page steps back one so the
+			// window covers the final two pages rather than running off the
+			// end. An uncaptioned listing (or one whose caption page has no
+			// rects) falls back to its first page, i.e. jump to the start.
+			preformatted: (() => {
+				let byId = new Map();
+				for (let pf of preformattedIndex?.sentences || []) {
+					if (pf.preformatted_id == null) continue;
+					if (!byId.has(pf.preformatted_id)) byId.set(pf.preformatted_id, []);
+					byId.get(pf.preformatted_id).push(pf);
+				}
+
+				let pageOf = pf => pf.position?.pageIndex ?? pf.pageIndex ?? null;
+				let rectsOf = pf => pf.position?.rects || pf.rects || [];
+
+				let map = new Map();
+				for (let [id, fragments] of byId) {
+					fragments.sort((a, b) => a.order - b.order);
+
+					let rectsByPage = new Map();
+					for (let pf of fragments) {
+						let page = pageOf(pf);
+						let rects = rectsOf(pf);
+						if (page == null || !rects.length) continue;
+						if (!rectsByPage.has(page)) rectsByPage.set(page, []);
+						rectsByPage.get(page).push(...rects);
+					}
+
+					let captionFragment = fragments.find(pf => pf.caption);
+					let caption = captionFragment?.caption || fragments.find(pf => pf.label)?.label || "";
+					if (!rectsByPage.size) {
+						map.set(id, { position: null, caption });
+						continue;
+					}
+
+					let pages = [...rectsByPage.keys()].sort((a, b) => a - b);
+					let captionPage = captionFragment ? pageOf(captionFragment) : null;
+					let anchor = (captionPage != null && rectsByPage.has(captionPage)) ? captionPage : pages[0];
+					// Anchor sits on the listing's last page -- step back one
+					// so the two-page window covers [last - 1, last] instead
+					// of pointing past the end (nextPageRects only extends
+					// forward). Only when the previous page is genuinely
+					// adjacent, so a non-contiguous page set never produces a
+					// window with a gap in it.
+					if (anchor === pages[pages.length - 1] && pages.length > 1) {
+						let previous = pages[pages.indexOf(anchor) - 1];
+						if (previous === anchor - 1) anchor = previous;
+					}
+
+					let position = { pageIndex: anchor, rects: rectsByPage.get(anchor) };
+					let nextPageRects = rectsByPage.get(anchor + 1);
+					if (nextPageRects) position.nextPageRects = nextPageRects;
+					map.set(id, { position, caption });
+				}
+				return map;
+			})(),
 			// Keyed by annotationKey (a real, stable Zotero item key), not a
 			// per-message ordinal -- see this method's own doc comment above.
 			note: new Map(notes.map(n => [n.annotationKey, {
@@ -890,6 +977,160 @@ LLMPrompt = {
 				...(figureIndex?.figures || []).map(f => [f.label.toLowerCase(), { position: f.position, caption: f.caption }]),
 			]),
 		};
+	},
+
+	// Axis-aligned bounding box intersection -- both `a`/`b` are
+	// [x0, y0, x1, y1] with x0<=x1, y0<=y1 already (both this codebase's own
+	// rect producers -- LLMCitationPosition._getRectsForNodeRange and
+	// Zotero's own annotationPosition -- always normalize min/max before
+	// storing), so a plain overlap test suffices with no extra sorting.
+	_rectsOverlap(a, b) {
+		let [ax0, ay0, ax1, ay1] = a;
+		let [bx0, by0, bx1, by1] = b;
+		return ax0 < bx1 && ax1 > bx0 && ay0 < by1 && ay1 > by0;
+	},
+
+	// Returns the subset of `notes` (already filtered to highlight/underline
+	// with a position, see buildPromptWithActivePDFContext) whose own rects
+	// overlap `paragraph`'s -- same page, and at least one rect pair
+	// intersects. `paragraph` carries its OWN pageIndex/rects directly (see
+	// LLMCitation._textRecord), while a note's position is nested under
+	// `.position` (see LLMNotes.formatAnnotation) -- different shapes, same
+	// underlying {pageIndex, rects} convention either way.
+	_findOverlappingNotes(paragraph, notes) {
+		if (paragraph.pageIndex == null || !paragraph.rects?.length) return [];
+		return notes.filter((note) => {
+			let pos = note.position;
+			if (!pos || pos.pageIndex !== paragraph.pageIndex || !pos.rects?.length) return false;
+			return paragraph.rects.some(pRect => pos.rects.some(nRect => this._rectsOverlap(pRect, nRect)));
+		});
+	},
+
+	// One <INLINE_NOTE_CONTEXT> block per overlapping highlight/underline --
+	// kept deliberately terse (not the prose _formatNoteContext above uses
+	// for the separate note-SELECTION feature) since this is injected
+	// inline, once per overlapping paragraph, and can repeat several times
+	// for one note that spans more than one paragraph. Deliberately a
+	// DIFFERENT tag than the top-level <NOTE_CONTEXT> block.
+	_formatInlineNoteContext(note) {
+		return [
+			"<INLINE_NOTE_CONTEXT>",
+			`type: ${note.type} color: ${note.color || "none"}`,
+			`highlighted text: "${note.highlightedText}" annotation: ${note.comment || ""}`,
+			"</INLINE_NOTE_CONTEXT>",
+		].join("\n");
+	},
+
+	// Builds the final <PDF_CONTEXT> body by merging `headings` (ALWAYS the
+	// paper's full outline, in document order -- never RAG-filtered, see
+	// buildPromptWithActivePDFContext's own comment on why) with
+	// `paragraphs` and `preformatted` (each either the full list, for the
+	// full-PDF case, or the top-K relevant ones from getRelevantChunks,
+	// already re-sorted into document order there) back into ONE true
+	// document-order sequence, using each side's own `order` (see
+	// LLMCitation._buildTextElementsFromStructure) -- the three are
+	// otherwise unrelated arrays with no shared index of their own.
+	// 
+	// A heading renders as `<HEADING>text</HEADING>`; a paragraph renders as
+	// its own text, followed by an <INLINE_NOTE_CONTEXT> block for each
+	// overlapping note (repeated after EVERY paragraph a note overlaps, not
+	// just the first -- see _findOverlappingNotes)
+	// 
+	// A preformatted block renders as `<PREFORMATTED>text</PREFORMATTED>`
+	// (no note-overlap injection for these -- not asked for, and a code/JSON
+	// listing's own raw whitespace is kept intact rather than collapsed, see
+	// _buildTextElementsFromStructure's own comment on why).
+	// 
+	// Whenever two headings end up ADJACENT in this merged sequence (no paragraph OR
+	// preformatted block selected between them -- either because none
+	// exists there, or because RAG didn't pick one from that section), a
+	// bare "..." placeholder is inserted between them, so the model can
+	// tell "nothing shown here" apart from "this section is a single
+	// heading with no body text at all".
+	_interleaveHeadingsAndParagraphs(headings, paragraphs, preformatted, notes) {
+		// Several `preformatted` entries can share ONE preformatted_id --
+		// that's how a single logical listing split across a page break is
+		// represented (see extract-preformatted-sdt.js's own grouping pass:
+		// each fragment stays its own entry, keeping its own page/rects for
+		// highlighting, and they're tied together by a shared id).
+		let groups = new Map();
+		for (let pf of preformatted) {
+			// A missing/undefined id (older cache, or a caller passing
+			// something else through) falls back to a per-entry unique key,
+			// preserving the old one-entry-per-block behavior rather than
+			// wrongly collapsing every such entry into a single group.
+			let key = pf.preformatted_id ?? `__ungrouped_${pf.order}`;
+			let group = groups.get(key);
+			if (!group) groups.set(key, { caption: pf.caption || "", label: pf.label || "", id: pf.preformatted_id ?? null, parts: [pf] });
+			else {
+				if (!group.caption && pf.caption) group.caption = pf.caption;
+				if (!group.label && pf.label) group.label = pf.label;
+				group.parts.push(pf);
+			}
+		}
+		// Parts are re-sorted by their own `order` before joining rather
+		// than relying on the incoming array's order -- the full-PDF path
+		// does pass them in document order, but getRelevantChunks' own
+		// top-K retrieval is free to return a group's fragments in any
+		// order (and may return only SOME of them), so a listing's own
+		// pieces would otherwise risk being concatenated scrambled.
+		let groupedPreformatted = [...groups.values()].map((g) => {
+			let parts = [...g.parts].sort((a, b) => a.order - b.order);
+			return {
+				order: parts[0].order,
+				caption: g.caption,
+				label: g.label,
+				id: g.id,
+				text: parts.map(p => p.text).join("\n"),
+			};
+		});
+
+		let items = [
+			...headings.map(h => ({ order: h.order, kind: "heading", heading: h })),
+			...paragraphs.map(p => ({ order: p.order, kind: "paragraph", paragraph: p })),
+			...groupedPreformatted.map(pf => ({ order: pf.order, kind: "preformatted", preformatted: pf })),
+		].sort((a, b) => a.order - b.order);
+
+		let lines = [];
+		let lastWasHeading = false;
+		for (let item of items) {
+			if (item.kind === "heading") {
+				if (lastWasHeading) lines.push("...");
+				lines.push(`<HEADING>${item.heading.text}</HEADING>`);
+				lastWasHeading = true;
+			}
+			else if (item.kind === "preformatted") {
+				// Header line carries the block's own citable LABEL plus a
+				// verbatim "cite as ref:preformatted:N" hint -- same
+				// "<label>: cite as <ref>" shape <FIGURE_CONTEXT> already
+				// uses, and the same reasoning: the model should never have
+				// to count or invent N itself, just copy what it was shown.
+				// The label is either the paper's own ("Listing 6",
+				// "Algorithm 2") or a synthetic "Preformatted N" for an
+				// unlabeled block (see LLMPreformatted._assignLabels). The
+				// FULL caption text, when there is one, still follows on its
+				// own line -- it's real content the model should see (e.g.
+				// "Listing 6. A2A Capability Verification Example" says what
+				// the listing actually does), just not what goes inside a
+				// link.
+				let pf = item.preformatted;
+				let header = pf.id != null && pf.label
+					? `${pf.label}: cite as ref:preformatted:${pf.id}`
+					: (pf.label || "");
+				let body = [header, pf.caption, pf.text].filter(Boolean).join("\n");
+				lines.push(`<PREFORMATTED>${body}</PREFORMATTED>`);
+				lastWasHeading = false;
+			}
+			else {
+				let paragraphLines = [item.paragraph.text];
+				for (let note of this._findOverlappingNotes(item.paragraph, notes)) {
+					paragraphLines.push(this._formatInlineNoteContext(note));
+				}
+				lines.push(paragraphLines.join("\n"));
+				lastWasHeading = false;
+			}
+		}
+		return lines.join("\n\n");
 	},
 
 	async getAttachmentFullText(item) {
@@ -920,8 +1161,18 @@ LLMPrompt = {
 	// it's naturally query-dependent (retrieved chunks, selected text,
 	// etc.) rather than something that'd make sense to send once for a
 	// whole conversation.
-	async buildPromptWithActivePDFContext(userPrompt, selectedText = null, pageText = null, onEmbeddingStart = null, onMessage = null) {
-		let item = LLMChatPane.getActiveReaderAttachment();
+	async buildPromptWithActivePDFContext({
+		userPrompt,
+		selectedText = null,
+		pageText = null,
+		onEmbeddingStart = null,
+		onMessage = null,
+		item = undefined,
+		text = undefined,
+		paragraphIndex = null,
+		preformattedIndex = null,
+	}) {
+		if (item === undefined) item = LLMChatPane.getActiveReaderAttachment();
 		let systemPrompt = [this._systemPrompt, this._historyStructureNote()].filter(Boolean).join(" ");
 
 		if (!item || !item.isPDFAttachment()) {
@@ -938,7 +1189,7 @@ LLMPrompt = {
 			};
 		}
 
-		let text = await this.getAttachmentFullText(item);
+		if (text === undefined) text = await this.getAttachmentFullText(item);
 		if (!text.trim()) {
 			return {
 				prompt: userPrompt,
@@ -954,27 +1205,121 @@ LLMPrompt = {
 
 		let title = item.getField("title") || item.libraryKey;
 
-		let context, retrieved = false, truncated = false, chunkCount = 0;
-		if (text.length <= this.maxPDFContextChars) {
-			// Full PDF fits within budget — use it as-is, no chunking needed.
-			context = text;
+		// Only highlight/underline notes participate in overlap injection
+		// (see _joinParagraphsWithNoteContext) -- a sticky 'note' has no
+		// highlighted span of its own to connect to a paragraph, and
+		// selectNotesWithLLM's separate note-selection feature already
+		// covers those. `position?.rects?.length` also drops any note whose
+		// annotationPosition failed to parse (see formatAnnotation) --
+		// nothing to overlap against without real rects.
+		let notes = [];
+		try {
+			notes = (await LLMNotes.getNotes(item))
+				.filter(n => (n.type === "highlight" || n.type === "underline") && n.position?.rects?.length);
 		}
-		else {
-			try {
-				let paragraphIndex = await LLMCitation.getParagraphIndex(item, text, onEmbeddingStart, onMessage);
-				if (paragraphIndex) {
-					let chunks = await LLMCitation.getRelevantChunks(paragraphIndex, userPrompt, this.chunkContextTopK);
-					if (chunks.length) {
-						context = chunks.join("\n\n");
+		catch (e) {
+			this.log(`getNotes failed while building PDF context: ${e.message}`);
+		}
+
+		let context, retrieved = false, truncated = false, chunkCount = 0, preformattedCount = 0;
+		// `paragraphIndex`/`preformattedIndex` are passed IN by the caller
+		// (llm/request.js) rather than fetched here. Both the full-PDF and
+		// chunked cases below read from them -- the SDT-derived paragraph
+		// list and the combined SDT+PyMuPDF preformatted list -- since only
+		// those carry the per-block pageIndex/rects that note-overlap
+		// injection needs. Either may be null (extraction failed, or this
+		// PDF's layout classifier produced no paragraph blocks at all), in
+		// which case this falls through to the raw-text path below exactly
+		// as before.
+		//
+		// Moved out of this function so that EVERY index a request needs is
+		// built in ONE place: they can then be deduplicated against each
+		// other (independent extractors routinely report the same physical
+		// region as both a listing and an unlabelled table, see
+		// LLMPreformatted.deduplicatePreformatted) and written to their
+		// caches/the embeddings DB exactly once, instead of each module
+		// persisting on its own before anything can compare them.
+
+		// ALWAYS the paper's full heading outline, never narrowed by RAG --
+		// see _interleaveHeadingsAndParagraphs's own comment for why: this is
+		// what gives the model a complete structural overview of the paper
+		// even when only a relevant subset of paragraphs is shown.
+		let headings = paragraphIndex?.headings || [];
+
+		if (paragraphIndex?.sentences?.length || preformattedIndex?.sentences?.length || headings.length) {
+			// `.sentences` here is actually the PARAGRAPH (or, for
+			// preformattedIndex, PREFORMATTED) list -- see getParagraphIndex/
+			// getPreformattedIndex's own comments -- already in document
+			// order, built by walking structure.content block-by-block.
+			let allParagraphs = paragraphIndex?.sentences || [];
+			let allPreformatted = preformattedIndex?.sentences || [];
+			let fullText = allParagraphs.map(p => p.text).join("\n\n")
+				+ allPreformatted.map(pf => pf.text).join("\n\n")
+				+ headings.map(h => h.text).join(" ");
+			if (fullText.length <= this.maxPDFContextChars) {
+				// Full PDF fits within budget — every paragraph, preformatted
+				// block, AND heading, in true document order.
+				context = this._interleaveHeadingsAndParagraphs(headings, allParagraphs, allPreformatted, notes);
+			}
+			else {
+				try {
+					let [chunks, preformattedHits] = await Promise.all([
+						allParagraphs.length
+							? LLMCitation.getRelevantChunks(paragraphIndex, userPrompt, this.chunkContextTopK)
+							: [],
+						allPreformatted.length
+							? LLMCitation.getRelevantChunks(preformattedIndex, userPrompt, this.chunkContextTopK)
+							: [],
+					]);
+					// A listing split across a page break is embedded as
+					// several independent per-fragment vectors, so retrieval
+					// can match just one fragment of it -- expanded back to
+					// the whole listing here, since a hit on any fragment
+					// means the listing is relevant (see
+					// LLMPreformatted.expandToFullGroups' own comment).
+					// Deliberately AFTER the top-K cut rather than a larger
+					// K: the expansion is driven by group membership, not
+					// similarity, so it can't crowd out unrelated listings
+					// the way simply retrieving more would.
+					let preformattedChunks = LLMPreformatted.expandToFullGroups(allPreformatted, preformattedHits);
+					// Headings alone (chunks/preformattedChunks empty, or
+					// neither index available) still produce a usable
+					// context -- an outline with no body text beats falling
+					// through to the raw-text path below and losing the
+					// outline entirely.
+					if (chunks.length || preformattedChunks.length || headings.length) {
+						context = this._interleaveHeadingsAndParagraphs(headings, chunks, preformattedChunks, notes);
 						retrieved = true;
 						chunkCount = chunks.length;
+						// Counts rendered <PREFORMATTED> BLOCKS, not raw
+						// fragments -- a page-split listing contributes
+						// several fragments but renders as one block (see
+						// _interleaveHeadingsAndParagraphs' own grouping), and
+						// this number is quoted verbatim to the model/user in
+						// the context note below.
+						preformattedCount = new Set(
+							preformattedChunks.map(pf => pf.preformatted_id ?? `__ungrouped_${pf.order}`)
+						).size;
 					}
 				}
+				catch (e) {
+					this.log(`getRelevantChunks failed: ${e.message}`);
+				}
 			}
-			catch (e) {
-				this.log(`getParagraphIndex/getRelevantChunks failed: ${e.message}`);
+		}
+
+		if (context === undefined) {
+			// No usable SDT paragraph/preformatted structure
+			// (getParagraphIndex/getPreformattedIndex/getRelevantChunks
+			// failed or came back empty, and no headings either) -- fall
+			// back to Zotero's own raw linear extraction, same behavior as
+			// before this change. No note-overlap injection or heading
+			// outline here: without per-block position data there's nothing
+			// to overlap against or interleave.
+			if (text.length <= this.maxPDFContextChars) {
+				context = text;
 			}
-			if (!retrieved) {
+			else {
 				truncated = true;
 				context = text.slice(0, this.maxPDFContextChars);
 			}
@@ -985,7 +1330,7 @@ LLMPrompt = {
 			"Use the PDF context below when it is relevant. If the answer is not supported by the PDF context, say so.",
 			`PDF title: ${title}`,
 			retrieved
-				? `PDF context note: the full PDF was too large for the context budget; showing the ${chunkCount} paragraphs most relevant to your question, retrieved by embedding similarity.`
+				? `PDF context note: the full PDF was too large for the context budget; showing all ${headings.length} section headings for orientation, plus the ${chunkCount} paragraphs and ${preformattedCount} preformatted blocks most relevant to your question, retrieved by embedding similarity.`
 				: (truncated ? `PDF context note: text was truncated to the first ${this.maxPDFContextChars} characters.` : ""),
 			"<PDF_CONTEXT>",
 			context,
@@ -1004,6 +1349,7 @@ LLMPrompt = {
 				truncated,
 				retrieved,
 				chunkCount,
+				preformattedCount,
 			},
 			selectedText,
 			item,

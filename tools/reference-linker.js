@@ -26,6 +26,10 @@ LLMReferenceLinker = {
 	// numbers afterward (see llm/request.js's _handleDownloadOrLink).
 	intentTool: {
 		name: "link_reference",
+		// A bibliography index takes no part in cross-index
+		// deduplication, so this tool does not need llm/request.js's
+		// pre-dispatch indexing pass -- see LLMIntent.skipsIndexing.
+		skipIndexing: true,
 		description: [
 			"Links one or more bibliography/reference-list entries from the paper",
 			"currently open in the reader to the matching item ALREADY in the",

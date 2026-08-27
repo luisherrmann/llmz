@@ -77,12 +77,23 @@ import { loadOrComputeStructure } from './structure-sdt.js';
 // has already been seen, rather than introducing a new one. Comparing the
 // normalized prefix is what distinguishes "this is the same table
 // continuing" from "this is the next table".
-const CAPTION_LABEL_KEY_RE = /^\s*(?:table|tbl|tab)\.?\s*([a-z]\.)?\s*(\d+)/i;
+// Derived from the SAME pattern that produces a table's terse label, rather
+// than a second narrower one: this used to require \d+, so once
+// buildLabelPrefixRe learned roman numerals and single letters, a
+// roman-numbered table split across pages ("TABLE IV", then "Tab. IV --
+// continued") produced no key on either fragment and the two could never be
+// recognised as one table.
+const CAPTION_LABEL_KEY_RE = buildLabelPrefixRe(['table', 'tbl', 'tab']);
 
+// The enumerator alone, lowercased and stripped of spaces -- "Table 1" and
+// "TABLE IV" key on "1" and "iv". Digit forms keep the keys they had before
+// ("Table D.1" -> "d.1"), so previously-merging tables are unaffected.
 function captionLabelKey(caption) {
 	if (!caption) return null;
 	let m = CAPTION_LABEL_KEY_RE.exec(caption);
-	return m ? `${(m[1] || '').toLowerCase()}${m[2]}` : null;
+	if (!m) return null;
+	let enumerator = m[1].replace(/^\s*(?:table|tbl|tab)\.?\s*/i, '').toLowerCase().replace(/\s+/g, '');
+	return enumerator || null;
 }
 
 // Collapses a group's fragments into ONE reader position. Mirrors
